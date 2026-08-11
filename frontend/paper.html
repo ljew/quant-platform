@@ -132,6 +132,11 @@
       <div id="d_quantileStats" class="muted" style="margin-top:6px;"></div>
     </div>
 
+    <div id="d_riskBox" style="display:none;margin-top:18px;border-top:1px dashed var(--border);padding-top:14px;">
+      <h3 style="font-size:14px;margin:0 0 8px;">风险硬上限（借鉴 ai-hedge-fund risk/limits）</h3>
+      <div id="d_riskInfo" class="muted"></div>
+    </div>
+
     <div id="d_hedgeBox" style="display:none;margin-top:18px;border-top:1px dashed var(--border);padding-top:14px;">
       <div style="display:flex;align-items:center;justify-content:space-between;">
         <h3 style="font-size:14px;margin:0;">市场中性 · 可交易对冲</h3>
@@ -277,6 +282,8 @@ async function viewTask(id){
   }).join('') || '<tr><td colspan="8" class="muted">暂无成交</td></tr>';
   // 因子研究（仅组合任务）
   renderPaperFactor(d.kind==='portfolio' ? d.factor_analysis : null);
+  // 风险硬上限（仅组合任务）
+  renderPaperRisk(d.kind==='portfolio' ? d.risk_limits : null, d.kind==='portfolio' ? (d.risk_clamps||[]) : []);
 }
 
 // 渲染组合任务的因子研究与归因（与回测详情同口径，含 PEAD 盈余惊喜）
@@ -344,6 +351,27 @@ function renderPaperFactor(fa){
     };
     qSel.onchange=renderQ; renderQ();
   }
+}
+
+// 风险硬上限：生效配置 + 截断审计（与回测详情同口径）
+function renderPaperRisk(rl, clamps){
+  const box=document.getElementById('d_riskBox');
+  const el=document.getElementById('d_riskInfo');
+  if(!rl || ((rl.max_position_pct||0)<=0 && (rl.max_gross_exposure||0)<=0)){
+    box.style.display='none'; return;
+  }
+  box.style.display='block';
+  let html=`已启用上限：单只最大权重 <b>${((rl.max_position_pct||0)*100).toFixed(1)}%</b>，`
+    + ` 总敞口上限 <b>${((rl.max_gross_exposure||0)*100).toFixed(1)}%</b>。共触发截断 <b>${clamps.length}</b> 次`;
+  if(clamps.length){
+    const by={}; clamps.forEach(c=>{const k=c.limit==='max_position_pct'?'单只上限':(c.limit==='max_gross_exposure'?'总敞口':'其他'); by[k]=(by[k]||0)+1;});
+    html+=`（${Object.entries(by).map(([k,v])=>k+' '+v+'次').join('，')}）。被截断的敞口留作现金、不重分配。`;
+    const sample=clamps.slice(0,5).map(c=>{const t=c.ticker?c.ticker+' ':''; return `${t}${((c.before||0)*100).toFixed(1)}%→${((c.after||0)*100).toFixed(1)}%`;}).join('； ');
+    html+=`<div style="margin-top:5px;font-size:11px;color:#555;">示例：${sample}${clamps.length>5?' …':''}</div>`;
+  } else {
+    html+='（策略自然权重已全部满足上限，无需截断）。';
+  }
+  el.innerHTML=html;
 }
 
 async function analyzeHedge(id){

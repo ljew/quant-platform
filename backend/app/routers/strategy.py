@@ -316,6 +316,8 @@ def _persist(db, req, meta, params, result) -> Backtest:
                 "holdings": getattr(result, "holdings", []),
                 "industry_distribution": getattr(result, "industry_distribution", {}),
                 "factor_analysis": getattr(result, "factor_analysis", None),
+                "risk_limits": getattr(result, "risk_limits", None),
+                "risk_clamps": getattr(result, "risk_clamps", []),
                 "hedged": {
                     "beta": getattr(result, "hedged_beta", 0.0),
                     "total_return": getattr(result, "hedged_total_return", 0.0),
@@ -478,6 +480,8 @@ def _to_result(r: Backtest, name: str, multi: bool) -> BacktestResult:
         holdings=extra.get("holdings", []),
         industry_distribution=extra.get("industry_distribution", {}),
         factor_analysis=extra.get("factor_analysis", None),
+        risk_limits=extra.get("risk_limits", None),
+        risk_clamps=extra.get("risk_clamps", []),
         hedged_beta=hedged.get("beta", 0.0),
         hedged_total_return=hedged.get("total_return", 0.0),
         hedged_annual_return=hedged.get("annual_return", 0.0),

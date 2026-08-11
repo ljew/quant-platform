@@ -235,6 +235,8 @@
     <div id="brinsonChart" style="width:100%;height:260px;"></div>
     <h4 style="font-size:13px;color:var(--text2);margin:18px 0 8px;">行业暴露 vs 基准（期末）</h4>
     <div id="indExpChart" style="width:100%;height:320px;"></div>
+    <h4 style="font-size:13px;color:var(--text2);margin:18px 0 8px;">风险硬上限（借鉴 ai-hedge-fund risk/limits）</h4>
+    <div id="riskBox" class="hint" style="margin-top:4px;"></div>
   </div>
 
   </section>
@@ -959,6 +961,31 @@ function renderFactorAnalysis(res){
         label:{show:true,formatter:'{c}%',fontSize:11}
       }]
     }, true);
+  }
+
+  // 7) 风险硬上限：生效配置 + 截断审计
+  const rl = res.risk_limits;
+  const clamps = res.risk_clamps || [];
+  const rb = document.getElementById("riskBox");
+  if(!rl || (rl.max_position_pct||0)<=0 && (rl.max_gross_exposure||0)<=0){
+    rb.innerHTML = '<span style="color:#999;">本次回测未启用风险硬上限（max_position_pct / max_gross_exposure 均为 0）。</span>';
+  } else {
+    let html = `已启用上限：单只最大权重 <b>${((rl.max_position_pct||0)*100).toFixed(1)}%</b>，`
+      + ` 总敞口上限 <b>${((rl.max_gross_exposure||0)*100).toFixed(1)}%</b>。`
+      + ` 共触发截断 <b>${clamps.length}</b> 次`;
+    if(clamps.length){
+      const byLimit = {};
+      clamps.forEach(c=>{ const k=c.limit==='max_position_pct'?'单只上限':(c.limit==='max_gross_exposure'?'总敞口':'其他'); byLimit[k]=(byLimit[k]||0)+1; });
+      html += `（${Object.entries(byLimit).map(([k,v])=>k+' '+v+'次').join('，')}）。被截断的敞口留作现金、不重分配。`;
+      const sample = clamps.slice(0,5).map(c=>{
+        const t = c.ticker ? (c.ticker+' ') : '';
+        return `${t}${((c.before||0)*100).toFixed(1)}%→${((c.after||0)*100).toFixed(1)}%`;
+      }).join('； ');
+      html += `<div style="margin-top:5px;font-size:11px;color:#555;">示例：${sample}${clamps.length>5?' …':''}</div>`;
+    } else {
+      html += '（策略自然权重已全部满足上限，无需截断）。';
+    }
+    rb.innerHTML = html;
   }
 }
 

@@ -140,6 +140,9 @@ class BacktestResult(BaseModel):
     holdings: list[dict] = []
     industry_distribution: dict = {}
     factor_analysis: dict | None = None
+    # 风险硬上限（借鉴 ai-hedge-fund risk/limits）：生效的上限配置与被截断的审计记录
+    risk_limits: dict | None = None
+    risk_clamps: list[dict] = []
     # 市场中性（对冲 beta）视角绩效
     hedged_beta: float = 0.0
     hedged_total_return: float = 0.0

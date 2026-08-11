@@ -236,8 +236,12 @@ def run_paper_task(db, task: PaperTask) -> dict:
         )
         # 存最近一次运行的完整每日净值曲线（date>=建仓日），供前端绘制
         task.equity_curve_json = json.dumps(r.get("curve", []), ensure_ascii=False)
-        # 存组合任务的因子研究（IC/IR/分层/PEAD 等），供模拟盘详情页展示
-        task.factor_analysis_json = json.dumps(r.get("factor_analysis") or {}, ensure_ascii=False)
+        # 存组合任务的因子研究（IC/IR/分层/PEAD 等）+ 风险硬上限审计，供模拟盘详情页展示
+        task.factor_analysis_json = json.dumps({
+            "factor_analysis": r.get("factor_analysis") or {},
+            "risk_limits": r.get("risk_limits"),
+            "risk_clamps": r.get("risk_clamps") or [],
+        }, ensure_ascii=False)
         task.error_msg = None
         db.commit()
         return {
@@ -252,6 +256,24 @@ def run_paper_task(db, task: PaperTask) -> dict:
         task.error_msg = str(e)[:255]
         db.commit()
         return {"ok": False, "error": str(e)}
+
+
+def _paper_fa_blob(task) -> dict:
+    """兼容解析 factor_analysis_json：新格式为 {factor_analysis, risk_limits, risk_clamps}，
+    旧格式直接存的是 factor_analysis 对象本身。统一返回三者。"""
+    raw = getattr(task, "factor_analysis_json", None)
+    try:
+        blob = json.loads(raw) if raw else None
+    except Exception:
+        blob = None
+    if isinstance(blob, dict) and "factor_analysis" in blob:
+        return {
+            "factor_analysis": blob.get("factor_analysis"),
+            "risk_limits": blob.get("risk_limits"),
+            "risk_clamps": blob.get("risk_clamps") or [],
+        }
+    # 旧格式：整个 dict 即 factor_analysis
+    return {"factor_analysis": blob, "risk_limits": None, "risk_clamps": []}
 
 
 def get_paper_task_detail(db, task: PaperTask) -> dict:
@@ -305,5 +327,7 @@ def get_paper_task_detail(db, task: PaperTask) -> dict:
         "pnl_pct": latest.pnl_pct if latest else 0.0,
         "positions": state.get("positions", {}),
         "curve": curve, "trades": trade_list,
-        "factor_analysis": json.loads(task.factor_analysis_json) if getattr(task, "factor_analysis_json", None) else None,
+        "factor_analysis": _paper_fa_blob(task).get("factor_analysis"),
+        "risk_limits": _paper_fa_blob(task).get("risk_limits"),
+        "risk_clamps": _paper_fa_blob(task).get("risk_clamps") or [],
     }
