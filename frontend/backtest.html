@@ -1,0 +1,1090 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>量化投研平台 · 策略回测</title>
+<script src="./echarts.min.js"></script>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  :root{
+    --bg:#f5f7fa; --card:#fff; --border:#e8eaed; --text:#1a1a2e; --text2:#666;
+    --red:#cf1322; --green:#237804; --blue:#1557b0; --accent:#2f54eb; --accent-l:#e6f0ff;
+    --shadow:0 1px 3px rgba(0,0,0,.06),0 2px 8px rgba(0,0,0,.04);
+  }
+  body{ font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); }
+  header{ background:linear-gradient(135deg,#0d1b2a,#1b2838); color:#fff; padding:18px 32px; display:flex; align-items:center; justify-content:space-between; }
+  header .brand{ display:flex; align-items:center; gap:12px; }
+  header .logo{ width:34px; height:34px; background:var(--accent); border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:18px; }
+  header h1{ font-size:20px; font-weight:700; }
+  header .env{ font-size:12px; color:#7ca0cc; }
+  nav{ display:flex; gap:6px; margin-left:16px; }
+  nav a{ color:#cdd9ec; text-decoration:none; font-size:13px; padding:6px 12px; border-radius:6px; }
+  nav a.active, nav a:hover{ color:#fff; background:rgba(255,255,255,.12); }
+  .container{ max-width:1280px; margin:0 auto; padding:24px; }
+  .card{ background:var(--card); border:1px solid var(--border); border-radius:10px; padding:20px; box-shadow:var(--shadow); margin-bottom:20px; }
+  .card h3{ font-size:15px; margin-bottom:16px; display:flex; align-items:center; gap:8px; }
+  .card h3 .dot{ width:8px; height:8px; background:var(--accent); border-radius:50%; }
+  .form-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:16px; }
+  .field{ display:flex; flex-direction:column; gap:6px; }
+  .field label{ font-size:12px; color:var(--text2); }
+  .field input, .field select{ border:1px solid var(--border); border-radius:8px; padding:9px 12px; font-size:14px; background:#fff; outline:none; }
+  .field input:focus, .field select:focus{ border-color:var(--accent); }
+  .params-box{ margin-top:16px; padding-top:16px; border-top:1px dashed var(--border); }
+  .params-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+  .btn{ background:var(--accent); color:#fff; border:none; border-radius:8px; padding:11px 28px; font-size:14px; font-weight:600; cursor:pointer; transition:.15s; }
+  .btn:hover{ background:#1d3ecf; }
+  .btn:disabled{ opacity:1; background:#aeb9cf; color:#fff; cursor:not-allowed; pointer-events:none; }
+  .btn .spin{ display:inline-block; width:12px; height:12px; border:2px solid rgba(255,255,255,.45); border-top-color:#fff; border-radius:50%; margin-right:7px; vertical-align:-1px; animation:spin .7s linear infinite; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  .run-row{ display:flex; align-items:center; gap:16px; margin-top:18px; }
+  .hint{ font-size:12px; color:var(--text2); }
+  .metric-row{ display:grid; grid-template-columns:repeat(4,1fr); gap:16px; }
+  .metric{ background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px 18px; box-shadow:var(--shadow); }
+  .metric .label{ font-size:12px; color:var(--text2); margin-bottom:6px; }
+  .metric .value{ font-size:22px; font-weight:700; }
+  #equity{ width:100%; height:400px; }
+  table{ width:100%; border-collapse:collapse; font-size:13px; }
+  th,td{ padding:9px 12px; text-align:left; border-bottom:1px solid var(--border); }
+  th{ color:var(--text2); font-weight:600; font-size:12px; }
+  td.num{ font-variant-numeric:tabular-nums; text-align:right; }
+  .up{ color:var(--red); } .down{ color:var(--green); } .flat{ color:var(--text2); }
+  .buy{ color:var(--red); font-weight:600; } .sell{ color:var(--green); font-weight:600; }
+  .loading{ color:var(--text2); font-size:13px; padding:20px; text-align:center; }
+  .err{ color:var(--red); font-size:13px; padding:12px; background:#fff1f0; border-radius:8px; }
+  .hidden{ display:none; }
+  .conn-banner{ background:#fff1f0; color:#cf1322; padding:10px 24px; font-size:13px; border-bottom:1px solid #ffccc7; line-height:1.5; }
+  .conn-banner a{ color:#cf1322; font-weight:600; }
+  #histTable tbody tr{ cursor:pointer; transition:.12s; }
+  #histTable tbody tr:hover{ background:var(--accent-l); }
+  #histTable tbody tr.selected{ background:var(--accent-l); box-shadow:inset 3px 0 0 var(--accent); }
+  .hint-link{ font-size:12px; color:var(--accent); margin-left:6px; }
+  /* 搜索下拉 */
+  .search-wrap{ position:relative; }
+  .suggest{ position:absolute; top:100%; left:0; right:0; background:#fff; border:1px solid var(--border); border-radius:8px; box-shadow:var(--shadow); z-index:20; max-height:240px; overflow:auto; }
+  .suggest div{ padding:9px 12px; font-size:13px; cursor:pointer; }
+  .suggest div:hover{ background:var(--accent-l); }
+  /* Tab 切换布局 */
+  .tabs{ display:flex; gap:4px; margin-bottom:18px; border-bottom:1px solid var(--border); flex-wrap:wrap; }
+  .tab{ background:none; border:none; padding:12px 22px; font-size:14px; font-weight:600; color:var(--text2); cursor:pointer; border-bottom:3px solid transparent; margin-bottom:-1px; transition:.12s; }
+  .tab:hover{ color:var(--accent); }
+  .tab.active{ color:var(--accent); border-bottom-color:var(--accent); }
+  .tab-panel{ animation:fade .2s ease; }
+  @keyframes fade{ from{opacity:0; transform:translateY(4px);} to{opacity:1; transform:none;} }
+  @media(max-width:900px){ .form-grid,.params-grid,.metric-row{ grid-template-columns:repeat(2,1fr); } }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="logo">📈</div>
+    <div>
+      <h1>量化投研平台</h1>
+      <div class="env">Quant Research Platform · 策略回测</div>
+    </div>
+  </div>
+  <nav>
+    <a href="/">行情看板</a>
+    <a href="/backtest.html" class="active">策略回测</a>
+    <a href="/paper.html">模拟盘</a>
+  </nav>
+</header>
+
+<div id="connBanner" class="conn-banner hidden"></div>
+
+<div class="container">
+
+  <div class="tabs" id="tabs">
+    <button class="tab active" data-tab="tab-config">回测配置</button>
+    <button class="tab" data-tab="tab-result">绩效结果</button>
+    <button class="tab" data-tab="tab-attr">组合与归因</button>
+    <button class="tab" data-tab="tab-hist">回测历史</button>
+  </div>
+
+  <section id="tab-config" class="tab-panel">
+
+  <!-- 回测配置 -->
+  <div class="card">
+    <h3><span class="dot"></span>回测配置</h3>
+    <div class="form-grid">
+      <div class="field search-wrap">
+        <label>标的（代码或名称）</label>
+        <input id="symbol" placeholder="如 600519 / 贵州茅台" autocomplete="off" />
+        <div class="suggest hidden" id="suggest"></div>
+      </div>
+      <div class="field">
+        <label>开始日期</label>
+        <input id="start" type="date" />
+      </div>
+      <div class="field">
+        <label>结束日期</label>
+        <input id="end" type="date" />
+      </div>
+      <div class="field">
+        <label>初始资金（元）</label>
+        <input id="cash" type="number" value="1000000" step="10000" />
+      </div>
+      <div class="field">
+        <label>策略</label>
+        <select id="strategy"></select>
+      </div>
+      <div class="field">
+        <label>佣金率</label>
+        <input id="commission" type="number" value="0.0003" step="0.0001" />
+      </div>
+      <div class="field">
+        <label>滑点</label>
+        <input id="slippage" type="number" value="0" step="0.0001" />
+      </div>
+    </div>
+    <div class="params-box hidden" id="paramsBox">
+      <label style="font-size:12px;color:var(--text2);">策略参数</label>
+      <div class="params-grid" id="paramsGrid" style="margin-top:10px;"></div>
+    </div>
+    <div class="run-row">
+      <button class="btn" id="runBtn">运行回测</button>
+      <button class="btn" id="optimBtn" style="background:#3ba272;">参数寻优</button>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text2);cursor:pointer;user-select:none;">
+        <input type="checkbox" id="compareMode" /> 对比模式（多策略净值叠加）
+      </label>
+      <span class="hint" id="runHint">支持任意 A 股标的，数据自动回源</span>
+    </div>
+    <div class="params-box hidden" id="compareBox">
+      <label style="font-size:12px;color:var(--text2);">选择对比策略（将跑同一标的/区间）</label>
+      <div class="params-grid" id="compareGrid" style="margin-top:10px;"></div>
+    </div>
+  </div>
+
+  </section>
+
+  <!-- 参数寻优面板 -->
+  <section id="tab-optim" class="tab-panel hidden">
+    <div class="card">
+      <h3><span class="dot"></span>参数寻优结果（网格搜索）<span class="hint-link" id="optimStatus"></span></h3>
+      <div style="overflow-x:auto;"><table id="optimTable">
+        <thead><tr><th>排名</th><th>参数</th><th style="text-align:right">总收益</th><th style="text-align:right">年化</th><th style="text-align:right">夏普</th><th style="text-align:right">回撤</th><th style="text-align:right">胜率</th><th style="text-align:right">交易</th></tr></thead>
+        <tbody><tr><td colspan="8" class="loading">选择策略后点击上方「参数寻优」按钮开始…</td></tr></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section id="tab-result" class="tab-panel hidden">
+
+  <!-- 绩效指标 -->
+  <div class="card hidden" id="resultCard">
+    <h3><span class="dot"></span>绩效归因 · <span id="resTitle"></span></h3>
+    <div class="metric-row" id="metricRow"></div>
+  </div>
+
+  <!-- 权益曲线 -->
+  <div class="card hidden" id="chartCard">
+    <h3><span class="dot"></span>净值曲线（策略 vs 基准）</h3>
+    <div id="equity"><div class="loading">运行回测后展示…</div></div>
+  </div>
+
+  <!-- 成交明细 -->
+  <div class="card hidden" id="tradeCard">
+    <h3><span class="dot"></span>成交明细</h3>
+    <table id="tradeTable">
+      <thead><tr><th>日期</th><th>方向</th><th style="text-align:right">价格</th><th style="text-align:right">股数</th><th style="text-align:right">现金余额</th><th style="text-align:right">佣金</th></tr></thead>
+      <tbody><tr><td colspan="6" class="loading">—</td></tr></tbody>
+    </table>
+  </div>
+
+  </section>
+
+  <section id="tab-attr" class="tab-panel hidden">
+
+  <!-- 组合结构（指数增强） -->
+  <div class="card hidden" id="portfolioCard">
+    <h3><span class="dot"></span>组合结构（指数增强）</h3>
+    <div class="form-grid">
+      <div>
+        <h4 style="font-size:13px;color:var(--text2);margin-bottom:8px;">行业分布（期末）</h4>
+        <div id="industryChart" style="width:100%;height:300px;"></div>
+      </div>
+      <div>
+        <h4 style="font-size:13px;color:var(--text2);margin-bottom:8px;">持仓数量变化（每次调仓）</h4>
+        <div id="holdChart" style="width:100%;height:300px;"></div>
+      </div>
+      <div>
+        <h4 style="font-size:13px;color:var(--text2);margin-bottom:8px;">前10大重仓权重(%)</h4>
+        <div id="topHoldChart" style="width:100%;height:300px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 因子研究与归因（指数增强） -->
+  <div class="card hidden" id="factorCard">
+    <h3><span class="dot"></span>因子研究与归因（指数增强）</h3>
+    <div id="factorIC"></div>
+    <div id="factorICChart" style="width:100%;height:280px;"></div>
+    <h4 style="font-size:13px;color:var(--text2);margin:18px 0 8px;">IC 月度热力图（因子 × 月份，红正蓝负）</h4>
+    <div id="icMonthlyChart" style="width:100%;height:300px;"></div>
+    <h4 style="font-size:13px;color:var(--text2);margin:18px 0 8px;">因子分层组合收益（alphalens 式）</h4>
+    <div style="margin-bottom:6px;">
+      <select id="quantileFactorSel" style="padding:4px 8px;border-radius:6px;border:1px solid var(--line);font-size:12px;background:var(--card);color:var(--text);"></select>
+    </div>
+    <div id="quantileChart" style="width:100%;height:320px;"></div>
+    <div id="quantileStats" class="hint" style="margin-top:6px;"></div>
+    <h4 style="font-size:13px;color:var(--text2);margin:18px 0 8px;">因子相关性热力图</h4>
+    <div id="corrHeatChart" style="width:100%;height:320px;"></div>
+    <h4 style="font-size:13px;color:var(--text2);margin:18px 0 8px;">IC 衰减曲线（前向多期）</h4>
+    <div id="icDecayChart" style="width:100%;height:280px;"></div>
+    <h4 style="font-size:13px;color:var(--text2);margin:18px 0 8px;">Brinson 绩效归因</h4>
+    <div id="brinsonChart" style="width:100%;height:260px;"></div>
+    <h4 style="font-size:13px;color:var(--text2);margin:18px 0 8px;">行业暴露 vs 基准（期末）</h4>
+    <div id="indExpChart" style="width:100%;height:320px;"></div>
+  </div>
+
+  </section>
+
+  <section id="tab-hist" class="tab-panel hidden">
+
+  <!-- 历史 -->
+  <div class="card">
+    <h3><span class="dot"></span>回测历史<span class="hint-link">点击任意一行查看回测详情</span></h3>
+    <table id="histTable">
+      <thead><tr><th>ID</th><th>标的</th><th>策略</th><th>区间</th><th style="text-align:right">总收益</th><th style="text-align:right">年化</th><th style="text-align:right">回撤</th><th style="text-align:right">夏普</th><th style="text-align:right">胜率</th><th style="text-align:right">交易</th><th style="text-align:right">模拟</th></tr></thead>
+      <tbody id="histBody"><tr><td colspan="11" class="loading">加载中…</td></tr></tbody>
+    </table>
+  </div>
+  </section>
+
+</div>
+
+<script>
+const API = "/api/v1";
+let equityChart = null;
+let currentSymbol = "";
+let isRunning = false;
+
+// —— Tab 切换 ——
+const CHART_IDS = ["equity", "industryChart", "holdChart", "topHoldChart", "factorICChart", "indExpChart", "corrHeatChart", "icDecayChart", "brinsonChart", "icMonthlyChart", "quantileChart"];
+function resizeCharts(){
+  CHART_IDS.forEach(id=>{
+    const el = document.getElementById(id);
+    if(el){ const c = echarts.getInstanceByDom(el); if(c) c.resize(); }
+  });
+}
+function switchTab(tabId){
+  document.querySelectorAll(".tab-panel").forEach(p=>p.classList.add("hidden"));
+  const panel = document.getElementById(tabId);
+  if(panel) panel.classList.remove("hidden");
+  document.querySelectorAll("#tabs .tab").forEach(b=>b.classList.toggle("active", b.dataset.tab===tabId));
+  // 切换后图表容器尺寸可能变化（之前是隐藏态），重算布局
+  setTimeout(resizeCharts, 0);
+}
+document.querySelectorAll("#tabs .tab").forEach(b=>{ b.onclick = ()=>switchTab(b.dataset.tab); });
+window.addEventListener("resize", resizeCharts);
+
+// 连接状态提示：让“空下拉/空标的”变成明确的错误信息，方便定位是后端未连还是代码问题
+function showConnError(msg){
+  const b = document.getElementById("connBanner");
+  b.innerHTML = msg;
+  b.classList.remove("hidden");
+}
+function hideConnError(){
+  document.getElementById("connBanner").classList.add("hidden");
+}
+function apiBaseHint(){
+  return `本页应通过 <b>http://127.0.0.1:8000/backtest.html</b> 打开（页面与后端需同源）。当前看起来并非如此。<br>`
+    + `请复制上面的地址到浏览器地址栏打开；若仍为空，请确认后端已在 8000 端口运行。`;
+}
+
+// 默认日期：近一年
+(function(){
+  const today = new Date();
+  const y = today.getFullYear(), m = String(today.getMonth()+1).padStart(2,'0'), d = String(today.getDate()).padStart(2,'0');
+  document.getElementById("end").value = `${y}-${m}-${d}`;
+  const last = new Date(today); last.setFullYear(last.getFullYear()-1);
+  const ly = last.getFullYear(), lm = String(last.getMonth()+1).padStart(2,'0'), ld = String(last.getDate()).padStart(2,'0');
+  document.getElementById("start").value = `${ly}-${lm}-${ld}`;
+})();
+
+// 加载策略列表
+async function loadStrategies(){
+  try{
+    const r = await fetch(`${API}/strategy/strategies`);
+    if(!r.ok) throw new Error("HTTP "+r.status+" "+r.statusText);
+    const list = await r.json();
+    if(!Array.isArray(list) || !list.length) throw new Error("后端返回了空列表");
+    const sel = document.getElementById("strategy");
+    sel.innerHTML = '<option value="">— 请选择策略 —</option>' + list.map(s=>`<option value="${s.key}">${s.name}</option>`).join("");
+    sel._list = list;
+    renderParams();
+    applyStrategyMode();
+    sel.onchange = ()=>{ renderParams(); applyStrategyMode(); };
+    hideConnError();
+  }catch(e){
+    const sel = document.getElementById("strategy");
+    sel.innerHTML = '<option value="">— 策略加载失败 —</option>';
+    showConnError('⚠️ 无法连接到后端策略接口：'+e.message+'。<br>'+apiBaseHint());
+  }
+}
+function renderParams(){
+  const key = document.getElementById("strategy").value;
+  const meta = (document.getElementById("strategy")._list||[]).find(s=>s.key===key);
+  const box = document.getElementById("paramsBox");
+  const grid = document.getElementById("paramsGrid");
+  if(!meta || !meta.param_schema.length){ box.classList.add("hidden"); grid.innerHTML=""; return; }
+  box.classList.remove("hidden");
+  grid.innerHTML = meta.param_schema.map(p=>`
+    <div class="field">
+      <label>${p.label}${p.min!==undefined?` (${p.min}~${p.max})`:''}</label>
+      <input id="p_${p.key}" type="${p.type==='int'?'number':'number'}" value="${p.default}" step="${p.step||1}" />
+    </div>`).join("");
+}
+
+// 组合策略（指数增强）模式：锁定标的为指数，禁止手输；单标的策略则保留用户已选标的，不强行覆盖
+function applyStrategyMode(){
+  const symInput=document.getElementById("symbol");
+  const wasMulti = symInput.disabled;            // 上一次是否为指数增强锁定态
+  const key=document.getElementById("strategy").value;
+  const meta=(document.getElementById("strategy")._list||[]).find(s=>s.key===key);
+  const suggest=document.getElementById("suggest");
+  if(meta && meta.multi_asset){
+    // 指数增强：标的必须锁定为指数，覆盖用户手填值
+    currentSymbol = meta.index_symbol;
+    symInput.value = `${meta.index_name} (${meta.index_code})`;
+    symInput.disabled = true;
+    suggest.classList.add("hidden");
+    document.getElementById("runHint").textContent = `指数增强：在中证800成分股中选股，基准为${meta.index_name}`;
+  }else{
+    symInput.disabled=false;
+    symInput.placeholder="如 600519 / 贵州茅台";
+    const v=symInput.value.trim();
+    // 仅当「从未选择 / 刚从指数增强切过来残留指数占位 / 框为空」时才预填示例；否则保留用户已选个股，避免切换策略被强行改回茅台
+    if(wasMulti || v==="" || /指数|沪深|中证/.test(v)){
+      currentSymbol="sh600519";
+      symInput.value="sh600519 贵州茅台";
+      document.getElementById("runHint").textContent="示例标的：贵州茅台。可直接修改代码或名称，支持自动搜索";
+    }else{
+      document.getElementById("runHint").textContent="将使用你已选择的标的：" + v + "（可直接修改）";
+    }
+  }
+}
+
+// —— 对比模式 ——
+let compareMode = false;
+document.getElementById("compareMode").addEventListener("change", e=>{
+  compareMode = e.target.checked;
+  const sel = document.getElementById("strategy");
+  const paramsBox = document.getElementById("paramsBox");
+  const compareBox = document.getElementById("compareBox");
+  const btn = document.getElementById("runBtn");
+  if(compareMode){
+    sel.disabled = true;
+    paramsBox.classList.add("hidden");
+    document.getElementById("symbol").disabled = false;
+    const list = (sel._list || []).filter(s => !s.multi_asset);
+    document.getElementById("compareGrid").innerHTML = list.map(s=>
+      `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0;"><input type="checkbox" class="cmp-chk" value="${s.key}" checked /> ${s.name}</label>`
+    ).join("");
+    compareBox.classList.remove("hidden");
+    btn.textContent = "对比运行";
+    document.getElementById("runHint").textContent = "已选策略将在同标的/区间跑回测，净值曲线叠加展示";
+  }else{
+    sel.disabled = false;
+    compareBox.classList.add("hidden");
+    paramsBox.classList.remove("hidden");
+    btn.textContent = "运行回测";
+    applyStrategyMode();
+  }
+});
+
+// —— 多策略对比净值叠加 ——
+function renderCompare(results, sym, start, end){
+  document.getElementById("resultCard").classList.remove("hidden");
+  document.getElementById("chartCard").classList.remove("hidden");
+  document.getElementById("tradeCard").classList.add("hidden");
+  document.getElementById("resTitle").textContent = `${sym} · ${results.length}策略对比 · ${start}~${end}`;
+
+  const cols = ['策略','总收益','年化','夏普','最大回撤','胜率','交易','IR/超额'];
+  document.getElementById("metricRow").innerHTML = results.map(r=>`
+    <div class="metric" style="cursor:default;">
+      <div class="label">${r.strategy_name||r.strategy_key}</div>
+      <div class="value ${cls(r.total_return)}" style="font-size:16px;">${fmtPct(r.total_return)}</div>
+      <div style="font-size:11px;color:var(--text2);margin-top:2px;">夏普 ${r.sharpe.toFixed(2)} · 回撤 ${fmtPct(r.max_drawdown)} · ${r.trade_count}笔</div>
+    </div>`).join("");
+
+  const el = document.getElementById("equity");
+  if(!equityChart) equityChart = echarts.init(el);
+  const first = results[0];
+  const dates = first.equity_curve.map(p=>p.date);
+  const colors = ['#2f54eb','#cf1322','#3ba272','#e6a817','#7c4dff','#eb2f96','#13c2c2','#fa8c16'];
+  const series = results.map((r,i)=>({
+    name: r.strategy_name||r.strategy_key,
+    type:'line', data: r.equity_curve.map(p=>p.equity),
+    showSymbol:false, lineStyle:{width:2, color: colors[i%colors.length]},
+  }));
+  // 加上基准（第一只的买入持有）
+  series.push({
+    name:'买入持有', type:'line', data: first.equity_curve.map(p=>p.benchmark),
+    showSymbol:false, lineStyle:{width:1, color:'#999', type:'dashed'},
+  });
+
+  equityChart.setOption({
+    animation:false,
+    tooltip:{trigger:'axis'},
+    legend:{data: series.map(s=>s.name), top:0, type:'scroll'},
+    grid:{left:70, right:20, top:40, bottom:50},
+    xAxis:{type:'category', data:dates, axisLabel:{show:false}},
+    yAxis:{scale:true, splitLine:{lineStyle:{color:'#f0f0f0'}}},
+    dataZoom:[{type:'inside'},{type:'slider',height:18,bottom:18}],
+    series,
+  }, true);
+
+  // 简要成交：折叠显示
+  const tb = document.querySelector("#tradeTable tbody");
+  tb.innerHTML = results.map((r,i)=>{
+    const t = r.trades||[];
+    const lastFew = t.slice(-3);
+    return `<tr><td colspan="8" style="font-weight:600;background:#f5f7fa;">${r.strategy_name||r.strategy_key} (共${t.length}笔)</td></tr>`
+      + lastFew.map(td=>{
+        const pnl=td.pnl||0, pnlCls=pnl>0?'up':(pnl<0?'down':'flat'), pnlStr=pnl!==0?(pnl>0?'+':'')+pnl.toFixed(0):'—';
+        const reason=(td.signal_reason||'—').replace(/"/g,'');
+        return `<tr><td>${td.date}</td><td class="${td.side==='BUY'?'buy':'sell'}">${td.side==='BUY'?'买':'卖'}</td><td class="num">${td.price.toFixed(2)}</td><td class="num">${Math.round(td.shares||0).toLocaleString()}</td><td class="num ${pnlCls}">${pnlStr}</td><td class="num">${td.commission.toFixed(2)}</td><td style="font-size:11px;color:#555;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${reason}">${reason}</td></tr>`;
+      }).join("");
+  }).join("");
+  document.getElementById("tradeCard").classList.remove("hidden");
+}
+
+// 标的搜索下拉
+let st;
+document.getElementById("symbol").addEventListener("input",e=>{
+  currentSymbol="";   // 单标的策略：用户开始输入则切换到自填值（多标的时输入框 disabled，不会触发）
+  clearTimeout(st); const q=e.target.value.trim();
+  if(q.length<1){ document.getElementById("suggest").classList.add("hidden"); return; }
+  st=setTimeout(async()=>{
+    const r=await fetch(`${API}/market/stocks?keyword=${encodeURIComponent(q)}&limit=20`);
+    const list=await r.json();
+    const box=document.getElementById("suggest");
+    if(!list.length){ box.classList.add("hidden"); return; }
+    box.innerHTML=list.map(s=>`<div data-sym="${s.symbol}" data-name="${s.name}">${s.symbol} · ${s.name}</div>`).join("");
+    box.classList.remove("hidden");
+    box.querySelectorAll("div").forEach(d=>d.onclick=()=>{
+      currentSymbol=d.dataset.sym;
+      document.getElementById("symbol").value=`${d.dataset.sym} ${d.dataset.name}`;
+      box.classList.add("hidden");
+    });
+  },300);
+});
+
+// 运行回测
+document.getElementById("runBtn").onclick = async ()=>{
+  if(isRunning) return;
+  const sym = currentSymbol || document.getElementById("symbol").value.trim().split(/\s+/)[0];
+  if(!sym){ alert("请先选择回测标的"); return; }
+
+  // —— 对比模式：并行跑多个策略 ——
+  if(compareMode){
+    const checked = [...document.querySelectorAll(".cmp-chk:checked")].map(c=>c.value);
+    if(!checked.length){ alert("请至少勾选一个策略"); return; }
+    const list = (document.getElementById("strategy")._list||[]);
+    const strategies = checked.map(key=>list.find(s=>s.key===key)).filter(Boolean);
+    if(!strategies.length){ alert("未找到对应策略"); return; }
+    const start=document.getElementById("start").value, end=document.getElementById("end").value;
+    const cash=parseFloat(document.getElementById("cash").value||1000000);
+    const comm=parseFloat(document.getElementById("commission").value||0.0003);
+    const slip=parseFloat(document.getElementById("slippage").value||0);
+    const btn=document.getElementById("runBtn"), hint=document.getElementById("runHint");
+    isRunning=true; btn.disabled=true; btn.innerHTML='<span class="spin"></span>对比运行中…';
+    hint.textContent=`正在并行跑 ${strategies.length} 个策略，请稍候…`;
+    const ctrl=new AbortController(); const timer=setTimeout(()=>ctrl.abort(), 300000);
+    try{
+      const promises = strategies.map(s=>{
+        const p={}; (s.param_schema||[]).forEach(f=>p[f.key]=f.default);
+        return fetch(`${API}/strategy/backtest`,{method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({symbol:sym,start,end,strategy:s.key,params:p,initial_cash:cash,commission:comm,slippage:slip}),signal:ctrl.signal}).then(r=>r.json());
+      });
+      const results=await Promise.all(promises);
+      renderCompare(results, sym, start, end);
+      switchTab('tab-result');
+      hint.textContent=`对比完成 ✓ 共 ${results.length} 个策略`;
+    }catch(e){ hint.innerHTML=`<span class="err">${e.name==='AbortError'?'对比超时(>5min)':e.message}</span>`; }
+    finally{ clearTimeout(timer); isRunning=false; btn.disabled=false; btn.textContent="对比运行"; }
+    return;
+  }
+
+  // —— 单策略回测 ——
+  const key = document.getElementById("strategy").value;
+  const meta = (document.getElementById("strategy")._list||[]).find(s=>s.key===key);
+  const params={};
+  (meta.param_schema||[]).forEach(p=>{
+    const v=document.getElementById("p_"+p.key).value;
+    params[p.key] = p.type==='int'? parseInt(v,10): parseFloat(v);
+  });
+  const payload={
+    symbol:sym,
+    start:document.getElementById("start").value,
+    end:document.getElementById("end").value,
+    strategy:key,
+    params,
+    initial_cash:parseFloat(document.getElementById("cash").value||1000000),
+    commission:parseFloat(document.getElementById("commission").value||0.0003),
+    slippage:parseFloat(document.getElementById("slippage").value||0),
+  };
+  const btn=document.getElementById("runBtn");
+  const runHint=document.getElementById("runHint");
+  isRunning=true;
+  btn.disabled=true;
+  btn.innerHTML='<span class="spin"></span>正在拉取数据…';
+  runHint.textContent="正在从数据源拉取行情，请稍候（中途请勿重复点击）…";
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(), 120000);   // 120s 超时兜底
+  try{
+    const r=await fetch(`${API}/strategy/backtest`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload),signal:ctrl.signal});
+    runHint.textContent="行情已就绪，正在运行回测策略…";
+    if(!r.ok){ const e=await r.json().catch(()=>({detail:r.statusText})); throw new Error(e.detail||"回测失败"); }
+    const res=await r.json();
+    renderResult(res);
+    switchTab('tab-result');
+    document.querySelectorAll('#histBody tr').forEach(tr=>tr.classList.remove('selected'));
+    runHint.textContent="回测完成 ✓ 结果见下方";
+  }catch(e){
+    if(e.name==='AbortError'){
+      runHint.innerHTML='<span class="err">回测超时（>120s）：可能数据量较大或后端繁忙，请缩小区间后重试。</span>';
+    }else{
+      runHint.innerHTML=`<span class="err">${e.message}</span>`;
+    }
+  }finally{
+    clearTimeout(timer);
+    isRunning=false;
+    btn.disabled=false;
+    btn.textContent="运行回测";
+  }
+};
+
+function fmtPct(v){ return (v>=0?'+':'')+(v*100).toFixed(2)+'%'; }
+function cls(v){ return v>0?'up':(v<0?'down':'flat'); }
+function signalLabel(t){
+  const m={"buy1":"一买","buy2":"二买","buy3":"三买","sell1":"一卖","sell2":"二卖","sell3":"三卖"};
+  return m[t]||(t||'—');
+}
+
+function renderResult(res){
+  document.getElementById("resultCard").classList.remove("hidden");
+  document.getElementById("chartCard").classList.remove("hidden");
+  document.getElementById("tradeCard").classList.remove("hidden");
+  document.getElementById("resTitle").textContent = `${res.symbol} · ${res.strategy_name} · ${res.start}~${res.end}`;
+
+  const metrics=[
+    {l:"总收益率", v:fmtPct(res.total_return), c:cls(res.total_return)},
+    {l:"年化收益率", v:fmtPct(res.annual_return), c:cls(res.annual_return)},
+    {l:"最大回撤", v:fmtPct(res.max_drawdown), c:"down"},
+    {l:"夏普比率", v:res.sharpe.toFixed(2), c:""},
+    {l:"胜率", v:(res.win_rate*100).toFixed(1)+'%', c:""},
+    {l:"交易次数", v:res.trade_count, c:""},
+    {l:"完整回合", v:res.round_trips, c:""},
+    {l:"期末权益", v:Math.round(res.final_equity).toLocaleString(), c:cls(res.final_equity-res.initial_cash)},
+  ];
+  if(res.multi_asset){
+    metrics.push({l:"基准收益", v:fmtPct(res.benchmark_total_return), c:cls(res.benchmark_total_return)});
+    metrics.push({l:"超额收益", v:fmtPct(res.excess_return), c:cls(res.excess_return)});
+    metrics.push({l:"信息比率", v:res.info_ratio.toFixed(2), c:cls(res.info_ratio)});
+    metrics.push({l:"股票池", v:(res.universe_size||0)+"只", c:""});
+    metrics.push({l:"对冲β", v:(res.hedged_beta||0).toFixed(2), c:""});
+    metrics.push({l:"对冲后收益", v:fmtPct(res.hedged_total_return), c:cls(res.hedged_total_return)});
+    metrics.push({l:"对冲后年化", v:fmtPct(res.hedged_annual_return), c:cls(res.hedged_annual_return)});
+    metrics.push({l:"对冲后夏普", v:(res.hedged_sharpe||0).toFixed(2), c:cls(res.hedged_sharpe)});
+    metrics.push({l:"对冲后回撤", v:fmtPct(res.hedged_max_drawdown), c:"down"});
+  }
+  document.getElementById("metricRow").innerHTML = metrics.map(m=>`
+    <div class="metric"><div class="label">${m.l}</div><div class="value ${m.c}">${m.v}</div></div>`).join("");
+
+  // 净值曲线
+  const el=document.getElementById("equity");
+  if(!equityChart) equityChart=echarts.init(el);
+  const dates=res.equity_curve.map(p=>p.date);
+  const strat=res.equity_curve.map(p=>p.equity);
+  const bench=res.equity_curve.map(p=>p.benchmark);
+  const hedged=res.equity_curve.map(p=>p.hedged||0);
+  const stratName = res.multi_asset ? '策略净值' : '策略权益';
+  const benchName = res.multi_asset
+    ? (res.strategy_key === 'hs300_enhanced' ? '基准(沪深300)' : '基准(中证800)')
+    : '买入持有';
+
+  // 买卖点标注：从成交明细提取买入/卖出在净值曲线上的坐标
+  const dateIdx={}; res.equity_curve.forEach((p,i)=>{ dateIdx[p.date]=i; });
+  const buyPoints=[], sellPoints=[];
+  const tradeReasonMap={};
+  (res.trades||[]).forEach(t=>{
+    const idx=dateIdx[t.date];
+    if(idx==null) return;
+    const eq=res.equity_curve[idx].equity;
+    if(t.side==='BUY') buyPoints.push({value:[idx,eq], name:t.date, symbolSize:8});
+    else sellPoints.push({value:[idx,eq], name:t.date, symbolSize:8});
+    if(t.signal_reason){
+      (tradeReasonMap[t.date]=tradeReasonMap[t.date]||[]).push(
+        `${t.side==='BUY'?'买入':'卖出'}${signalLabel(t.signal_type)}：${t.signal_reason}`);
+    }
+  });
+
+  const seriesData=[
+    {name:stratName,type:'line',data:strat,showSymbol:false,lineStyle:{width:2,color:'#2f54eb'}},
+    {name:benchName,type:'line',data:bench,showSymbol:false,lineStyle:{width:1.5,color:'#999',type:'dashed'}},
+  ];
+  const legendData=[stratName,benchName];
+  if(res.multi_asset){
+    seriesData.push({name:'对冲后(市场中性)',type:'line',data:hedged,showSymbol:false,lineStyle:{width:1.5,color:'#fa8c16',type:'dotted'}});
+    legendData.push('对冲后(市场中性)');
+  }
+  if(buyPoints.length){
+    seriesData.push({name:'买入',type:'scatter',data:buyPoints,symbol:'triangle',symbolSize:10,symbolRotate:0,itemStyle:{color:'#cf1322',borderColor:'#fff',borderWidth:1},z:10});
+    legendData.push('买入');
+  }
+  if(sellPoints.length){
+    seriesData.push({name:'卖出',type:'scatter',data:sellPoints,symbol:'triangle',symbolSize:10,symbolRotate:180,itemStyle:{color:'#237804',borderColor:'#fff',borderWidth:1},z:10});
+    legendData.push('卖出');
+  }
+
+  equityChart.setOption({
+    animation:false,
+    tooltip:{trigger:'axis', formatter: function(ps){
+      const d = ps[0] ? ps[0].axisValue : '';
+      let rows = ps.filter(p=>p.seriesType!=='scatter').map(p=>{
+        const v = Array.isArray(p.value) ? p.value[1] : p.value;
+        return `${p.marker}${p.seriesName}: ${v!=null ? Number(v).toLocaleString(undefined,{maximumFractionDigits:0}) : ''}`;
+      }).join('<br/>');
+      if(tradeReasonMap[d]){
+        rows += '<br/><span style="color:#722ed1;font-size:11px;line-height:1.5;">' + tradeReasonMap[d].join('<br/>') + '</span>';
+      }
+      return d + '<br/>' + rows;
+    }},
+    legend:{data:legendData,top:0},
+    grid:{left:70,right:20,top:40,bottom:50},
+    xAxis:{type:'category',data:dates,axisLabel:{show:false}},
+    yAxis:{scale:true,splitLine:{lineStyle:{color:'#f0f0f0'}}},
+    dataZoom:[{type:'inside'},{type:'slider',height:18,bottom:18}],
+    series:seriesData
+  }, true);
+  window.addEventListener('resize',()=>equityChart&&equityChart.resize());
+
+  // 成交明细
+  const tbl=document.getElementById("tradeTable");
+  const headCols = res.multi_asset
+    ? ['标的','日期','方向','价格','股数','信号','信号说明','损益','佣金']
+    : ['日期','方向','价格','股数','信号','信号说明','损益','佣金'];
+  tbl.querySelector('thead').innerHTML = '<tr>'+headCols.map((h,i)=>`<th class="${i>=(res.multi_asset?1:0)?'num':''}">${h}</th>`).join('')+'</tr>';
+  const tb=tbl.querySelector("tbody");
+  if(!res.trades.length){ tb.innerHTML=`<tr><td colspan="${headCols.length}" class="loading">该区间无成交</td></tr>`; }
+  else{
+    tb.innerHTML=res.trades.slice(0,500).map(t=>{
+      const pnl=t.pnl||0, pnlCls=pnl>0?'up':(pnl<0?'down':'flat'), pnlStr=pnl!==0?(pnl>0?'+':'')+pnl.toFixed(0):'—';
+      return `
+      <tr>
+        ${res.multi_asset?`<td>${t.symbol}</td>`:''}
+        <td>${t.date}</td>
+        <td class="${t.side==='BUY'?'buy':'sell'}">${t.side==='BUY'?'买入':'卖出'}</td>
+        <td class="num">${t.price.toFixed(2)}</td>
+        <td class="num">${Math.round(t.shares).toLocaleString()}</td>
+        <td class="num" style="color:#722ed1;font-weight:600;">${signalLabel(t.signal_type)}</td>
+        <td style="font-size:11px;color:#555;min-width:240px;max-width:340px;line-height:1.4;">${t.signal_reason||'—'}</td>
+        <td class="num ${pnlCls}">${pnlStr}</td>
+        <td class="num">${t.commission.toFixed(2)}</td>
+      </tr>`;
+    }).join("");
+  }
+  renderPortfolio(res);
+  renderFactorAnalysis(res);
+  loadHistory();
+}
+
+// 组合结构可视化（指数增强策略）
+function renderPortfolio(res){
+  const card=document.getElementById("portfolioCard");
+  const hasInd = res.industry_distribution && Object.keys(res.industry_distribution).length>0;
+  const hasHold = res.holdings && res.holdings.length>0;
+  if(!res.multi_asset || (!hasInd && !hasHold)){ card.classList.add("hidden"); return; }
+  card.classList.remove("hidden");
+
+  // 1) 行业分布饼图
+  let indChart=echarts.getInstanceByDom(document.getElementById("industryChart"));
+  if(!indChart) indChart=echarts.init(document.getElementById("industryChart"));
+  const indData=Object.entries(res.industry_distribution).map(([k,v])=>({name:k,value:+(v*100).toFixed(2)}));
+  indChart.setOption({
+    tooltip:{trigger:'item',formatter:'{b}: {c}%'},
+    series:[{type:'pie',radius:['35%','65%'],data:indData,label:{fontSize:11},
+      emphasis:{label:{fontSize:13,fontWeight:'bold'}}}]
+  }, true);
+
+  // 2) 持仓数量变化
+  let holdChart=echarts.getInstanceByDom(document.getElementById("holdChart"));
+  if(!holdChart) holdChart=echarts.init(document.getElementById("holdChart"));
+  const holdDates=res.holdings.map(h=>h.date);
+  const holdCounts=res.holdings.map(h=>Object.keys(h.positions).length);
+  holdChart.setOption({
+    tooltip:{trigger:'axis'},
+    grid:{left:45,right:15,top:20,bottom:45},
+    xAxis:{type:'category',data:holdDates,axisLabel:{show:false}},
+    yAxis:{type:'value',name:'持仓数'},
+    dataZoom:[{type:'inside'},{type:'slider',height:16,bottom:12}],
+    series:[{type:'line',data:holdCounts,showSymbol:false,areaStyle:{opacity:.15},lineStyle:{width:2,color:'#2f54eb'}}]
+  }, true);
+
+  // 3) 前10大重仓权重时序（堆叠面积）
+  let topChart=echarts.getInstanceByDom(document.getElementById("topHoldChart"));
+  if(!topChart) topChart=echarts.init(document.getElementById("topHoldChart"));
+  const acc={};
+  res.holdings.forEach(h=>{ for(const [s,w] of Object.entries(h.positions)) acc[s]=(acc[s]||0)+w; });
+  const topSyms=Object.entries(acc).sort((a,b)=>b[1]-a[1]).slice(0,10).map(x=>x[0]);
+  const palette=['#2f54eb','#cf1322','#237804','#fa8c16','#722ed1','#13c2c2','#eb2f96','#a0d911','#1d39c4','#fa541c'];
+  const series=topSyms.map((s,i)=>({
+    name:s,type:'line',stack:'w',showSymbol:false,areaStyle:{opacity:.6},lineStyle:{width:0},
+    itemStyle:{color:palette[i%palette.length]},
+    data:res.holdings.map(h=>+((h.positions[s]||0)*100).toFixed(2))
+  }));
+  topChart.setOption({
+    tooltip:{trigger:'axis',valueFormatter:v=>v+'%'},
+    legend:{type:'scroll',top:0,textStyle:{fontSize:11}},
+    grid:{left:45,right:15,top:30,bottom:45},
+    xAxis:{type:'category',data:holdDates,axisLabel:{show:false}},
+    yAxis:{type:'value',name:'权重%'},
+    dataZoom:[{type:'inside'},{type:'slider',height:16,bottom:12}],
+    series
+  }, true);
+}
+
+// 因子研究与归因（指数增强）
+function renderFactorAnalysis(res){
+  const card=document.getElementById("factorCard");
+  const fa = res.factor_analysis;
+  if(!res.multi_asset || !fa || !fa.factors || !Object.keys(fa.factors).length){
+    card.classList.add("hidden");
+    return;
+  }
+  card.classList.remove("hidden");
+
+  // 1) 因子 IC/IR 表
+  const labelMap={momentum:"动量", reversal:"反转", low_vol:"低波动", value:"价值(估值)",
+    size:"小市值", beta:"BETA", idio_vol:"特异度", skewness:"偏度", tail_risk:"尾部风险",
+    ep:"EP(盈利收益率)", bp:"BP(账面价值比)"};
+  const ac=fa.factor_autocorr||{};
+  const rows=Object.entries(fa.factors).map(([k,v])=>{
+    const nm=labelMap[k]||k;
+    const icCls = v.ic_mean>0?'up':'down';
+    const irCls = v.ir>0?'up':'down';
+    const acV = ac[k];
+    const acCell = acV==null ? '<td class="num">—</td>' : `<td class="num ${(acV>=0.5?'up':'down')}">${acV.toFixed(3)}</td>`;
+    return `<tr>
+      <td>${nm}</td>
+      <td class="num ${icCls}">${v.ic_mean.toFixed(3)}</td>
+      <td class="num">${v.ic_std.toFixed(3)}</td>
+      <td class="num ${irCls}">${v.ir.toFixed(3)}</td>
+      <td class="num">${(v.positive_ratio*100).toFixed(0)}%</td>
+      ${acCell}
+    </tr>`;
+  }).join("");
+  document.getElementById("factorIC").innerHTML=`
+    <table>
+      <thead><tr><th>因子</th><th style="text-align:right">IC均值</th><th style="text-align:right">IC标准差</th><th style="text-align:right">IR</th><th style="text-align:right">正IC占比</th><th style="text-align:right">秩自相关</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="hint" style="margin-top:6px;">IC = 因子值与下期收益的秩相关；IR = IC均值/IC标准差（>0.5 说明因子较稳定有效）。样本调仓期数：${fa.periods}</div>`;
+
+  // 2) 累计 IC 曲线
+  const fseries=fa.ic_series||[];
+  const dates=fseries.map(s=>s.date);
+  const factors=Object.keys(fa.factors);
+  const cum={};
+  const cumSeries=factors.map(f=>{
+    cum[f]=0;
+    return {
+      name: labelMap[f]||f, type:'line', showSymbol:false,
+      data: fseries.map(s=>{ cum[f]+= (s[f]||0); return +cum[f].toFixed(4); })
+    };
+  });
+  let icChart=echarts.getInstanceByDom(document.getElementById("factorICChart"));
+  if(!icChart) icChart=echarts.init(document.getElementById("factorICChart"));
+  icChart.setOption({
+    tooltip:{trigger:'axis'},
+    legend:{data:factors.map(f=>labelMap[f]||f), top:0, type:'scroll'},
+    grid:{left:50,right:15,top:30,bottom:45},
+    xAxis:{type:'category',data:dates,axisLabel:{show:false}},
+    yAxis:{type:'value',name:'累计IC'},
+    dataZoom:[{type:'inside'},{type:'slider',height:16,bottom:12}],
+    series:cumSeries
+  }, true);
+
+  // 2.5) IC 月度热力图（因子 × 月份）
+  const icm = fa.ic_monthly||{};
+  const icmFactors = Object.keys(icm);
+  if(icmFactors.length){
+    const months = Array.from(new Set(icmFactors.flatMap(f=>Object.keys(icm[f])))).sort();
+    const heat = [];
+    let lo=1, hi=-1;
+    icmFactors.forEach((f,i)=>{ months.forEach((m,j)=>{
+      const v = icm[f][m];
+      if(v!=null){ heat.push([j,i,+v.toFixed(3)]); lo=Math.min(lo,v); hi=Math.max(hi,v); }
+    });});
+    const icmLabels = icmFactors.map(f=>labelMap[f]||f);
+    let icmChart=echarts.getInstanceByDom(document.getElementById("icMonthlyChart"));
+    if(!icmChart) icmChart=echarts.init(document.getElementById("icMonthlyChart"));
+    icmChart.setOption({
+      tooltip:{position:'top',formatter:p=>icmLabels[p.data[1]]+' '+months[p.data[0]]+' : '+p.data[2]},
+      grid:{left:80,right:20,top:10,bottom:60},
+      xAxis:{type:'category',data:months,axisLabel:{rotate:45,fontSize:10}},
+      yAxis:{type:'category',data:icmLabels,axisLabel:{fontSize:11}},
+      visualMap:{min:Math.min(lo,-0.05),max:Math.max(hi,0.05),calculable:true,orient:'horizontal',left:'center',bottom:0,
+        inRange:{color:['#2f6bff','#fff','#e23b3b']},textStyle:{fontSize:10}},
+      series:[{type:'heatmap',data:heat,label:{show:true,fontSize:9},emphasis:{itemStyle:{shadowBlur:6,shadowColor:'rgba(0,0,0,.3)'}}}]
+    }, true);
+  }
+
+  // 2.6) 因子分层组合收益（alphalens 式）
+  const qa = fa.quantile||{};
+  const qaFactors = Object.keys(qa);
+  const qSel = document.getElementById("quantileFactorSel");
+  if(qaFactors.length){
+    qSel.innerHTML = qaFactors.map(f=>`<option value="${f}">${labelMap[f]||f}</option>`).join("");
+    const irRank = [...qaFactors].sort((a,b)=>Math.abs(fa.factors[b].ir)-Math.abs(fa.factors[a].ir));
+    qSel.value = irRank[0];
+    const renderQuantile = ()=>{
+      const f = qSel.value;
+      const qd = qa[f];
+      if(!qd) return;
+      const groups = Object.keys(qd.cum_returns).sort((a,b)=>a-b);
+      const datesAxis = qd.cum_returns[groups[0]].map((_,i)=>i+1);
+      const palette = ['#37a2da','#32c5e9','#67e0b2','#ffdb5c','#e23b3b'];
+      const ser = groups.map((g,idx)=>({
+        name:'第'+g+'组', type:'line', showSymbol:false,
+        data:qd.cum_returns[g].map(v=>+(v*100).toFixed(2)),
+        lineStyle:{width: g==='5'?2.4:1.2, color:palette[idx%palette.length]},
+        itemStyle:{color:palette[idx%palette.length]}
+      }));
+      ser.push({name:'多空价差(5-1)', type:'line', showSymbol:false,
+        data:qd.spread_cum.map(v=>+(v*100).toFixed(2)),
+        lineStyle:{width:2.6,type:'dashed',color:'#9b59b6'}, itemStyle:{color:'#9b59b6'}});
+      let qChart=echarts.getInstanceByDom(document.getElementById("quantileChart"));
+      if(!qChart) qChart=echarts.init(document.getElementById("quantileChart"));
+      qChart.setOption({
+        tooltip:{trigger:'axis',valueFormatter:v=>v+'%'},
+        legend:{data:[...groups.map(g=>'第'+g+'组'),'多空价差(5-1)'],top:0,type:'scroll'},
+        grid:{left:55,right:15,top:32,bottom:45},
+        xAxis:{type:'category',data:datesAxis,name:'调仓期',axisLabel:{fontSize:10}},
+        yAxis:{type:'value',name:'累计收益%'},
+        dataZoom:[{type:'inside'},{type:'slider',height:14,bottom:12}],
+        series:ser
+      }, true);
+      const ga = qd.group_annual_pct;
+      document.getElementById("quantileStats").innerHTML =
+        `分层年化：第1组 ${ga['1']}% → 第5组 ${ga['5']}%（单调越好）；多空价差年化 ${qd.spread_annual_pct}%（>0 说明因子分层有效）。样本调仓期数 ${qd.valid_dates}。`;
+    };
+    qSel.onchange = renderQuantile;
+    renderQuantile();
+  }
+
+  // 3) 行业暴露对比（组合 vs 基准）
+  const port=res.industry_distribution||{};
+  const bench=fa.universe_industry||{};
+  const inds=Array.from(new Set([...Object.keys(port),...Object.keys(bench)]));
+  const pData=inds.map(i=>+((port[i]||0)*100).toFixed(2));
+  const bData=inds.map(i=>+((bench[i]||0)*100).toFixed(2));
+  let expChart=echarts.getInstanceByDom(document.getElementById("indExpChart"));
+  if(!expChart) expChart=echarts.init(document.getElementById("indExpChart"));
+  expChart.setOption({
+    tooltip:{trigger:'axis',valueFormatter:v=>v+'%'},
+    legend:{data:['组合','基准'],top:0},
+    grid:{left:50,right:15,top:30,bottom:60},
+    xAxis:{type:'category',data:inds,axisLabel:{interval:0,rotate:45,fontSize:10}},
+    yAxis:{type:'value',name:'行业权重%'},
+    series:[
+      {name:'组合',type:'bar',data:pData},
+      {name:'基准',type:'bar',data:bData}
+    ]
+  }, true);
+
+  // 4) 因子相关性热力图
+  const corrMat=fa.correlation_matrix||{};
+  const corrNames=Object.keys(corrMat);
+  if(corrNames.length>=2){
+    const heatData=[];
+    const allVals=corrNames.flatMap(a=>Object.values(corrMat[a]||{}));
+    const minV=Math.min(...allVals), maxV=Math.max(...allVals);
+    corrNames.forEach((a,i)=>{ corrNames.forEach((b,j)=>{
+      const v=corrMat[a]&&corrMat[a][b]!=null?corrMat[a][b]:0;
+      heatData.push([i,j,+v.toFixed(3)]);
+    });});
+    const cLabels=corrNames.map(n=>labelMap[n]||n);
+    let corrChart=echarts.getInstanceByDom(document.getElementById("corrHeatChart"));
+    if(!corrChart) corrChart=echarts.init(document.getElementById("corrHeatChart"));
+    corrChart.setOption({
+      tooltip:{formatter:p=>p.data[2]},
+      grid:{left:70,right:30,top:10,bottom:40},
+      xAxis:{type:'category',data:cLabels,position:'top',axisLabel:{rotate:30,fontSize:11}},
+      yAxis:{type:'category',data:cLabels,axisLabel:{fontSize:11}},
+      visualMap:{min:minV,max:maxV,calculable:true,orient:'horizontal',left:'center',bottom:0,
+        inRange:{color:['#73b9ff','#fff','#ff6b6b']},textStyle:{fontSize:10}},
+      series:[{type:'heatmap',data:heatData,label:{show:true,fontSize:10},emphasis:{label:{fontSize:12}}}]
+    }, true);
+  }
+
+  // 5) IC 衰减曲线
+  const decay=fa.ic_decay||[];
+  if(decay.length){
+    const dFactors=factors.filter(f=>decay.some(d=>d[f]!=null));
+    let decayChart=echarts.getInstanceByDom(document.getElementById("icDecayChart"));
+    if(!decayChart) decayChart=echarts.init(document.getElementById("icDecayChart"));
+    decayChart.setOption({
+      tooltip:{trigger:'axis',valueFormatter:v=>parseFloat(v).toFixed(3)},
+      legend:{data:dFactors.map(f=>labelMap[f]||f),top:0},
+      grid:{left:50,right:15,top:30,bottom:40},
+      xAxis:{type:'category',data:decay.map(d=>d.label),name:'前向期数'},
+      yAxis:{type:'value',name:'IC'},
+      series:dFactors.map(f=>({name:labelMap[f]||f,type:'line',symbol:'circle',
+        data:decay.map(d=>d[f]!=null?+d[f].toFixed(3):null)}))
+    }, true);
+  }
+
+  // 6) Brinson 归因
+  const br=fa.brinson||{};
+  if(br.allocation_effect!=null){
+    const alloc=br.allocation_effect*100,sel=br.selection_effect*100,inter=br.interaction_effect*100,tex=br.total_excess*100;
+    let brChart=echarts.getInstanceByDom(document.getElementById("brinsonChart"));
+    if(!brChart) brChart=echarts.init(document.getElementById("brinsonChart"));
+    brChart.setOption({
+      tooltip:{trigger:'axis',valueFormatter:v=>v.toFixed(3)+'%'},
+      grid:{left:60,right:15,top:20,bottom:30},
+      xAxis:{type:'category',data:['配置效应','选股效应','交互效应','总超额']},
+      yAxis:{name:'超额收益%'},
+      series:[{type:'bar',
+        data:[
+          {value:+alloc.toFixed(3),itemStyle:{color:alloc>=0?'#cf1322':'#237804'}},
+          {value:+sel.toFixed(3),itemStyle:{color:sel>=0?'#cf1322':'#237804'}},
+          {value:+inter.toFixed(3),itemStyle:{color:inter>=0?'#cf1322':'#237804'}},
+          {value:+tex.toFixed(3),itemStyle:{color:tex>=0?'#cf1322':'#237804'}},
+        ],
+        label:{show:true,formatter:'{c}%',fontSize:11}
+      }]
+    }, true);
+  }
+}
+
+// 历史
+async function loadHistory(){
+  try{
+    const r=await fetch(`${API}/strategy/backtests?limit=30`);
+    const list=await r.json();
+    const tb=document.getElementById("histBody");
+    if(!list.length){ tb.innerHTML='<tr><td colspan="10" class="loading">暂无回测记录</td></tr>'; return; }
+    tb.innerHTML=list.map(h=>`
+      <tr data-id="${h.id}">
+        <td>${h.id}</td><td>${h.symbol}</td><td>${h.strategy_name}</td>
+        <td>${h.start_date}~${h.end_date}</td>
+        <td class="num ${cls(h.total_return)}">${fmtPct(h.total_return)}</td>
+        <td class="num ${cls(h.annual_return)}">${fmtPct(h.annual_return)}</td>
+        <td class="num down">${fmtPct(h.max_drawdown)}</td>
+        <td class="num">${h.sharpe.toFixed(2)}</td>
+        <td class="num">${(h.win_rate*100).toFixed(1)}%</td>
+        <td class="num">${h.trade_count}</td>
+        <td style="text-align:right"><button class="btn sm" onclick="event.stopPropagation();gotoPaper(${h.id})">模拟盘</button></td>
+      </tr>`).join("");
+    tb.querySelectorAll("tr[data-id]").forEach(tr=>{
+      tr.onclick=()=>viewBacktest(parseInt(tr.dataset.id,10));
+    });
+  }catch(e){}
+}
+
+// 点击历史行 → 拉取完整回测详情并渲染
+async function viewBacktest(id){
+  try{
+    const r=await fetch(`${API}/strategy/backtests/${id}`);
+    if(!r.ok){ const e=await r.json().catch(()=>({detail:r.statusText})); throw new Error(e.detail||"未找到该回测"); }
+    const res=await r.json();
+    renderResult(res);
+    switchTab('tab-result');
+    document.querySelectorAll('#histBody tr').forEach(tr=>tr.classList.remove('selected'));
+    const row=document.querySelector(`#histBody tr[data-id="${id}"]`);
+    if(row) row.classList.add('selected');
+    document.getElementById('resultCard').scrollIntoView({behavior:'smooth', block:'start'});
+  }catch(e){
+    alert('查看回测详情失败：'+e.message);
+  }
+}
+
+// 从回测历史一键进入模拟盘
+function gotoPaper(id){ window.location.href = '/paper.html?from_backtest='+id; }
+
+// —— 参数网格寻优 ——
+document.getElementById("optimBtn").onclick = async ()=>{
+  if(isRunning) return;
+  const sym = currentSymbol || document.getElementById("symbol").value.trim().split(/\s+/)[0];
+  if(!sym){ alert("请先选择回测标的"); return; }
+  const key = document.getElementById("strategy").value;
+  const meta = (document.getElementById("strategy")._list||[]).find(s=>s.key===key);
+  if(!meta || meta.multi_asset){ alert("参数寻优暂仅支持单标的策略"); return; }
+
+  // 让用户确认参数范围：用 prompt 简化交互（为每个参数输入最小值-最大值-步数）
+  const schema=meta.param_schema||[];
+  if(!schema.length){ alert("该策略无可调参数"); return; }
+  const ranges={};
+  for(const p of schema){
+    const msg=`参数「${p.label}」的搜索范围：\n格式: 起始,结束,步数 (例如 5,60,5 表示 5~60每5一步)`;
+    const input=prompt(msg, `${p.min||p.default},${p.max||p.default},${Math.ceil(((p.max||p.default)-(p.min||p.default))/5)+1}`);
+    if(!input) return;
+    const parts=input.split(",").map(v=>parseFloat(v.trim()));
+    if(parts.length<2 || isNaN(parts[0]) || isNaN(parts[1])){ alert("输入格式错误，请用逗号分隔数字"); return; }
+    const [s,e,n]=parts; const step=parts[2]||1;
+    const vals=[]; for(let v=s; v<=e+0.0001; v+=step) vals.push(p.type==='int'?Math.round(v):+v.toFixed(4));
+    ranges[p.key]=vals;
+  }
+  const total=Object.values(ranges).reduce((a,v)=>a*v.length,1);
+  if(!confirm(`将遍历 ${total} 组参数组合，可能耗时较长。确定继续？`)) return;
+
+  const btn=document.getElementById("optimBtn"), hint=document.getElementById("runHint");
+  isRunning=true; btn.disabled=true; btn.innerHTML='<span class="spin"></span>寻优中…';
+  hint.textContent=`正在网格搜索 ${total} 组参数，请耐心等待…`;
+  const ctrl=new AbortController(); const timer=setTimeout(()=>ctrl.abort(), 600000);
+  try{
+    const r=await fetch(`${API}/strategy/optimize`,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({symbol:sym,start:document.getElementById("start").value,end:document.getElementById("end").value,
+        strategy:key, param_ranges:ranges,
+        initial_cash:parseFloat(document.getElementById("cash").value||1000000),
+        commission:parseFloat(document.getElementById("commission").value||0.0003),
+        slippage:parseFloat(document.getElementById("slippage").value||0)}),signal:ctrl.signal});
+    if(!r.ok){ const e=await r.json().catch(()=>({detail:r.statusText})); throw new Error(e.detail||"寻优失败"); }
+    const results=await r.json();
+    renderOptimizeResults(results, meta, sym);
+  }catch(e){ hint.innerHTML=`<span class="err">${e.name==='AbortError'?'寻优超时(>10min)':e.message}</span>`; }
+  finally{ clearTimeout(timer); isRunning=false; btn.disabled=false; btn.textContent="参数寻优"; }
+};
+
+function renderOptimizeResults(results, meta, sym){
+  if(!results.length){ document.getElementById("optimStatus").textContent="无有效结果 (所有参数组合均失败)"; return; }
+  document.getElementById("optimStatus").textContent=`${results.length} 组有效结果，按夏普降序排列 · 标的: ${sym}`;
+  const tb=document.getElementById("optimTable").querySelector("tbody");
+  tb.innerHTML=results.map((r,i)=>`
+    <tr style="cursor:pointer;" data-idx="${i}" class="optim-row">
+      <td>#${i+1}</td>
+      <td>${Object.entries(r.params).map(([k,v])=>`${k}=${v}`).join(", ")}</td>
+      <td class="num ${cls(r.total_return)}">${fmtPct(r.total_return)}</td>
+      <td class="num ${cls(r.annual_return)}">${fmtPct(r.annual_return)}</td>
+      <td class="num">${r.sharpe.toFixed(2)}</td>
+      <td class="num down">${fmtPct(r.max_drawdown)}</td>
+      <td class="num">${(r.win_rate*100).toFixed(1)}%</td>
+      <td class="num">${r.trade_count}</td>
+    </tr>
+  `).join("");
+  // 点击某行 → 用该组参数运行一次完整回测并跳转
+  tb.querySelectorAll(".optim-row").forEach(row=>{
+    row.onclick=async()=>{
+      const idx=parseInt(row.dataset.idx);
+      const p=results[idx].params;
+      // 填充参数输入 + 运行回测
+      const key=document.getElementById("strategy").value;
+      Object.entries(p).forEach(([k,v])=>{
+        const el=document.getElementById("p_"+k);
+        if(el) el.value=v;
+      });
+      document.getElementById("runBtn").click();
+    };
+  });
+  switchTab('tab-optim');
+}
+
+loadStrategies();
+loadHistory();
+</script>
+</body>
+</html>

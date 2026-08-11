@@ -1,0 +1,65 @@
+# 生产环境部署 — Docker Compose
+# 开发环境无需 Docker，直接 `uvicorn app.main:app` 用 SQLite 即可运行。
+# 安装 Docker 后，本文件可一键拉起 全栈（Postgres+TimescaleDB / Redis / backend / frontend）。
+#
+# 使用：
+#   docker compose up -d
+#   # 后端 http://localhost:8000  ，前端 http://localhost:3000
+
+services:
+  postgres:
+    image: timescale/timescaledb:2.16.1-pg16
+    container_name: quant-postgres
+    environment:
+      POSTGRES_USER: quant
+      POSTGRES_PASSWORD: quant
+      POSTGRES_DB: quant
+    ports:
+      - "5432:5432"
+    volumes:
+      - quant_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quant"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: quant-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+    container_name: quant-backend
+    environment:
+      QUANT_DATABASE_URL: postgresql://quant:quant@postgres:5432/quant
+      QUANT_CORS_ORIGINS: "http://localhost:3000"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: quant-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    command: npx serve -s dist -l 3000
+
+volumes:
+  quant_pgdata:

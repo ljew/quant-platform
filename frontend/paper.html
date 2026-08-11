@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>模拟盘 · Paper Trading</title>
+<script src="echarts.min.js"></script>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  :root{
+    --bg:#f5f7fa; --card:#fff; --border:#e8eaed; --text:#1a1a2e; --text2:#666;
+    --red:#cf1322; --green:#237804; --blue:#1557b0; --accent:#2f54eb; --accent-l:#e6f0ff;
+    --shadow:0 1px 3px rgba(0,0,0,.06),0 2px 8px rgba(0,0,0,.04);
+  }
+  body{ font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); font-size:14px; }
+  header{ background:linear-gradient(135deg,#0d1b2a,#1b2838); color:#fff; padding:18px 32px; display:flex; align-items:center; justify-content:space-between; }
+  header .brand{ display:flex; align-items:center; gap:12px; }
+  header .logo{ width:34px; height:34px; background:var(--accent); border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:18px; }
+  header h1{ font-size:20px; font-weight:700; }
+  header .env{ font-size:12px; color:#7ca0cc; }
+  nav{ display:flex; gap:6px; margin-left:16px; }
+  nav a{ color:#cdd9ec; text-decoration:none; font-size:13px; padding:6px 12px; border-radius:6px; }
+  nav a.active, nav a:hover{ color:#fff; background:rgba(255,255,255,.12); }
+  .container{ max-width:1280px; margin:0 auto; padding:24px; }
+  .card{ background:var(--card); border:1px solid var(--border); border-radius:10px; padding:20px; box-shadow:var(--shadow); margin-bottom:20px; }
+  .card h2, .card h3{ font-size:15px; margin:0 0 16px; display:flex; align-items:center; gap:8px; }
+  .card h2::before, .card h3::before{ content:""; width:8px; height:8px; background:var(--accent); border-radius:50%; }
+  label{ display:block; font-size:12px; color:var(--text2); margin:10px 0 4px; }
+  input,select,textarea{ width:100%; padding:9px 12px; border:1px solid var(--border); border-radius:8px; font-size:14px; background:#fff; outline:none; }
+  input:focus,select:focus,textarea:focus{ border-color:var(--accent); }
+  .row{ display:flex; gap:16px; flex-wrap:wrap; }
+  .row>div{ flex:1; min-width:170px; }
+  button{ background:var(--accent); color:#fff; border:none; border-radius:8px; padding:11px 28px; font-size:14px; font-weight:600; cursor:pointer; transition:.15s; }
+  button:hover{ background:#1d3ecf; }
+  button.ghost{ background:var(--accent-l); color:var(--accent); }
+  button.ghost:hover{ background:#d6e4ff; }
+  button.danger{ background:#fff1f0; color:var(--red); }
+  button.sm{ padding:6px 14px; font-size:13px; }
+  table{ width:100%; border-collapse:collapse; font-size:13px; }
+  th,td{ padding:9px 12px; text-align:left; border-bottom:1px solid var(--border); }
+  th{ color:var(--text2); font-weight:600; font-size:12px; }
+  td.num{ font-variant-numeric:tabular-nums; text-align:right; }
+  .up{ color:var(--red); } .down{ color:var(--green); } .flat{ color:var(--text2); }
+  .buy{ color:var(--red); font-weight:600; } .sell{ color:var(--green); font-weight:600; }
+  .tag{ display:inline-block; padding:1px 7px; border-radius:10px; font-size:11px; background:var(--accent-l); color:var(--accent); }
+  .muted{ color:var(--text2); font-size:12px; }
+  .grid{ display:flex; gap:16px; flex-wrap:wrap; }
+  .kpi{ flex:1; min-width:140px; background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px 18px; box-shadow:var(--shadow); }
+  .kpi .v{ font-size:22px; font-weight:700; }
+  .kpi .k{ font-size:12px; color:var(--text2); }
+  .task{ display:flex; align-items:center; justify-content:space-between; border:1px solid var(--border); border-radius:10px; padding:14px 16px; margin-bottom:12px; box-shadow:var(--shadow); }
+  .task .meta{ font-size:12px; color:var(--text2); }
+  #detail{ display:none; }
+  .switch{ position:relative; display:inline-block; width:38px; height:20px; }
+  .switch input{ opacity:0; width:0; height:0; }
+  .slider{ position:absolute; cursor:pointer; inset:0; background:#ccc; border-radius:20px; transition:.2s; }
+  .slider:before{ content:""; position:absolute; height:16px; width:16px; left:2px; bottom:2px; background:#fff; border-radius:50%; transition:.2s; }
+  .switch input:checked + .slider{ background:var(--accent); }
+  .switch input:checked + .slider:before{ transform:translateX(18px); }
+  .err{ color:var(--red); font-size:13px; padding:10px; background:#fff1f0; border-radius:8px; }
+  .hidden{ display:none; }
+  .code{ background:#f3f4f6; padding:1px 5px; border-radius:4px; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="logo">📈</div>
+    <div>
+      <h1>量化投研平台</h1>
+      <div class="env">Quant Research Platform · 模拟盘</div>
+    </div>
+  </div>
+  <nav>
+    <a href="/">行情看板</a>
+    <a href="/backtest.html">策略回测</a>
+    <a href="/paper.html" class="active">模拟盘</a>
+  </nav>
+</header>
+<div class="container">
+  <div id="presetBanner" class="hidden" style="background:var(--accent-l);border:1px solid var(--accent);color:var(--accent);padding:12px 16px;border-radius:10px;margin-bottom:20px;font-size:13px;"></div>
+
+  <div class="card">
+    <h2>新建模拟任务</h2>
+    <div class="row">
+      <div><label>任务名称</label><input id="f_name" placeholder="如 茅台缠论模拟"></div>
+      <div><label>策略</label><select id="f_strategy"></select></div>
+    </div>
+    <div class="row">
+      <div id="symBox"><label>标的代码（单标的，逗号分隔）</label><input id="f_symbols" placeholder="sh600519"></div>
+      <div id="idxBox" style="display:none;"><label>指数代码（组合选股，如 000906 中证800）</label><input id="f_index" placeholder="000906"></div>
+      <div><label>初始资金（元）</label><input id="f_cash" type="number" value="1000000"></div>
+      <div><label>起始日期（建仓日，留空=今日）</label><input id="f_start" placeholder="2023-01-01"></div>
+    </div>
+    <div class="row">
+      <div><label>参数 JSON（可选，覆盖默认）</label><input id="f_params" placeholder='{}'></div>
+      <div style="display:flex;align-items:flex-end;gap:14px;">
+        <label style="margin:0;display:flex;align-items:center;gap:6px;"><span class="switch"><input type="checkbox" id="f_enabled"><span class="slider"></span></span>加入自动定时</label>
+        <button onclick="createTask()">创建并运行一次</button>
+      </div>
+    </div>
+    <div id="createErr" class="err"></div>
+  </div>
+
+  <div class="card">
+    <h2>模拟任务列表</h2>
+    <div id="taskList"></div>
+  </div>
+
+  <div class="card" id="detail">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <h2 id="d_title">任务详情</h2>
+      <button class="ghost sm" onclick="document.getElementById('detail').style.display='none'">收起</button>
+    </div>
+    <div class="grid" id="d_kpis"></div>
+    <div id="d_chart" style="width:100%;height:320px;margin-top:14px;"></div>
+    <h3 style="font-size:14px;margin:18px 0 6px;">当前持仓</h3>
+    <table id="d_positions"><thead><tr><th>标的</th><th>股数</th><th>成本</th></tr></thead><tbody></tbody></table>
+    <h3 style="font-size:14px;margin:18px 0 6px;">模拟成交明细</h3>
+    <table id="d_trades"><thead><tr><th>日期</th><th>标的</th><th>方向</th><th>价格</th><th>股数</th><th>损益</th><th>信号</th><th>信号说明</th></tr></thead><tbody></tbody></table>
+    <div id="d_err" class="err"></div>
+
+    <div id="d_hedgeBox" style="display:none;margin-top:18px;border-top:1px dashed var(--border);padding-top:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <h3 style="font-size:14px;margin:0;">市场中性 · 可交易对冲</h3>
+        <button class="ghost sm" id="d_hedgeBtn" onclick="analyzeHedge(currentTaskId)">用股指期货对冲分析</button>
+      </div>
+      <div id="d_hedgeErr" class="err"></div>
+      <div id="d_hedgeChart" style="width:100%;height:320px;margin-top:10px;"></div>
+      <table id="d_hedgeMetrics" style="margin-top:10px;"></table>
+      <div id="d_hedgeCost" class="muted" style="margin-top:8px;"></div>
+      <div id="d_hedgeNotes" class="muted" style="margin-top:8px;white-space:pre-line;line-height:1.7;"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const API = "/api/v1/paper";
+const BACKEND = "/api/v1";
+let STRATS = {};
+let currentTaskId = null;
+const fmtPct = v => (v>=0?'+':'')+(v*100).toFixed(2)+'%';
+const cls = v => v>0?'up':(v<0?'down':'flat');
+const fmtMoney = v => '¥'+Number(v).toLocaleString(undefined,{maximumFractionDigits:0});
+function signalLabel(t){
+  const m={buy1:'一买',buy2:'二买',buy3:'三买',sell1:'一卖',sell2:'二卖',sell3:'三卖',
+    '选股买入':'选股买入','调出清仓':'调出清仓','金叉买入':'金叉买入','死叉卖出':'死叉卖出',
+    '突破买入':'突破买入','跌破卖出':'跌破卖出','超卖买入':'超卖买入','超买卖出':'超买卖出',
+    '均线多头买入':'均线多头','均线空头卖出':'均线空头','动量买入':'动量买入','动量卖出':'动量卖出'};
+  return m[t]||t||'—';
+}
+
+async function loadStrategies(){
+  const r = await fetch(API+'/strategies'); const list = await r.json();
+  STRATS = {}; const sel = document.getElementById('f_strategy');
+  sel.innerHTML = list.map(s=>{STRATS[s.key]=s;return `<option value="${s.key}">${s.name}（${s.kind==='portfolio'?'组合':'单标的'}）</option>`;}).join('');
+  sel.onchange = syncKindBox; syncKindBox();
+}
+function syncKindBox(){
+  const s = STRATS[document.getElementById('f_strategy').value];
+  document.getElementById('symBox').style.display = s&&s.kind==='single'?'block':'none';
+  document.getElementById('idxBox').style.display = s&&s.kind==='portfolio'?'block':'none';
+}
+
+async function loadTasks(){
+  const r = await fetch(API+'/tasks'); const list = await r.json();
+  const box = document.getElementById('taskList');
+  if(!list.length){box.innerHTML='<div class="muted">暂无任务，先在上方创建一个。</div>';return;}
+  box.innerHTML = list.map(t=>`
+    <div class="task">
+      <div>
+        <div><b>${t.name}</b> <span class="tag">${t.kind==='portfolio'?'组合':'单标的'}</span>
+          ${t.enabled?'<span class="tag" style="background:#e8f7ee;color:#18a058;">自动</span>':''}</div>
+        <div class="meta">${t.symbols||t.index_code||''} · 权益 ${fmtMoney(t.equity)} · 收益 <span class="${cls(t.pnl)}">${fmtPct(t.pnl_pct)}</span> · 持仓 ${t.positions_count} · 末次 ${t.last_run_at?t.last_run_at.slice(0,16):'未运行'}</div>
+        ${t.error_msg?`<div class="err">⚠ ${t.error_msg}</div>`:''}
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <label class="switch" title="自动定时"><input type="checkbox" ${t.enabled?'checked':''} onchange="toggleTask(${t.id})"><span class="slider"></span></label>
+        <button class="ghost sm" onclick="runTask(${t.id})">运行</button>
+        <button class="ghost sm" onclick="resetTask(${t.id})">重置</button>
+        <button class="sm" onclick="viewTask(${t.id})">详情</button>
+        <button class="danger sm" onclick="delTask(${t.id})">删除</button>
+      </div>
+    </div>`).join('');
+}
+
+async function createTask(){
+  const el = document.getElementById('createErr'); el.textContent='';
+  const s = STRATS[document.getElementById('f_strategy').value];
+  const body = {
+    name: document.getElementById('f_name').value.trim(),
+    strategy_key: document.getElementById('f_strategy').value,
+    kind: s? s.kind : 'single',
+    symbols: document.getElementById('f_symbols').value.trim(),
+    index_code: document.getElementById('f_index').value.trim(),
+    params_json: document.getElementById('f_params').value.trim()||'{}',
+    initial_cash: parseFloat(document.getElementById('f_cash').value)||1000000,
+    start_date: document.getElementById('f_start').value.trim()||null,
+    enabled: document.getElementById('f_enabled').checked,
+  };
+  if(!body.name){el.textContent='请填写任务名称';return;}
+  try{
+    const r = await fetch(API+'/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j = await r.json();
+    if(!r.ok){el.textContent=j.detail||'创建失败';return;}
+    await loadTasks();
+    runTask(j.id); // 创建后立即跑一次
+  }catch(e){el.textContent='请求异常: '+e;}
+}
+
+function runTask(id){ fetch(API+`/tasks/${id}/run`,{method:'POST'}).then(()=>loadTasks()); }
+function toggleTask(id){ fetch(API+`/tasks/${id}/toggle`,{method:'POST'}).then(()=>loadTasks()); }
+function resetTask(id){ if(confirm('确认重置该任务的成交与净值？')) fetch(API+`/tasks/${id}/reset`,{method:'POST'}).then(()=>{loadTasks();document.getElementById('detail').style.display='none';}); }
+function delTask(id){ if(confirm('确认删除该任务？')) fetch(API+`/tasks/${id}`,{method:'DELETE'}).then(()=>{loadTasks();document.getElementById('detail').style.display='none';}); }
+
+async function viewTask(id){
+  const r = await fetch(API+`/tasks/${id}`); const d = await r.json();
+  document.getElementById('detail').style.display='block';
+  document.getElementById('d_title').textContent = d.name+' · 详情';
+  currentTaskId = id;
+  document.getElementById('d_hedgeBox').style.display = d.kind==='portfolio'?'block':'none';
+  document.getElementById('d_hedgeErr').textContent='';
+  document.getElementById('d_hedgeChart').innerHTML='';
+  document.getElementById('d_hedgeMetrics').innerHTML='';
+  document.getElementById('d_hedgeCost').innerHTML='';
+  document.getElementById('d_hedgeNotes').innerHTML='';
+  document.getElementById('d_err').textContent = d.error_msg?('⚠ '+d.error_msg):'';
+  document.getElementById('d_kpis').innerHTML = `
+    <div class="kpi"><div class="k">总权益</div><div class="v">${fmtMoney(d.equity)}</div></div>
+    <div class="kpi"><div class="k">累计盈亏</div><div class="v ${cls(d.pnl)}">${fmtMoney(d.pnl)}</div></div>
+    <div class="kpi"><div class="k">收益率</div><div class="v ${cls(d.pnl_pct)}">${fmtPct(d.pnl_pct)}</div></div>
+    <div class="kpi"><div class="k">可用现金</div><div class="v">${fmtMoney(d.cash)}</div></div>
+    <div class="kpi"><div class="k">持仓市值</div><div class="v">${fmtMoney(d.market_value)}</div></div>`;
+  // 净值曲线
+  const chart = echarts.init(document.getElementById('d_chart'));
+  chart.setOption({
+    animation:false, tooltip:{trigger:'axis'},
+    legend:{data:['账户权益'],top:0},
+    grid:{left:60,right:20,top:36,bottom:30},
+    xAxis:{type:'category',data:d.curve.map(c=>c.date)},
+    yAxis:{type:'value',scale:true},
+    series:[
+      {name:'账户权益',type:'line',data:d.curve.map(c=>c.equity),showSymbol:false,lineStyle:{width:2}},
+    ]
+  });
+  // 持仓
+  const posBody = document.querySelector('#d_positions tbody');
+  const pos = Object.entries(d.positions||{});
+  posBody.innerHTML = pos.length? pos.map(([s,p])=>`<tr><td>${s}</td><td>${Math.round(p.shares)}</td><td>${p.cost.toFixed(2)}</td></tr>`).join('') : '<tr><td colspan="3" class="muted">空仓</td></tr>';
+  // 成交
+  const trBody = document.querySelector('#d_trades tbody');
+  trBody.innerHTML = (d.trades||[]).slice().reverse().map(t=>{
+    const pc=t.pnl||0, pcl=pc>0?'up':(pc<0?'down':'flat'), pcs=pc!==0?(pc>0?'+':'')+pc.toFixed(0):'—';
+    const sym = t.symbol?`<td>${t.symbol}</td>`:'';
+    return `<tr>
+      <td>${t.date}</td>${sym}
+      <td class="${t.side==='BUY'?'buy':'sell'}">${t.side==='BUY'?'买入':'卖出'}</td>
+      <td class="num">${t.price.toFixed(2)}</td>
+      <td class="num">${Math.round(t.shares)}</td>
+      <td class="num ${pcl}">${pcs}</td>
+      <td>${signalLabel(t.signal_type)}</td>
+      <td class="muted">${t.signal_reason||''}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="8" class="muted">暂无成交</td></tr>';
+}
+
+async function analyzeHedge(id){
+  const errEl = document.getElementById('d_hedgeErr');
+  errEl.textContent = '分析中（拉取股指期货行情，约 1~3 秒）…';
+  try{
+    const r = await fetch('/api/v1/hedge/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task_id:id})});
+    const d = await r.json();
+    if(!r.ok){errEl.textContent = d.detail||'分析失败';return;}
+    errEl.textContent='';
+    renderHedge(d);
+  }catch(e){errEl.textContent='请求异常: '+e;}
+}
+
+function renderHedge(d){
+  const s = d.series;
+  // 三曲线
+  const chart = echarts.init(document.getElementById('d_hedgeChart'));
+  chart.setOption({
+    animation:false, tooltip:{trigger:'axis'},
+    legend:{data:['多头组合','理论对冲 (OLS)','可交易对冲 (期货)'],top:0},
+    grid:{left:64,right:20,top:36,bottom:30},
+    xAxis:{type:'category',data:s.dates},
+    yAxis:{type:'value',scale:true},
+    series:[
+      {name:'多头组合',type:'line',data:s.long_only,showSymbol:false,lineStyle:{width:1.5,color:'#e23b3b'},itemStyle:{color:'#e23b3b'}},
+      {name:'理论对冲 (OLS)',type:'line',data:s.theoretical,showSymbol:false,lineStyle:{width:2,color:'#2f6bff'},itemStyle:{color:'#2f6bff'}},
+      {name:'可交易对冲 (期货)',type:'line',data:s.tradable,showSymbol:false,lineStyle:{width:2,color:'#18a058'},itemStyle:{color:'#18a058'}},
+    ]
+  });
+  // 指标对比表
+  const rows=[['多头组合','long_only'],['理论对冲 (OLS)','theoretical'],['可交易对冲 (期货)','tradable']];
+  let html='<thead><tr><th>方案</th><th>总收益</th><th>年化</th><th>夏普</th><th>最大回撤</th></tr></thead><tbody>';
+  for(const [name,key] of rows){
+    const m=d.metrics[key];
+    html+=`<tr><td>${name}</td>`
+      +`<td class="${cls(m.total_return)}">${fmtPct(m.total_return)}</td>`
+      +`<td class="${cls(m.annual_return)}">${fmtPct(m.annual_return)}</td>`
+      +`<td>${m.sharpe.toFixed(2)}</td>`
+      +`<td class="${cls(m.max_drawdown)}">${fmtPct(m.max_drawdown)}</td></tr>`;
+  }
+  html+='</tbody>';
+  document.getElementById('d_hedgeMetrics').innerHTML=html;
+  // 成本分解
+  const c=d.cost;
+  document.getElementById('d_hedgeCost').innerHTML =
+    `成本分解：移仓手续费合计 <b>${fmtMoney(c.roll_commission_total)}</b> · 平均持仓合约 <b>${c.avg_contracts}</b> 手 · `
+    +`保证金峰值 <b>${fmtMoney(c.max_margin)}</b> · 残差β(可交易) <b>${c.residual_beta_tradable}</b>（越接近 0 对冲越干净）`;
+  // 说明
+  document.getElementById('d_hedgeNotes').textContent = d.notes.join('\n');
+}
+
+// 从回测历史一键进入模拟盘：预填表单并自动创建运行
+function deriveIndex(res){
+  if(res.index_code) return res.index_code;
+  const s = res.index_symbol || (STRATS[res.strategy_key] && STRATS[res.strategy_key].index_symbol) || "";
+  return s.replace(/^sh/i,"") || "000906";
+}
+async function applyBacktestPreset(){
+  const btId = new URLSearchParams(location.search).get("from_backtest");
+  if(!btId) return;
+  const flag = "paper_preset_"+btId;
+  const banner = document.getElementById("presetBanner");
+  if(sessionStorage.getItem(flag)){
+    banner.classList.remove("hidden");
+    banner.textContent = `已根据回测 #${btId} 创建过模拟任务（刷新不再重复创建），结果见下方任务列表。`;
+    return;
+  }
+  banner.classList.remove("hidden");
+  banner.textContent = `正在根据回测 #${btId} 预填并创建模拟任务…`;
+  try{
+    const r = await fetch(`${BACKEND}/strategy/backtests/${btId}`);
+    if(!r.ok){ banner.textContent = `回测 #${btId} 详情获取失败（${r.status}）`; return; }
+    const res = await r.json();
+    if(!STRATS[res.strategy_key]){
+      banner.textContent = `回测 #${btId} 使用的策略「${res.strategy_key}」已不在当前策略库，无法进入模拟盘。`;
+      return;
+    }
+    document.getElementById("f_name").value = `${res.strategy_name||res.strategy_key}（回测#${btId}）`;
+    document.getElementById("f_strategy").value = res.strategy_key;
+    syncKindBox();
+    if(res.multi_asset){
+      document.getElementById("f_index").value = deriveIndex(res);
+      document.getElementById("f_symbols").value = "";
+    } else {
+      document.getElementById("f_symbols").value = res.symbol || "";
+      document.getElementById("f_index").value = "";
+    }
+    document.getElementById("f_cash").value = res.initial_cash || 1000000;
+    document.getElementById("f_start").value = res.start || "";
+    document.getElementById("f_params").value = JSON.stringify(res.params || {});
+    document.getElementById("f_enabled").checked = false;
+    document.querySelector(".container").scrollIntoView({behavior:"smooth"});
+    sessionStorage.setItem(flag, "1");
+    await createTask();   // 自动创建并运行
+    banner.textContent = `已根据回测 #${btId} 创建模拟任务并开始运行，结果见下方任务列表。`;
+  }catch(e){
+    banner.textContent = `预填失败: ${e}`;
+  }
+}
+
+loadStrategies().then(()=>{ loadTasks(); applyBacktestPreset(); });
+</script>
+</body>
+</html>
