@@ -40,6 +40,10 @@ class Stock(Base):
     market_cap: Mapped[float | None] = mapped_column(Float, nullable=True)  # 总市值（亿元）
     pe_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
     pb: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 质量/成长基本面快照（来自 akshare 业绩报表，由 scripts/seed_fundamentals.py 入库）
+    roe: Mapped[float | None] = mapped_column(Float, nullable=True)          # 净资产收益率(%)
+    revenue_yoy: Mapped[float | None] = mapped_column(Float, nullable=True)  # 营业总收入同比增长(%)
+    profit_yoy: Mapped[float | None] = mapped_column(Float, nullable=True)   # 净利润同比增长(%)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def __repr__(self):

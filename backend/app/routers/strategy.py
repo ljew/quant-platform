@@ -150,7 +150,8 @@ def _run_portfolio(db, req, meta, params):
     # 4) 标的截面属性（行业/市值/估值），供中性化与估值因子使用
     syms = list(data.keys())
     attrs_rows = db.execute(
-        select(Stock.symbol, Stock.industry, Stock.market_cap, Stock.pe_ttm, Stock.pb)
+        select(Stock.symbol, Stock.industry, Stock.market_cap, Stock.pe_ttm, Stock.pb,
+               Stock.roe, Stock.revenue_yoy, Stock.profit_yoy)
         .where(Stock.symbol.in_(syms))
     ).all()
     attributes = {
@@ -159,6 +160,9 @@ def _run_portfolio(db, req, meta, params):
             "market_cap": r.market_cap,
             "pe_ttm": r.pe_ttm,
             "pb": r.pb,
+            "roe": r.roe,
+            "revenue_yoy": r.revenue_yoy,
+            "profit_yoy": r.profit_yoy,
         }
         for r in attrs_rows
     }

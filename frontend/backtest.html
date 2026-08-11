@@ -759,7 +759,8 @@ function renderFactorAnalysis(res){
   // 1) 因子 IC/IR 表
   const labelMap={momentum:"动量", reversal:"反转", low_vol:"低波动", value:"价值(估值)",
     size:"小市值", beta:"BETA", idio_vol:"特异度", skewness:"偏度", tail_risk:"尾部风险",
-    ep:"EP(盈利收益率)", bp:"BP(账面价值比)"};
+    ep:"EP(盈利收益率)", bp:"BP(账面价值比)",
+    roe:"ROE", revenue_yoy:"营收增速", profit_yoy:"利润增速"};
   const ac=fa.factor_autocorr||{};
   const rows=Object.entries(fa.factors).map(([k,v])=>{
     const nm=labelMap[k]||k;

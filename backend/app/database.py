@@ -66,6 +66,9 @@ def _migrate_sqlite() -> None:
         "market_cap": "FLOAT",
         "pe_ttm": "FLOAT",
         "pb": "FLOAT",
+        "roe": "FLOAT",
+        "revenue_yoy": "FLOAT",
+        "profit_yoy": "FLOAT",
     }
     # paper_tasks 表（模拟盘）演进补列
     paper_tasks_expected = {
