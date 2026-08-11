@@ -120,6 +120,18 @@
     <table id="d_trades"><thead><tr><th>日期</th><th>标的</th><th>方向</th><th>价格</th><th>股数</th><th>损益</th><th>信号</th><th>信号说明</th></tr></thead><tbody></tbody></table>
     <div id="d_err" class="err"></div>
 
+    <div id="d_factorBox" style="display:none;margin-top:18px;border-top:1px dashed var(--border);padding-top:14px;">
+      <h3 style="font-size:14px;margin:0 0 8px;">因子研究与归因（最近一次运行）</h3>
+      <div id="d_factorIC"></div>
+      <div id="d_factorICChart" style="width:100%;height:300px;margin-top:10px;"></div>
+      <h4 style="font-size:13px;margin:14px 0 4px;">IC 月度热力图</h4>
+      <div id="d_icMonthlyChart" style="width:100%;height:320px;"></div>
+      <h4 style="font-size:13px;margin:14px 0 4px;">因子分层组合（多空价差）</h4>
+      <select id="d_quantileFactorSel" class="sel" style="margin-bottom:6px;"></select>
+      <div id="d_quantileChart" style="width:100%;height:320px;"></div>
+      <div id="d_quantileStats" class="muted" style="margin-top:6px;"></div>
+    </div>
+
     <div id="d_hedgeBox" style="display:none;margin-top:18px;border-top:1px dashed var(--border);padding-top:14px;">
       <div style="display:flex;align-items:center;justify-content:space-between;">
         <h3 style="font-size:14px;margin:0;">市场中性 · 可交易对冲</h3>
@@ -263,6 +275,75 @@ async function viewTask(id){
       <td class="muted">${t.signal_reason||''}</td>
     </tr>`;
   }).join('') || '<tr><td colspan="8" class="muted">暂无成交</td></tr>';
+  // 因子研究（仅组合任务）
+  renderPaperFactor(d.kind==='portfolio' ? d.factor_analysis : null);
+}
+
+// 渲染组合任务的因子研究与归因（与回测详情同口径，含 PEAD 盈余惊喜）
+function renderPaperFactor(fa){
+  const box = document.getElementById('d_factorBox');
+  if(!fa || !fa.factors || !Object.keys(fa.factors).length){ box.style.display='none'; return; }
+  box.style.display='block';
+  const labelMap={momentum:"动量", reversal:"反转", low_vol:"低波动", value:"价值(估值)",
+    size:"小市值", beta:"BETA", idio_vol:"特异度", skewness:"偏度", tail_risk:"尾部风险",
+    ep:"EP(盈利收益率)", bp:"BP(账面价值比)",
+    roe:"ROE", revenue_yoy:"营收增速", profit_yoy:"利润增速", earnings_surprise:"盈余惊喜(PEAD)"};
+  const ac=fa.factor_autocorr||{};
+  const rows=Object.entries(fa.factors).map(([k,v])=>{
+    const nm=labelMap[k]||k;
+    const icCls=v.ic_mean>0?'up':'down', irCls=v.ir>0?'up':'down';
+    const acV=ac[k]; const acCell=acV==null?'<td class="num">—</td>':`<td class="num ${(acV>=0.5?'up':'down')}">${acV.toFixed(3)}</td>`;
+    return `<tr><td>${nm}</td><td class="num ${icCls}">${v.ic_mean.toFixed(3)}</td><td class="num">${v.ic_std.toFixed(3)}</td><td class="num ${irCls}">${v.ir.toFixed(3)}</td><td class="num">${(v.positive_ratio*100).toFixed(0)}%</td>${acCell}</tr>`;
+  }).join("");
+  document.getElementById("d_factorIC").innerHTML=`
+    <table><thead><tr><th>因子</th><th style="text-align:right">IC均值</th><th style="text-align:right">IC标准差</th><th style="text-align:right">IR</th><th style="text-align:right">正IC占比</th><th style="text-align:right">秩自相关</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="hint" style="margin-top:6px;">IC = 因子值与下期收益的秩相关；IR>0.5 说明因子较稳定有效。样本调仓期数：${fa.periods}</div>`;
+
+  // 累计 IC 曲线
+  const fseries=fa.ic_series||[], dates=fseries.map(s=>s.date), factors=Object.keys(fa.factors), cum={};
+  const cumSeries=factors.map(f=>{cum[f]=0;return {name:labelMap[f]||f,type:'line',showSymbol:false,data:fseries.map(s=>{cum[f]+=(s[f]||0);return +cum[f].toFixed(4);})};});
+  let icChart=echarts.getInstanceByDom(document.getElementById("d_factorICChart"));
+  if(!icChart) icChart=echarts.init(document.getElementById("d_factorICChart"));
+  icChart.setOption({tooltip:{trigger:'axis'},legend:{data:factors.map(f=>labelMap[f]||f),top:0,type:'scroll'},
+    grid:{left:50,right:15,top:30,bottom:45},xAxis:{type:'category',data:dates,axisLabel:{show:false}},
+    yAxis:{type:'value',name:'累计IC'},dataZoom:[{type:'inside'},{type:'slider',height:16,bottom:12}],series:cumSeries}, true);
+
+  // IC 月度热力图
+  const icm=fa.ic_monthly||{}, icmF=Object.keys(icm);
+  if(icmF.length){
+    const months=Array.from(new Set(icmF.flatMap(f=>Object.keys(icm[f])))).sort();
+    const heat=[]; let lo=1,hi=-1;
+    icmF.forEach((f,i)=>{months.forEach((m,j)=>{const v=icm[f][m];if(v!=null){heat.push([j,i,+v.toFixed(3)]);lo=Math.min(lo,v);hi=Math.max(hi,v);}});});
+    const icmL=icmF.map(f=>labelMap[f]||f);
+    let icmC=echarts.getInstanceByDom(document.getElementById("d_icMonthlyChart"));
+    if(!icmC) icmC=echarts.init(document.getElementById("d_icMonthlyChart"));
+    icmC.setOption({tooltip:{position:'top',formatter:p=>icmL[p.data[1]]+' '+months[p.data[0]]+' : '+p.data[2]},
+      grid:{left:80,right:20,top:10,bottom:60},xAxis:{type:'category',data:months,axisLabel:{rotate:45,fontSize:10}},
+      yAxis:{type:'category',data:icmL,axisLabel:{fontSize:11}},
+      visualMap:{min:Math.min(lo,-0.05),max:Math.max(hi,0.05),calculable:true,orient:'horizontal',left:'center',bottom:0,inRange:{color:['#2f6bff','#fff','#e23b3b']},textStyle:{fontSize:10}},
+      series:[{type:'heatmap',data:heat,label:{show:true,fontSize:9}}]}, true);
+  }
+
+  // 因子分层组合
+  const qa=fa.quantile||{}, qaF=Object.keys(qa), qSel=document.getElementById("d_quantileFactorSel");
+  if(qaF.length){
+    qSel.innerHTML=qaF.map(f=>`<option value="${f}">${labelMap[f]||f}</option>`).join("");
+    const irRank=[...qaF].sort((a,b)=>Math.abs(fa.factors[b].ir)-Math.abs(fa.factors[a].ir)); qSel.value=irRank[0];
+    const renderQ=()=>{const f=qSel.value,qd=qa[f];if(!qd)return;
+      const groups=Object.keys(qd.cum_returns).sort((a,b)=>a-b), dAxis=qd.cum_returns[groups[0]].map((_,i)=>i+1);
+      const pal=['#37a2da','#32c5e9','#67e0b2','#ffdb5c','#e23b3b'];
+      const ser=groups.map((g,idx)=>({name:'第'+g+'组',type:'line',showSymbol:false,data:qd.cum_returns[g].map(v=>+(v*100).toFixed(2)),lineStyle:{width:g==='5'?2.4:1.2,color:pal[idx%pal.length]},itemStyle:{color:pal[idx%pal.length]}}));
+      ser.push({name:'多空价差(5-1)',type:'line',showSymbol:false,data:qd.spread_cum.map(v=>+(v*100).toFixed(2)),lineStyle:{width:2.6,type:'dashed',color:'#9b59b6'},itemStyle:{color:'#9b59b6'}});
+      let qC=echarts.getInstanceByDom(document.getElementById("d_quantileChart"));
+      if(!qC) qC=echarts.init(document.getElementById("d_quantileChart"));
+      qC.setOption({tooltip:{trigger:'axis',valueFormatter:v=>v+'%'},legend:{data:[...groups.map(g=>'第'+g+'组'),'多空价差(5-1)'],top:0,type:'scroll'},
+        grid:{left:55,right:15,top:32,bottom:45},xAxis:{type:'category',data:dAxis,name:'调仓期',axisLabel:{fontSize:10}},
+        yAxis:{type:'value',name:'累计收益%'},dataZoom:[{type:'inside'},{type:'slider',height:14,bottom:12}],series:ser}, true);
+      const ga=qd.group_annual_pct;
+      document.getElementById("d_quantileStats").innerHTML=`分层年化：第1组 ${ga['1']}% → 第5组 ${ga['5']}%（单调越好）；多空价差年化 ${qd.spread_annual_pct}%（>0 说明因子分层有效）。样本调仓期数 ${qd.valid_dates}。`;
+    };
+    qSel.onchange=renderQ; renderQ();
+  }
 }
 
 async function analyzeHedge(id){

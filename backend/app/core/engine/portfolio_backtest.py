@@ -69,6 +69,9 @@ class PortfolioResult:
     holdings: List[dict] = field(default_factory=list)          # 每次调仓后的持仓权重快照
     industry_distribution: dict = field(default_factory=dict)    # 期末行业分布 {行业: 权重}
     factor_analysis: Optional[dict] = None                        # 因子 IC/IR 研究（None=未计算/单标的）
+    # 风险约束（借鉴 ai-hedge-fund 的 risk/limits 思想）：每次调仓执行前的硬上限与触发记录
+    risk_limits: Optional[dict] = None                           # {max_position_pct, max_gross_exposure}
+    risk_clamps: list = field(default_factory=list)              # 每次调仓被截断的记录（审计用）
     # 市场中性（对冲 beta）视角下的净值与绩效
     hedged_beta: float = 0.0
     hedged_total_return: float = 0.0
@@ -156,19 +159,21 @@ class PortfolioContext:
         return snap
 
     # —— 下单 ——
+    # 注意：以下两个方法不再直接撮合，而是把目标仓位『缓冲』起来；待策略 rebalance
+    # 全部完成后，由引擎 _flush_pending_orders 统一做风险约束(apply_limits)再撮合。
+    # 这样实现了 ai-hedge-fund 的「views(策略视图) 与 positions(组合构建/风控) 分离」。
     def order_target(self, symbol: str, shares: float, signal_type: str = "", signal_reason: str = "") -> None:
-        self.engine._order_target(self, symbol, shares, signal_type, signal_reason)
+        self.engine._pending_orders.append(
+            {"kind": "shares", "symbol": symbol, "value": float(shares),
+             "signal_type": signal_type, "signal_reason": signal_reason}
+        )
 
     def order_target_percent(self, symbol: str, pct: float, signal_type: str = "", signal_reason: str = "") -> None:
         pct = max(0.0, min(1.0, float(pct)))
-        price = self.engine._price_today(symbol)
-        if price is None or price <= 0:
-            return
-        equity = self.engine._equity_today()
-        # 保留现金缓冲，避免极端情况下满仓导致无法支付佣金/滑点
-        avail = equity * (1.0 - self.engine.cash_buffer)
-        target_shares = (avail * pct) / price
-        self.engine._order_target(self, symbol, target_shares, signal_type, signal_reason)
+        self.engine._pending_orders.append(
+            {"kind": "pct", "symbol": symbol, "value": pct,
+             "signal_type": signal_type, "signal_reason": signal_reason}
+        )
 
 
 class PortfolioBacktestEngine:
@@ -187,6 +192,8 @@ class PortfolioBacktestEngine:
         cash_buffer: float = 0.005,
         attributes: dict | None = None,
         membership: list | None = None,
+        risk_limits: dict | None = None,
+        fundamentals: dict | None = None,
     ):
         self.data = data
         self.benchmark = benchmark
@@ -205,12 +212,24 @@ class PortfolioBacktestEngine:
         # 时点(point-in-time)成分股成员资格：[(trade_date_str, {symbol}), ...] 升序。
         # 为空表示关闭 PIT 过滤（沿用全部已载入标的，兼容旧行为）。
         self.membership: list = list(membership) if membership else []
+        # 风险约束（借鉴 ai-hedge-fund risk/limits）：每调仓日的硬上限。
+        # {max_position_pct: 单只最大权重(>0开启), max_gross_exposure: 组合总敞口上限(>0开启)}。
+        # <=0 视为关闭（不约束，行为同旧版）。
+        self.risk_limits: dict = {
+            "max_position_pct": float(risk_limits.get("max_position_pct", 0) or 0) if risk_limits else 0.0,
+            "max_gross_exposure": float(risk_limits.get("max_gross_exposure", 0) or 0) if risk_limits else 0.0,
+        }
+        # 基本面历史快照 {symbol: [{report_date, roe, revenue_yoy, profit_yoy}, ...]}（PIT 时序因子用）。
+        self.fundamentals: dict = fundamentals or {}
         self.holdings_snapshots: list[dict] = []
         # 因子研究（IC/IR）：上期因子记录 / 每期 IC 序列 / 当期待收集因子
         self.factor_records: list[dict] = []
         self.factor_ic_series: list[dict] = []
         self._pending_factors: list[dict] = []
         self._factor_history: list[dict] = []   # {date, records} 每调仓日的因子记录快照（用于IC衰减）
+        # 调仓下单缓冲（rebalance 期间只记录目标仓位，flush 时统一做风险约束再撮合）
+        self._pending_orders: list[dict] = []
+        self._clamp_events: list[dict] = []      # 风险约束触发的截断记录（审计用）
 
         # 交易日历：所有股票 + 基准的交易日并集，升序
         dset = set()
@@ -331,6 +350,77 @@ class PortfolioBacktestEngine:
             )
         )
 
+    # ——— 风险约束（借鉴 ai-hedge-fund risk/limits：views 与 positions 分离）———
+    @staticmethod
+    def _apply_risk_limits(weights: dict, limits: dict) -> tuple[dict, list]:
+        """对目标权重施加硬上限，返回 (截断后权重, 触发记录)。
+
+        顺序与幂等性同 ai-hedge-fund：
+        1) 单只上限 max_position_pct：|w| 超限则截断到上限（保留方向）；
+        2) 总敞口上限 max_gross_exposure：若 Σ|w| 仍超限，整体按比例缩小。
+        被截断的敞口留在现金，不重分配（避免风控放大持仓）。
+        <=0 的限额视为关闭。
+        """
+        clamped = dict(weights)
+        clamps: list = []
+        mpp = float(limits.get("max_position_pct", 0) or 0)
+        if mpp > 0:
+            for sym in sorted(clamped):
+                w = clamped[sym]
+                if abs(w) > mpp:
+                    new_w = mpp if w > 0 else -mpp
+                    clamps.append({"limit": "max_position_pct", "ticker": sym,
+                                   "before": round(w, 4), "after": round(new_w, 4)})
+                    clamped[sym] = new_w
+        mge = float(limits.get("max_gross_exposure", 0) or 0)
+        if mge > 0:
+            gross = sum(abs(w) for w in clamped.values())
+            if gross > mge:
+                scale = mge / gross
+                clamped = {s: w * scale for s, w in clamped.items()}
+                clamps.append({"limit": "max_gross_exposure", "ticker": None,
+                               "before": round(gross, 4), "after": round(mge, 4)})
+        return clamped, clamps
+
+    def _flush_pending_orders(self, ctx: "PortfolioContext") -> None:
+        """把 rebalance 期间缓冲的目标仓位统一做风险约束后撮合。
+
+        先汇总每只标的的目标权重（pct 直接取；shares 折算为 equity 占比），
+        再 apply_limits 截断，最后按截断后权重撮合成交。成交记录的 ctx.date
+        仍为本次调仓日（与直接下单一致）。
+        """
+        if not self._pending_orders:
+            return
+        targets: dict[str, float] = {}
+        meta: dict[str, dict] = {}
+        for o in self._pending_orders:
+            sym = o["symbol"]
+            if o["kind"] == "pct":
+                targets[sym] = o["value"]
+            else:
+                price = self._price_today(sym)
+                eq = self._equity_today()
+                targets[sym] = (o["value"] * price / eq) if (price and eq > 0) else 0.0
+            meta[sym] = {"signal_type": o["signal_type"], "signal_reason": o["signal_reason"]}
+        self._pending_orders = []
+
+        if not any(targets.values()):
+            return
+
+        clamped, clamps = self._apply_risk_limits(targets, self.risk_limits)
+        self._clamp_events.extend(clamps)
+
+        for sym, w in clamped.items():
+            price = self._price_today(sym)
+            if price is None or price <= 0:
+                continue
+            eq = self._equity_today()
+            avail = eq * (1.0 - self.cash_buffer)
+            target_shares = (avail * w) / price
+            m = meta.get(sym, {})
+            self._order_target(ctx, sym, target_shares,
+                              m.get("signal_type", ""), m.get("signal_reason", ""))
+
     # ——— 主循环 ———
     def run(self, strategy_class: type, params: dict) -> PortfolioResult:
         if not self.dates:
@@ -366,10 +456,13 @@ class PortfolioBacktestEngine:
                     self.factor_ic_series.append(ic)
                 # 2) 执行策略调仓，期间策略通过 ctx.report_factor 填充 _pending_factors
                 self._pending_factors = []
+                self._pending_orders = []
                 try:
                     strat.rebalance(ctx, d)
                 except Exception as e:  # noqa: BLE001
                     logger.warning(f"rebalance {d} failed: {e}")
+                # 2b) 统一做风险约束(apply_limits)后再撮合成交（views 与 positions 分离）
+                self._flush_pending_orders(ctx)
                 # 3) 保存本期因子记录（含本期价格），供下期计算 IC
                 self.factor_records = self._collect_factor_records()
                 # 3a) 存档本期的因子记录 + 全量价格快照，用于事后IC衰减/Brinson
@@ -889,6 +982,9 @@ class PortfolioBacktestEngine:
             holdings=self.holdings_snapshots,
             industry_distribution=industry_dist,
             factor_analysis=self._summarize_factor_analysis(),
+            risk_limits=self.risk_limits if (self.risk_limits.get("max_position_pct", 0) or 0) > 0
+                       or (self.risk_limits.get("max_gross_exposure", 0) or 0) > 0 else None,
+            risk_clamps=[{**c} for c in self._clamp_events],
             hedged_beta=round(hedged_beta, 4),
             hedged_total_return=round(hedged_total, 6),
             hedged_annual_return=round(hedged_annual, 6),

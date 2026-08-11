@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
-from app.models import Backtest, Stock, KlineDaily
+from app.models import Backtest, Stock, KlineDaily, FundamentalsHistory
 from app.schemas import (
     BacktestRequest,
     BacktestResult,
@@ -167,6 +167,31 @@ def _run_portfolio(db, req, meta, params):
         for r in attrs_rows
     }
 
+    # 5) 基本面历史快照（多报告期），供 point-in-time 时序因子（PEAD 盈余惊喜）使用
+    fund_rows = db.execute(
+        select(FundamentalsHistory.symbol, FundamentalsHistory.report_date,
+               FundamentalsHistory.roe, FundamentalsHistory.revenue_yoy,
+               FundamentalsHistory.profit_yoy)
+        .where(FundamentalsHistory.symbol.in_(syms))
+    ).all()
+    fundamentals: dict[str, list] = {}
+    for r in fund_rows:
+        fundamentals.setdefault(r.symbol, []).append({
+            "report_date": r.report_date,
+            "roe": r.roe,
+            "revenue_yoy": r.revenue_yoy,
+            "profit_yoy": r.profit_yoy,
+        })
+
+    # 6) 风险约束（借鉴 ai-hedge-fund risk/limits）：从参数取单只/总敞口上限，<=0 视为关闭
+    risk_limits = {}
+    mpp = float(params.get("max_position_pct", 0) or 0)
+    mge = float(params.get("max_gross_exposure", 0) or 0)
+    if mpp > 0:
+        risk_limits["max_position_pct"] = mpp
+    if mge > 0:
+        risk_limits["max_gross_exposure"] = mge
+
     engine = PortfolioBacktestEngine(
         data, benchmark,
         initial_cash=req.initial_cash,
@@ -176,6 +201,8 @@ def _run_portfolio(db, req, meta, params):
         warmup=warmup_min,
         attributes=attributes,
         membership=membership,
+        risk_limits=risk_limits or None,
+        fundamentals=fundamentals or None,
     )
     try:
         return engine.run(meta["cls"], params)

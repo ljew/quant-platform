@@ -186,6 +186,7 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             "w_mom": 0.10, "w_rev": 0.12, "w_vol": 0.20, "w_size": 0.10,
             "w_beta": 0.05, "w_idio": 0.15, "w_skew": 0.05, "w_tail": 0.05,
             "w_ep": 0.15, "w_bp": 0.10, "max_weight": 0.05, "weight_method": "ic",
+            "max_position_pct": 0.0, "max_gross_exposure": 0.0,
         },
         "param_schema": [
             _int("top_n", "选股数量 TopN", 50, 5, 200, 5),
@@ -209,6 +210,8 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             _int("neutralize_industry", "行业中性(1开/0关)", 1, 0, 1),
             _int("neutralize_marketcap", "市值中性(1开/0关)", 1, 0, 1),
             _int("weight_method", "加权方式(0=IC自适应 / 1=固定权重)", 0, 0, 1),
+            _float("max_position_pct", "单只最大权重上限(0=关闭)", 0.0, 0.0, 1.0, 0.01),
+            _float("max_gross_exposure", "总敞口上限(0=关闭)", 0.0, 0.0, 1.0, 0.05),
         ],
     },
     "enhanced_factor_hs300": {
@@ -227,6 +230,7 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             "w_mom": 0.10, "w_rev": 0.12, "w_vol": 0.20, "w_size": 0.10,
             "w_beta": 0.05, "w_idio": 0.15, "w_skew": 0.05, "w_tail": 0.05,
             "w_ep": 0.15, "w_bp": 0.10, "max_weight": 0.05, "weight_method": "ic",
+            "max_position_pct": 0.0, "max_gross_exposure": 0.0,
         },
         "param_schema": [
             _int("top_n", "选股数量 TopN", 30, 5, 200, 5),
@@ -250,6 +254,8 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             _int("neutralize_industry", "行业中性(1开/0关)", 1, 0, 1),
             _int("neutralize_marketcap", "市值中性(1开/0关)", 1, 0, 1),
             _int("weight_method", "加权方式(0=IC自适应 / 1=固定权重)", 0, 0, 1),
+            _float("max_position_pct", "单只最大权重上限(0=关闭)", 0.0, 0.0, 1.0, 0.01),
+            _float("max_gross_exposure", "总敞口上限(0=关闭)", 0.0, 0.0, 1.0, 0.05),
         ],
     },
     "chan": {

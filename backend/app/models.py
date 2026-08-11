@@ -50,6 +50,31 @@ class Stock(Base):
         return f"<Stock {self.symbol} {self.name}>"
 
 
+class FundamentalsHistory(Base):
+    """基本面历史快照（多报告期），用于时序类因子（如 PEAD 盈余惊喜）。
+
+    区别于 stocks 表的截面快照：此处按报告期存储多个时点（如 2021~2025 年报），
+    回测时按『报告期 <= 调仓日』取最近一条，实现 point-in-time 基本面，杜绝前视偏差。
+    """
+
+    __tablename__ = "fundamentals_history"
+    __table_args__ = (
+        UniqueConstraint("symbol", "report_date", name="uq_fund_symbol_date"),
+        Index("ix_fund_symbol_date", "symbol", "report_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(16), nullable=False)
+    report_date: Mapped[date] = mapped_column(Date, nullable=False)  # 报告期(年末)，如 2025-12-31
+    # 与 stocks 表同口径的基本面字段
+    roe: Mapped[float | None] = mapped_column(Float, nullable=True)            # 净资产收益率(%)
+    revenue_yoy: Mapped[float | None] = mapped_column(Float, nullable=True)    # 营业总收入同比增长(%)
+    profit_yoy: Mapped[float | None] = mapped_column(Float, nullable=True)     # 净利润同比增长(%)
+
+    def __repr__(self):
+        return f"<FundamentalsHistory {self.symbol} {self.report_date}>"
+
+
 class KlineDaily(Base):
     """日K线表。
 
@@ -182,6 +207,8 @@ class PaperTask(Base):
     state_json: Mapped[str] = mapped_column(Text, default="{}")
     # 最近一次运行的完整每日净值曲线（date>=建仓日），用于前端展示
     equity_curve_json: Mapped[str] = mapped_column(Text, default="[]")
+    # 组合任务最近一次运行的因子研究（IC/IR/分层/PEAD 等），供模拟盘详情页展示
+    factor_analysis_json: Mapped[str] = mapped_column(Text, default="{}")
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     error_msg: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

@@ -78,13 +78,17 @@ FACTORS: List[FactorDef] = [
     FactorDef("roe", "ROE", "质量",
               "roe", 1, 0.10,
               "净资产收益率(%)：盈利能力，越大越优"),
-    # —— 成长（需 revenue_yoy / profit_yoy 字段）——
+    # —— 成长 / 盈余惊喜（PEAD，借鉴 ai-hedge-fund 的 earnings-surprise alpha）——
     FactorDef("revenue_yoy", "营收增速", "成长",
               "revenue_yoy", 1, 0.08,
               "营业总收入同比增长(%)：成长动能，越大越优"),
     FactorDef("profit_yoy", "利润增速", "成长",
               "profit_yoy", 1, 0.08,
               "净利润同比增长(%)：成长动能，越大越优"),
+    FactorDef("earnings_surprise", "盈余惊喜(PEAD)", "质量",
+              "earnings_surprise", 1, 0.10,
+              "最新利润增速 − 历史利润增速均值（point-in-time）：业绩超预期越大越优；"
+              "借鉴 ai-hedge-fund 的 PEAD 思想——市场对盈余惊喜存在反应不足漂移"),
 ]
 
 # 派生索引，供策略与前端快速访问

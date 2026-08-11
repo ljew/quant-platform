@@ -74,6 +74,7 @@ def _migrate_sqlite() -> None:
     paper_tasks_expected = {
         "start_date": "VARCHAR(10)",
         "equity_curve_json": "TEXT DEFAULT '[]'",
+        "factor_analysis_json": "TEXT DEFAULT '{}'",
     }
     try:
         with engine.connect() as conn:

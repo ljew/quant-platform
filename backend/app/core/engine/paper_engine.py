@@ -21,7 +21,7 @@ from sqlalchemy import select
 from app.core.engine.backtest_engine import BacktestEngine
 from app.core.engine.portfolio_backtest import PortfolioBacktestEngine
 from app.core.strategies.registry import get_strategy
-from app.models import Stock, PaperTask, PaperTrade, PaperSnapshot
+from app.models import Stock, PaperTask, PaperTrade, PaperSnapshot, FundamentalsHistory
 from app.services.data_source import get_realtime_prices, get_index_membership
 # 复用回测路由里的数据加载函数（DB 优先、缺失回源落地），避免重复实现
 from app.routers.strategy import _load_bars, _load_index_bars
@@ -134,13 +134,37 @@ def _load_portfolio(db, task: PaperTask) -> dict:
         for r in attrs_rows
     }
 
+    # 基本面历史快照（PEAD 盈余惊喜等时序因子用）
+    fund_rows = db.execute(
+        select(FundamentalsHistory.symbol, FundamentalsHistory.report_date,
+               FundamentalsHistory.roe, FundamentalsHistory.revenue_yoy,
+               FundamentalsHistory.profit_yoy)
+        .where(FundamentalsHistory.symbol.in_(syms))
+    ).all()
+    fundamentals: dict[str, list] = {}
+    for r in fund_rows:
+        fundamentals.setdefault(r.symbol, []).append({
+            "report_date": r.report_date,
+            "roe": r.roe, "revenue_yoy": r.revenue_yoy, "profit_yoy": r.profit_yoy,
+        })
+
+    # 风险约束（可选，参数传入则启用）
+    risk_limits = {}
+    mpp = float(params.get("max_position_pct", 0) or 0)
+    mge = float(params.get("max_gross_exposure", 0) or 0)
+    if mpp > 0:
+        risk_limits["max_position_pct"] = mpp
+    if mge > 0:
+        risk_limits["max_gross_exposure"] = mge
+
     engine = PortfolioBacktestEngine(
         data, benchmark,
         initial_cash=task.initial_cash, commission=task.commission, slippage=task.slippage,
         rebalance_period=int(params.get("rebalance_period", 21)),
         warmup=warmup_min, attributes=attributes, membership=membership,
+        risk_limits=risk_limits or None, fundamentals=fundamentals or None,
     )
-    engine.run(meta["cls"], params)
+    result = engine.run(meta["cls"], params)
 
     last_date = engine.equity_curve[-1].date if engine.equity_curve else (engine.dates[-1] if engine.dates else end.isoformat())
     new_trades = _incremental_trades(engine.trades, task.last_bar_date, last_date, task.start_date)
@@ -156,6 +180,8 @@ def _load_portfolio(db, task: PaperTask) -> dict:
         "equity": engine.equity_curve[-1].equity if engine.equity_curve else task.initial_cash,
         "cash": engine.cash, "positions": positions,
         "new_trades": new_trades, "curve": curve,
+        "factor_analysis": result.factor_analysis,
+        "risk_limits": result.risk_limits, "risk_clamps": result.risk_clamps,
     }
 
 
@@ -210,6 +236,8 @@ def run_paper_task(db, task: PaperTask) -> dict:
         )
         # 存最近一次运行的完整每日净值曲线（date>=建仓日），供前端绘制
         task.equity_curve_json = json.dumps(r.get("curve", []), ensure_ascii=False)
+        # 存组合任务的因子研究（IC/IR/分层/PEAD 等），供模拟盘详情页展示
+        task.factor_analysis_json = json.dumps(r.get("factor_analysis") or {}, ensure_ascii=False)
         task.error_msg = None
         db.commit()
         return {
@@ -277,4 +305,5 @@ def get_paper_task_detail(db, task: PaperTask) -> dict:
         "pnl_pct": latest.pnl_pct if latest else 0.0,
         "positions": state.get("positions", {}),
         "curve": curve, "trades": trade_list,
+        "factor_analysis": json.loads(task.factor_analysis_json) if getattr(task, "factor_analysis_json", None) else None,
     }

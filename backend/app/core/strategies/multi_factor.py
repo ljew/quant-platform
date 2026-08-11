@@ -21,12 +21,39 @@ from __future__ import annotations
 import math
 import statistics
 from collections import Counter
+from datetime import datetime
 
 from app.core.engine.base_strategy import PortfolioStrategy
 from app.core.engine.factor_expr import eval_factor
 from app.core.engine.factor_library import (
     FACTORS, FACTOR_NAMES, FACTOR_MAP, CN_MAP,
 )
+
+
+def _pit_earnings_surprise(snaps, as_of: str):
+    """Point-in-time 盈余惊喜（PEAD 核心）：最新报告期利润增速 − 历史利润增速均值。
+
+    snaps: [{report_date: date, profit_yoy: float|None, ...}]；as_of: 'YYYY-MM-DD'。
+    仅用 report_date <= as_of 的快照（杜绝前视）；需 >=2 期方可计算。
+    正值=业绩超自身历史趋势（市场对盈余惊喜反应不足后的漂移方向）。
+    """
+    if not snaps:
+        return None
+    try:
+        ad = datetime.strptime(as_of, "%Y-%m-%d").date()
+    except Exception:
+        return None
+    pts = [s for s in snaps if hasattr(s.get("report_date"), "year") and s["report_date"] <= ad]
+    if len(pts) < 2:
+        return None
+    pts.sort(key=lambda x: x["report_date"])
+    cur = pts[-1]
+    if cur.get("profit_yoy") is None:
+        return None
+    prev = [p["profit_yoy"] for p in pts[:-1] if p.get("profit_yoy") is not None]
+    if not prev:
+        return None
+    return cur["profit_yoy"] - sum(prev) / len(prev)
 
 
 def _zscore(vals):
@@ -138,6 +165,8 @@ class EnhancedFactorStrategy(PortfolioStrategy):
             mkt_b = mkt[-len(closes_b):]
             # 截面属性（估值/市值/质量/成长）
             attrs = ctx.engine.attributes.get(sym, {}) or {}
+            # point-in-time 盈余惊喜（PEAD）：仅用报告期<=今日的快照，杜绝前视
+            es = _pit_earnings_surprise(ctx.engine.fundamentals.get(sym), date)
             ns = {
                 "c_m": closes_m, "c_r": closes_r, "c_v": closes_v,
                 "c_b": closes_b, "c_t": closes_t, "mkt_b": mkt_b,
@@ -147,6 +176,7 @@ class EnhancedFactorStrategy(PortfolioStrategy):
                 "roe": attrs.get("roe"),
                 "revenue_yoy": attrs.get("revenue_yoy"),
                 "profit_yoy": attrs.get("profit_yoy"),
+                "earnings_surprise": es,
                 "industry": attrs.get("industry"),
             }
             fvals = {}
