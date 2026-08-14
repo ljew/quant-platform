@@ -199,7 +199,7 @@ def _run_portfolio(db, req, meta, params, progress_cb=None):
                 seen.add(s)
                 union_syms.append(s)
 
-    # 2) 加载各标的日K（DB 优先，缺失回源并落地）
+    # 2) 加载各标的日K：DuckDB 批量一次取全部（列式加速），缺失走 _load_bars 兜底
     data: dict[str, list[dict]] = {}
     warmup_min = max(
         int(params.get("momentum_lookback", 120)),
@@ -207,13 +207,21 @@ def _run_portfolio(db, req, meta, params, progress_cb=None):
         int(params.get("beta_lookback", 120)),
         int(params.get("tail_lookback", 120)),
     ) + 5
-    total_union = len(union_syms)
-    for i, sym in enumerate(union_syms):
+    cached = duckdb_store.get_stock_bars_batch(union_syms, req.adj, sd, ed)
+    for sym, bars in cached.items():
+        if len(bars) >= warmup_min:
+            data[sym] = bars
+    missing = [s for s in union_syms if s not in cached]
+    total_missing = len(missing)
+    for i, sym in enumerate(missing):
         bars = _load_bars(db, sym, req.start, req.end, req.adj)
         if len(bars) >= warmup_min:
             data[sym] = bars
-        if progress_cb and (i % 50 == 0 or i == total_union - 1):
-            progress_cb(i / max(total_union, 1), f"加载行情 {i}/{total_union}")
+        if progress_cb and (i % 50 == 0 or i == total_missing - 1):
+            progress_cb(
+                len(data) / max(len(union_syms), 1),
+                f"补数据 {i}/{total_missing}（DuckDB 已取 {len(union_syms) - total_missing}）",
+            )
 
     if len(data) < 20:
         raise HTTPException(

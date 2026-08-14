@@ -17,13 +17,20 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
 SQLITE_DB = os.path.join(_PROJECT_ROOT, "data", "quant_dev.db")
 DUCKDB_DB = os.path.join(_PROJECT_ROOT, "data", "quant.duckdb")
 
-ANALYTIC_TABLES = ["kline_daily", "index_kline_daily", "fundamentals_history", "stocks"]
+ANALYTIC_TABLES = [
+    "kline_daily",
+    "index_kline_daily",
+    "fundamentals_history",
+    "stocks",
+    "index_membership",
+]
 
 INDEXES = {
     "kline_daily": ["symbol", "trade_date"],
     "index_kline_daily": ["symbol", "trade_date"],
     "fundamentals_history": ["symbol", "report_date"],
     "stocks": ["symbol"],
+    "index_membership": ["index_code", "trade_date"],
 }
 
 
