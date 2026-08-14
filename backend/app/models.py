@@ -105,6 +105,35 @@ class KlineDaily(Base):
         return f"<KlineDaily {self.symbol} {self.trade_date}>"
 
 
+class IndexKlineDaily(Base):
+    """指数日K线表（与个股 kline_daily 分离，避免混淆）。
+
+    回测/模拟盘的基准指数优先读此表；库无数据时由 _load_index_bars
+    在线拉取并写回缓存，避免每次都依赖外部数据源（防止在线抖动导致
+    “未获取到基准指数”报错）。symbol 用新浪格式如 sh000906 / sh000300。
+    """
+
+    __tablename__ = "index_kline_daily"
+    __table_args__ = (
+        UniqueConstraint("symbol", "trade_date", name="uq_index_kline_symbol_date"),
+        Index("ix_index_kline_symbol_date", "symbol", "trade_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(16), nullable=False)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    open: Mapped[float] = mapped_column(Float, nullable=False)
+    high: Mapped[float] = mapped_column(Float, nullable=False)
+    low: Mapped[float] = mapped_column(Float, nullable=False)
+    close: Mapped[float] = mapped_column(Float, nullable=False)
+    volume: Mapped[int] = mapped_column(Integer, default=0)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<IndexKlineDaily {self.symbol} {self.trade_date}>"
+
+
 class Strategy(Base):
     """策略模板登记（用户自建策略的元数据）。"""
 

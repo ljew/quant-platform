@@ -16,12 +16,12 @@ import json
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
-from app.models import Backtest, Stock, KlineDaily, FundamentalsHistory
+from app.models import Backtest, Stock, KlineDaily, IndexKlineDaily, FundamentalsHistory
 from app.schemas import (
     BacktestRequest,
     BacktestResult,
@@ -32,7 +32,7 @@ from app.schemas import (
     StrategyInfo,
     TradePoint,
 )
-from app.services import data_source, ingestion
+from app.services import data_source, duckdb_store, ingestion
 from app.core.engine.backtest_engine import BacktestEngine
 from app.core.engine.portfolio_backtest import PortfolioBacktestEngine
 from app.core.strategies.registry import get_strategy, list_strategies
@@ -214,6 +214,11 @@ def _run_portfolio(db, req, meta, params):
 def _load_bars(db: Session, symbol: str, start: str, end: str, adj: str) -> list[dict]:
     sd = date.fromisoformat(start)
     ed = date.fromisoformat(end)
+    # ① DuckDB 分析库（列式加速，完整版架构默认路径）
+    cached = duckdb_store.get_stock_bars(symbol, adj, sd, ed)
+    if cached:
+        return cached
+    # ② 回退 SQLite；③ 库无则在线拉取并写回
     stmt = (
         select(KlineDaily)
         .where(
@@ -246,22 +251,70 @@ def _load_bars(db: Session, symbol: str, start: str, end: str, adj: str) -> list
 
 
 def _load_index_bars(db: Session, symbol: str, sd: date, ed: date, adj: str) -> list[dict]:
-    # 指数日K 暂不入 kline_daily（避免与个股混淆），走数据源并缓存到内存
+    """加载基准指数日K。
+
+    优先级：① DuckDB 分析库（首选，离线可用、列式加速）；② SQLite
+    index_kline_daily；③ 库无则在线拉取并写回缓存，避免每次都依赖外部数据源。
+    """
+    # ① DuckDB 分析库
+    cached = duckdb_store.get_index_bars(symbol, sd, ed)
+    if cached:
+        return cached
+    # ② SQLite 库内已有该指数数据 → 直接读库
+    cnt = db.execute(
+        select(func.count()).select_from(IndexKlineDaily)
+        .where(IndexKlineDaily.symbol == symbol)
+    ).scalar() or 0
+    if cnt:
+        rows = db.execute(
+            select(IndexKlineDaily).where(
+                IndexKlineDaily.symbol == symbol,
+                IndexKlineDaily.trade_date >= sd,
+                IndexKlineDaily.trade_date <= ed,
+            ).order_by(IndexKlineDaily.trade_date)
+        ).scalars().all()
+        return [{
+            "symbol": r.symbol,
+            "date": r.trade_date.isoformat(),
+            "open": r.open, "high": r.high, "low": r.low,
+            "close": r.close, "volume": r.volume, "amount": r.amount,
+        } for r in rows]
+    # ② 库内缺失 → 在线拉全量历史写库后返回
+    from datetime import date as _date
     try:
-        fetched = data_source.get_index_daily_kline(symbol, sd, ed)
-        if fetched:
-            return [
-                {
-                    "symbol": symbol,
-                    "date": (r["trade_date"].isoformat() if hasattr(r["trade_date"], "isoformat") else str(r["trade_date"])),
-                    "open": r["open"], "high": r["high"], "low": r["low"],
-                    "close": r["close"], "volume": r["volume"], "amount": r["amount"],
-                }
-                for r in fetched
-            ]
+        fetched = data_source.get_index_daily_kline(symbol, _date(1990, 1, 1), ed)
     except Exception:  # noqa: BLE001
-        pass
+        fetched = []
+    if fetched:
+        _cache_index_bars(db, symbol, fetched)
+        return [{
+            "symbol": symbol,
+            "date": (r["trade_date"].isoformat() if hasattr(r["trade_date"], "isoformat") else str(r["trade_date"])),
+            "open": r["open"], "high": r["high"], "low": r["low"],
+            "close": r["close"], "volume": r["volume"], "amount": r["amount"],
+        } for r in fetched if sd <= r["trade_date"] <= ed]
     return []
+
+
+def _cache_index_bars(db: Session, symbol: str, fetched: list[dict]) -> None:
+    """将在线拉取的指数行情 upsert 进 index_kline_daily（按 symbol+date 去重）。"""
+    existing = {r[0] for r in db.execute(
+        select(IndexKlineDaily.trade_date).where(IndexKlineDaily.symbol == symbol)
+    ).all()}
+    objs = []
+    for r in fetched:
+        d = r["trade_date"]
+        if d in existing:
+            continue
+        objs.append(IndexKlineDaily(
+            symbol=symbol, trade_date=d,
+            open=float(r["open"]), high=float(r["high"]), low=float(r["low"]),
+            close=float(r["close"]),
+            volume=int(r.get("volume", 0) or 0), amount=float(r.get("amount", 0) or 0),
+        ))
+    if objs:
+        db.bulk_save_objects(objs)
+        db.commit()
 
 
 # ——— 落库 ———
