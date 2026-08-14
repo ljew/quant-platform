@@ -9,7 +9,7 @@
 
 已实现：
 - ✅ FastAPI 后端（REST API + 自动文档）
-- ✅ SQLAlchemy 数据层（开发用 SQLite，生产可切 Postgres+TimescaleDB）
+- ✅ **DuckDB 分析数据层**（按设计 v1.0 落地：PG/Timescale → DuckDB；K线 133万行/指数/基本面/股票 144万行入库，回测/组合/模拟盘读数据列式加速；业务写表留 SQLite，读写路径分离）
 - ✅ akshare 数据源封装（免 token，A股日K/实时/财务；指数成分股与日K走 csindex/sina 源）
 - ✅ **Tushare 数据源**（已配置 token，指数成分/指数日K/个股日K 兜底，任意指数均支持）
 - ✅ 数据入库服务（全市场股票列表 + 日K线，支持增量更新 / 自动回源）
@@ -195,39 +195,51 @@ curl "http://localhost:8000/api/v1/market/quote/sh600519"
 quant-platform/
 ├── backend/
 │   ├── app/
-│   │   ├── config.py          # 全局配置（DATABASE_URL 切换 SQLite/Postgres）
-│   │   ├── database.py        # SQLAlchemy 引擎 / Session
-│   │   ├── models.py          # ORM 模型（Stock / KlineDaily）
+│   │   ├── config.py          # 全局配置（QUANT_DATABASE_URL 切换 SQLite/Postgres）
+│   │   ├── database.py        # SQLAlchemy 引擎 / Session（业务写表）
+│   │   ├── models.py          # ORM 模型（Stock / KlineDaily / IndexKlineDaily / FundamentalsHistory）
 │   │   ├── schemas.py         # Pydantic 模型
 │   │   ├── main.py            # FastAPI 应用入口
-│   │   ├── routers/           # API 路由（market / data / strategy）
-│   │   ├── services/          # 数据源封装 / 入库服务
+│   │   ├── routers/           # API 路由（market / data / strategy / paper / hedge）
+│   │   ├── services/          # 数据源封装 / 入库服务 / duckdb_store（DuckDB 只读分析层）
 │   │   └── core/
-│   │       ├── engine/        # 策略 SDK + 回测引擎（indicators / backtest_engine / base_strategy）
-│   │       └── strategies/    # 策略模板（dual_ma / ma_cross / momentum）+ registry
+│   │       ├── engine/        # 策略 SDK + 回测引擎（indicators / backtest_engine / base_strategy / portfolio_backtest / hedge_engine / paper_engine / factor_expr）
+│   │       └── strategies/    # 策略模板（dual_ma / ma_cross / momentum / chan / multi_factor / enhanced_factor）+ registry
+│   ├── scripts/               # 数据管道（seed_stocks / seed_fundamentals / seed_index_kline / migrate_to_duckdb）
 │   ├── requirements.txt
 │   └── run.py
 ├── frontend/
 │   ├── index.html             # 行情看板原型（ECharts）
-│   ├── backtest.html          # 回测页（参数 / 权益曲线 / 绩效 / 历史）
+│   ├── backtest.html          # 回测页（参数 / 权益曲线 / 绩效 / 历史 / 因子研究 / 风险硬上限）
+│   ├── paper.html             # 模拟盘（任务 / 净值 / 持仓 / 因子面板）
 │   └── echarts.min.js        # 本地 ECharts（不依赖外网 CDN）
-├── data/                      # SQLite 数据库文件（开发用，自动生成）
-├── docker-compose.yml         # 生产部署（Postgres+TimescaleDB/Redis/backend/frontend）
+├── data/                      # SQLite（业务写表）+ quant.duckdb（分析读表，自动生成）
 └── README.md
 ```
 
 ---
 
-## 数据库切换（开发 → 生产）
+## 数据库架构（设计 v1.0：PG/Timescale → SQLite + DuckDB）
 
-编辑 `backend/app/config.py` 或将环境变量 `QUANT_DATABASE_URL` 改为：
+按 `quant-platform-design.html` 的技术选型调整：原「PostgreSQL(业务) + TimescaleDB(时序)」
+在单机场景替换为嵌入式方案，**读写路径分离**：
+
+| 角色 | 存储 | 表 |
+|---|---|---|
+| 业务写表 | `data/quant_dev.db` (SQLite) | backtests / strategies / paper_tasks / paper_trades / paper_snapshots |
+| 分析读表 | `data/quant.duckdb` (DuckDB) | kline_daily(133万行) / index_kline_daily / fundamentals_history / stocks |
+
+读取路径：`duckdb_store`（`backend/app/services/duckdb_store.py`）优先读 DuckDB（列式+向量化），
+表缺失/文件不存在自动降级回 SQLite → 在线拉取，不破坏原链路。
 
 ```bash
-# Postgres + TimescaleDB
-export QUANT_DATABASE_URL="postgresql://quant:quant@localhost:5432/quant"
+# 全量迁移（幂等，重跑重建；数据行数零差异校验）
+cd backend && PYTHONPATH=$(pwd) python scripts/migrate_to_duckdb.py
+
+# 增量补数据后需重跑迁移同步 DuckDB（seed 脚本写入 SQLite 后）
 ```
 
-业务代码无需改动。生产建议通过 `docker-compose.yml` 一键拉起完整依赖。
+> 注：`config.py` 仍支持 `QUANT_DATABASE_URL` 切换业务库（Postgres 备选，当前默认 SQLite）。
 
 ---
 
