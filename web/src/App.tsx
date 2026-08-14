@@ -2,8 +2,9 @@ import { useState } from "react";
 import MarketPage from "./pages/MarketPage";
 import BacktestPage from "./pages/BacktestPage";
 import PaperPage from "./pages/PaperPage";
+import OptimizePage from "./pages/OptimizePage";
 
-type Tab = "market" | "backtest" | "paper";
+type Tab = "market" | "backtest" | "paper" | "optimize";
 
 /** 应用骨架：顶部导航 + 页面切换。 */
 export default function App() {
@@ -29,15 +30,19 @@ export default function App() {
         <NavBtn active={tab === "backtest"} onClick={() => setTab("backtest")}>
           策略回测
         </NavBtn>
+        <NavBtn active={tab === "optimize"} onClick={() => setTab("optimize")}>
+          参数寻优
+        </NavBtn>
         <NavBtn active={tab === "paper"} onClick={() => setTab("paper")}>
           模拟盘
         </NavBtn>
         <span style={{ flex: 1 }} />
-        <span style={{ fontSize: 12, opacity: 0.7 }}>React 完整版前端（v0.2）</span>
+        <span style={{ fontSize: 12, opacity: 0.7 }}>React 完整版前端（v0.3）</span>
       </header>
       <main>
         {tab === "market" && <MarketPage />}
         {tab === "backtest" && <BacktestPage />}
+        {tab === "optimize" && <OptimizePage />}
         {tab === "paper" && <PaperPage />}
       </main>
     </div>

@@ -78,6 +78,9 @@ export const api = {
     ),
   backtestDetail: (id: number) => get<BacktestResult>(`/strategy/backtests/${id}`),
   backtestHistory: (limit = 30) => get<BacktestResult[]>(`/strategy/backtests?limit=${limit}`),
+  // 参数寻优
+  optimize: (payload: Record<string, unknown>) =>
+    post<OptimizeTrial[]>("/strategy/optimize", payload),
   // 模拟盘
   paperTasks: () => get<PaperTask[]>("/paper/tasks"),
   paperCreate: (body: Record<string, unknown>) => post<PaperTask>("/paper/tasks", body),
@@ -93,6 +96,18 @@ export const api = {
   },
   paperDetail: (id: number) => get<PaperDetail>(`/paper/tasks/${id}`),
 };
+
+// —— 参数寻优类型 ——
+export interface OptimizeTrial {
+  params: Record<string, number>;
+  total_return: number;
+  annual_return: number;
+  max_drawdown: number;
+  sharpe: number;
+  win_rate: number;
+  trade_count: number;
+  final_equity: number;
+}
 
 // —— 模拟盘类型 ——
 export interface PaperTask {
