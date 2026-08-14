@@ -3,9 +3,10 @@ import MarketPage from "./pages/MarketPage";
 import BacktestPage from "./pages/BacktestPage";
 import PaperPage from "./pages/PaperPage";
 import OptimizePage from "./pages/OptimizePage";
+import MonitorPage from "./pages/MonitorPage";
 import { useTheme } from "./theme";
 
-type Tab = "market" | "backtest" | "paper" | "optimize";
+type Tab = "market" | "backtest" | "paper" | "optimize" | "monitor";
 
 /** 应用骨架：顶部导航（主题切换）+ 页面切换。 */
 export default function App() {
@@ -38,6 +39,9 @@ export default function App() {
         <NavBtn active={tab === "paper"} onClick={() => setTab("paper")} colors={colors}>
           模拟盘
         </NavBtn>
+        <NavBtn active={tab === "monitor"} onClick={() => setTab("monitor")} colors={colors}>
+          监控
+        </NavBtn>
         <span style={{ flex: 1 }} />
         <button
           onClick={toggle}
@@ -61,6 +65,7 @@ export default function App() {
         {tab === "backtest" && <BacktestPage />}
         {tab === "optimize" && <OptimizePage />}
         {tab === "paper" && <PaperPage />}
+        {tab === "monitor" && <MonitorPage />}
       </main>
     </div>
   );

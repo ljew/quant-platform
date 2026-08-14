@@ -95,7 +95,31 @@ export const api = {
     return r.json();
   },
   paperDetail: (id: number) => get<PaperDetail>(`/paper/tasks/${id}`),
+  // 监控
+  monitor: () => get<MonitorStatus>("/monitor/status"),
 };
+
+// —— 监控类型 ——
+export interface MonitorStatus {
+  server: { name: string; version: string; time: string; uptime_sec: number; db: string };
+  data: {
+    sqlite: Record<string, number>;
+    sqlite_total: number;
+    duckdb: Record<string, number>;
+    duckdb_total: number;
+    freshness: Record<string, { label: string; latest: string | null; days_ago: number | null; stale: boolean }>;
+  };
+  services: {
+    data_source: { tushare: boolean; akshare: boolean };
+    schedulers: {
+      etl: { enabled: boolean; run_hour: string; last_run_at: string | null; last_success: string | null; last_error: string | null; runs_total: number };
+      paper: { alive: boolean; interval_sec: number };
+    };
+    tasks: { running: number; recent: { id: string; name: string; status: string; progress: number; message: string }[] };
+    paper: { tasks: number; enabled: number };
+  };
+  disk: { data_dir_mb: number; data_dir: string };
+}
 
 // —— 参数寻优类型 ——
 export interface OptimizeTrial {

@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.database import init_db
-from app.routers import data, market, strategy, paper, hedge, live
+from app.routers import data, market, strategy, paper, hedge, live, monitor
 from app.schemas import HealthResponse
 
 import os
@@ -29,6 +29,7 @@ app.include_router(strategy.router, prefix=settings.api_prefix)
 app.include_router(paper.router, prefix=settings.api_prefix)
 app.include_router(hedge.router, prefix=settings.api_prefix)
 app.include_router(live.router, prefix=settings.api_prefix)
+app.include_router(monitor.router, prefix=settings.api_prefix)
 
 
 @app.on_event("startup")
