@@ -17,6 +17,7 @@ from app.core.strategies.rsi_reversal import RSIReversalStrategy
 from app.core.strategies.bollinger import BollingerStrategy
 from app.core.strategies.turtle import TurtleStrategy
 from app.core.strategies.ma_alignment import MAAlignmentStrategy
+from app.core.strategies.macd_boll import MacdBollStrategy
 from app.core.strategies.csi800_enhanced import Csi800EnhancedStrategy
 from app.core.strategies.multi_factor import EnhancedFactorStrategy
 from app.core.strategies.chan_strategy import ChanStrategy
@@ -108,6 +109,24 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             _int("short", "短期均线(天)", 5, 2, 30),
             _int("mid", "中期均线(天)", 20, 5, 120),
             _int("long", "长期均线(天)", 60, 20, 250),
+        ],
+    },
+    "macd_boll": {
+        "key": "macd_boll",
+        "name": "MACD+布林+风控",
+        "description": "MACD金叉且价在布林中轨上方做多，死叉/跌破下轨离场；内置回撤/单日亏损/仓位软风控。完整版 SDK 示例（新指标库 + ctx.risk）。",
+        "cls": MacdBollStrategy,
+        "default_params": {"fast": 12, "slow": 26, "signal": 9, "boll_period": 20, "boll_k": 2.0,
+                           "max_drawdown_limit": 0.15, "daily_loss_limit": 0.0, "position_limit": 0.0},
+        "param_schema": [
+            _int("fast", "MACD快线(天)", 12, 3, 60),
+            _int("slow", "MACD慢线(天)", 26, 10, 200),
+            _int("signal", "MACD信号(天)", 9, 2, 60),
+            _int("boll_period", "布林周期(天)", 20, 5, 120),
+            _float("boll_k", "布林倍数", 2.0, 0.5, 4.0, 0.1),
+            _float("max_drawdown_limit", "最大回撤止损(0=关)", 0.15, 0.0, 0.6, 0.01),
+            _float("daily_loss_limit", "单日亏损上限(0=关)", 0.0, 0.0, 0.15, 0.005),
+            _float("position_limit", "仓位上限(0=关)", 0.0, 0.0, 1.0, 0.05),
         ],
     },
     "csi800_enhanced": {

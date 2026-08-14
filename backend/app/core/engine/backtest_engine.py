@@ -69,6 +69,7 @@ class StrategyContext:
         self.bar: Optional[dict] = None
         self.index = -1
         self.bars = engine.bars
+        self._risk_guard: Optional["RiskGuard"] = None
 
     def set_bar(self, bar: dict, index: int) -> None:
         self.bar = bar
@@ -89,21 +90,141 @@ class StrategyContext:
     def closes(self) -> List[float]:
         return [b["close"] for b in self.bars[: self.index + 1]]
 
-    def sma(self, period: int) -> Optional[float]:
-        vals = ind.sma(self.closes(), period)
+    def highs(self) -> List[float]:
+        return [b["high"] for b in self.bars[: self.index + 1]]
+
+    def lows(self) -> List[float]:
+        return [b["low"] for b in self.bars[: self.index + 1]]
+
+    def volumes(self) -> List[float]:
+        return [float(b.get("volume", 0)) for b in self.bars[: self.index + 1]]
+
+    def _last(self, vals: List[Optional[float]]) -> Optional[float]:
         return vals[-1] if vals else None
+
+    def sma(self, period: int) -> Optional[float]:
+        return self._last(ind.sma(self.closes(), period))
 
     def ema(self, period: int) -> Optional[float]:
-        vals = ind.ema(self.closes(), period)
-        return vals[-1] if vals else None
+        return self._last(ind.ema(self.closes(), period))
 
     def roc(self, period: int) -> Optional[float]:
-        vals = ind.roc(self.closes(), period)
-        return vals[-1] if vals else None
+        return self._last(ind.roc(self.closes(), period))
+
+    def stddev(self, period: int) -> Optional[float]:
+        return self._last(ind.stddev(self.closes(), period))
 
     def rsi(self, period: int = 14) -> Optional[float]:
-        vals = ind.rsi(self.closes(), period)
-        return vals[-1] if vals else None
+        return self._last(ind.rsi(self.closes(), period))
+
+    def macd(self, fast: int = 12, slow: int = 26, signal: int = 9):
+        """返回 (dif, dea, hist) 当前值。"""
+        dif, dea, hist = ind.macd(self.closes(), fast, slow, signal)
+        return self._last(dif), self._last(dea), self._last(hist)
+
+    def boll(self, period: int = 20, k: float = 2.0):
+        """返回 (mid, upper, lower) 当前值。"""
+        mid, upper, lower = ind.boll(self.closes(), period, k)
+        return self._last(mid), self._last(upper), self._last(lower)
+
+    def atr(self, period: int = 14) -> Optional[float]:
+        return self._last(ind.atr(self.highs(), self.lows(), self.closes(), period))
+
+    def kdj(self, n: int = 9, m1: int = 3, m2: int = 3):
+        """返回 (k, d, j) 当前值。"""
+        k, d, j = ind.kdj(self.highs(), self.lows(), self.closes(), n, m1, m2)
+        return self._last(k), self._last(d), self._last(j)
+
+    def obv(self) -> Optional[float]:
+        return self._last(ind.obv(self.closes(), self.volumes()))
+
+    def mom(self, period: int = 10) -> Optional[float]:
+        return self._last(ind.mom(self.closes(), period))
+
+    def bias(self, period: int = 6) -> Optional[float]:
+        return self._last(ind.bias(self.closes(), period))
+
+    def willr(self, period: int = 14) -> Optional[float]:
+        return self._last(ind.willr(self.highs(), self.lows(), self.closes(), period))
+
+    # —— 软风控（ctx.risk，设计 v1.0：超限自动拦截）——
+    @property
+    def risk(self) -> "RiskGuard":
+        """返回软风控对象：检查 max_drawdown_limit / daily_loss_limit / position_limit。
+
+        用法：``if ctx.risk.breached: ctx.sell("risk_forced", ctx.risk.reason)``
+        """
+        if self._risk_guard is None:
+            self._risk_guard = RiskGuard(self)
+        return self._risk_guard
+
+
+class RiskGuard:
+    """单标的软风控（ctx.risk）。
+
+    从策略参数读取上限（0/缺省=关闭），实时计算是否越线：
+    - max_drawdown_limit: 自净值峰值回撤比例上限（0.15 = 15%）
+    - daily_loss_limit:   单日跌幅上限（0.03 = 3%）
+    - position_limit:     单标的最大仓位比例（0.3 = 30%）
+
+    用法（策略 on_bar 内）：
+        if ctx.risk.breached:
+            ctx.sell("risk_forced", ctx.risk.reason)
+    """
+
+    def __init__(self, ctx: StrategyContext):
+        self.ctx = ctx
+        self._reason = ""
+
+    @property
+    def equity(self) -> float:
+        ec = self.ctx.engine.equity_curve
+        return ec[-1].equity if ec else float(self.ctx.engine.initial_cash)
+
+    @property
+    def peak(self) -> float:
+        ec = self.ctx.engine.equity_curve
+        return max((p.equity for p in ec), default=self.equity)
+
+    @property
+    def drawdown(self) -> float:
+        peak = self.peak
+        return (self.equity / peak - 1.0) if peak > 0 else 0.0
+
+    @property
+    def position_ratio(self) -> float:
+        eng = self.ctx.engine
+        equity = self.equity
+        if equity <= 0:
+            return 0.0
+        price = float(self.ctx.bar["close"]) if self.ctx.bar else 0.0
+        return (eng.shares * price) / equity if price > 0 else 0.0
+
+    @property
+    def breached(self) -> bool:
+        p = self.ctx.params
+        mdd = float(p.get("max_drawdown_limit", 0) or 0)
+        dll = float(p.get("daily_loss_limit", 0) or 0)
+        pl = float(p.get("position_limit", 0) or 0)
+        if mdd > 0 and self.drawdown <= -mdd:
+            self._reason = f"回撤 {self.drawdown:.1%} 超过上限 {mdd:.1%}"
+            return True
+        ec = self.ctx.engine.equity_curve
+        if dll > 0 and len(ec) >= 2:
+            prev = ec[-2].equity
+            day_ret = self.equity / prev - 1.0 if prev > 0 else 0.0
+            if day_ret <= -dll:
+                self._reason = f"单日跌幅 {day_ret:.1%} 超过上限 {dll:.1%}"
+                return True
+        if pl > 0 and self.position_ratio > pl:
+            self._reason = f"仓位 {self.position_ratio:.1%} 超过上限 {pl:.1%}"
+            return True
+        self._reason = ""
+        return False
+
+    @property
+    def reason(self) -> str:
+        return self._reason
 
 
 class BacktestEngine:
