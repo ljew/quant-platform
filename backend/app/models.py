@@ -339,3 +339,50 @@ class BrokerOrder(Base):
 
     def __repr__(self):
         return f"<BrokerOrder {self.order_id} {self.symbol} {self.side} {self.status}>"
+
+
+class FactorDaily(Base):
+    """因子日截面宽表（ETL 每日落库，供选股/因子研究/监控）。
+
+    trade_date = 因子计算截面日；每 (symbol, trade_date) 一行，14 个因子列。
+    值取「越大越优」取向（与多因子策略 report_factor 一致）。
+    回测仍由引擎实时计算因子，本表服务当前截面分析。
+    """
+
+    __tablename__ = "factor_daily"
+    __table_args__ = (
+        UniqueConstraint("symbol", "trade_date", name="uq_factor_daily"),
+        Index("ix_fd_date", "trade_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(16))
+    trade_date: Mapped[date] = mapped_column(Date)
+
+    # 14 因子（与 factor_library.FACTORS 对齐）
+    ep: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bp: Mapped[float | None] = mapped_column(Float, nullable=True)
+    momentum: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reversal: Mapped[float | None] = mapped_column(Float, nullable=True)
+    low_vol: Mapped[float | None] = mapped_column(Float, nullable=True)
+    size: Mapped[float | None] = mapped_column(Float, nullable=True)
+    beta: Mapped[float | None] = mapped_column(Float, nullable=True)
+    idio_vol: Mapped[float | None] = mapped_column(Float, nullable=True)
+    skewness: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tail_risk: Mapped[float | None] = mapped_column(Float, nullable=True)
+    roe: Mapped[float | None] = mapped_column(Float, nullable=True)
+    revenue_yoy: Mapped[float | None] = mapped_column(Float, nullable=True)
+    profit_yoy: Mapped[float | None] = mapped_column(Float, nullable=True)
+    earnings_surprise: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    computed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<FactorDaily {self.symbol} {self.trade_date}>"
+
+
+FACTOR_COLUMNS = [
+    "ep", "bp", "momentum", "reversal", "low_vol", "size", "beta",
+    "idio_vol", "skewness", "tail_risk", "roe", "revenue_yoy", "profit_yoy",
+    "earnings_surprise",
+]

@@ -16,8 +16,8 @@ from datetime import datetime
 
 logger = logging.getLogger("data_scheduler")
 
-# 每个交易日 15:30 后执行一次（A 股收盘）
-RUN_HOUR, RUN_MIN = 15, 30
+# 每个交易日 17:00 后执行一次 ETL（tushare 收盘数据就绪 + 因子计算）
+RUN_HOUR, RUN_MIN = 17, 0
 _CHECK_INTERVAL = 60  # 秒
 
 
@@ -33,9 +33,9 @@ def _is_trading_day(d: datetime) -> bool:
 
 
 def _run_update() -> bool:
-    """子进程执行每日增量更新（独立进程，内存/异常隔离）。"""
+    """子进程执行 ETL 每日管道（tushare 采集→增量入库→因子落库；独立进程隔离崩溃）。"""
     backend = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # backend/
-    script = os.path.join(backend, "scripts", "update_daily.py")
+    script = os.path.join(backend, "scripts", "etl_daily.py")
     env = dict(os.environ)
     env["PYTHONPATH"] = backend
     try:
@@ -45,15 +45,15 @@ def _run_update() -> bool:
             cwd=backend,
             capture_output=True,
             text=True,
-            timeout=1800,
+            timeout=3600,
         )
         if proc.returncode == 0:
-            logger.info("数据日更成功:\n%s", proc.stdout[-800:])
+            logger.info("ETL 日更成功:\n%s", proc.stdout[-1200:])
             return True
-        logger.error("数据日更失败 rc=%s:\n%s", proc.returncode, proc.stderr[-800:])
+        logger.error("ETL 日更失败 rc=%s:\n%s", proc.returncode, proc.stderr[-1200:])
         return False
     except Exception as e:  # noqa: BLE001
-        logger.error("数据日更异常: %s", e)
+        logger.error("ETL 日更异常: %s", e)
         return False
 
 

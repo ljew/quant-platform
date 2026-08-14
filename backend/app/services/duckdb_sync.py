@@ -23,6 +23,7 @@ ANALYTIC_TABLES = [
     "fundamentals_history",
     "stocks",
     "index_membership",
+    "factor_daily",
 ]
 
 INDEXES = {
@@ -31,6 +32,7 @@ INDEXES = {
     "fundamentals_history": ["symbol", "report_date"],
     "stocks": ["symbol"],
     "index_membership": ["index_code", "trade_date"],
+    "factor_daily": ["symbol", "trade_date"],
 }
 
 
