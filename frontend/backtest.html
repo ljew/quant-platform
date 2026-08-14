@@ -145,6 +145,9 @@
       <button class="btn" id="runBtn">运行回测</button>
       <button class="btn" id="optimBtn" style="background:#3ba272;">参数寻优</button>
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text2);cursor:pointer;user-select:none;">
+        <input type="checkbox" id="asyncMode" checked /> 异步运行（不阻塞页面，可看进度）
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text2);cursor:pointer;user-select:none;">
         <input type="checkbox" id="compareMode" /> 对比模式（多策略净值叠加）
       </label>
       <span class="hint" id="runHint">支持任意 A 股标的，数据自动回源</span>
@@ -529,6 +532,36 @@ document.getElementById("runBtn").onclick = async ()=>{
   };
   const btn=document.getElementById("runBtn");
   const runHint=document.getElementById("runHint");
+  // —— 异步模式（完整版架构：任务队列提交 + 进度轮询）——
+  if(document.getElementById("asyncMode") && document.getElementById("asyncMode").checked){
+    isRunning=true; btn.disabled=true;
+    btn.innerHTML='<span class="spin"></span>已提交…';
+    runHint.textContent="任务已提交，正在轮询进度…";
+    try{
+      const sub=await fetch(`${API}/strategy/backtest/async`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+      if(!sub.ok){ const e=await sub.json().catch(()=>({detail:sub.statusText})); throw new Error(e.detail||"提交失败"); }
+      const {task_id}=await sub.json();
+      let t=null;
+      for(let i=0;i<300;i++){   // 最长 ~5 分钟
+        await new Promise(r=>setTimeout(r,1000));
+        const sr=await fetch(`${API}/strategy/backtest/tasks/${task_id}`);
+        t=await sr.json();
+        runHint.textContent=`进度 ${Math.round((t.progress||0)*100)}% · ${t.message||(t.status==='running'?'引擎计算中…':'')}`;
+        if(t.status==='done'||t.status==='error') break;
+      }
+      if(!t || t.status!=='done') throw new Error((t&&t.error)||"任务未在预期时间内完成");
+      const res=await (await fetch(`${API}/strategy/backtests/${t.result_id}`)).json();
+      renderResult(res);
+      switchTab('tab-result');
+      document.querySelectorAll('#histBody tr').forEach(tr=>tr.classList.remove('selected'));
+      runHint.textContent="回测完成 ✓ 结果见下方";
+    }catch(e){
+      runHint.innerHTML=`<span class="err">${e.message}</span>`;
+    }finally{
+      isRunning=false; btn.disabled=false; btn.textContent="运行回测";
+    }
+    return;
+  }
   isRunning=true;
   btn.disabled=true;
   btn.innerHTML='<span class="spin"></span>正在拉取数据…';

@@ -36,6 +36,7 @@ from app.services import data_source, duckdb_store, ingestion
 from app.core.engine.backtest_engine import BacktestEngine
 from app.core.engine.portfolio_backtest import PortfolioBacktestEngine
 from app.core.strategies.registry import get_strategy, list_strategies
+from app.core import task_queue
 
 router = APIRouter(prefix="/strategy", tags=["strategy"])
 
@@ -47,6 +48,12 @@ def strategies():
 
 @router.post("/backtest", response_model=BacktestResult)
 def run_backtest(req: BacktestRequest, db: Session = Depends(get_db)):
+    """同步回测（原型/前端现有调用）。"""
+    return _do_backtest(req, db)
+
+
+def _do_backtest(req: BacktestRequest, db: Session, progress_cb=None) -> BacktestResult:
+    """回测核心逻辑（同步/异步共用）。progress_cb(p, msg) 可选，用于上报进度。"""
     # 1) 校验策略
     try:
         meta = get_strategy(req.strategy)
@@ -60,12 +67,53 @@ def run_backtest(req: BacktestRequest, db: Session = Depends(get_db)):
     multi = meta.get("multi_asset", False)
 
     if multi:
-        result = _run_portfolio(db, req, meta, params)
+        result = _run_portfolio(db, req, meta, params, progress_cb=progress_cb)
     else:
         result = _run_single(db, req, meta, params)
 
     record = _persist(db, req, meta, params, result)
     return _to_result(record, meta["name"], multi)
+
+
+# ——— 异步回测（任务队列，完整版架构：回测异步化 + 进度查询） ———
+@router.post("/backtest/async")
+def submit_backtest(req: BacktestRequest):
+    """提交异步回测任务，立即返回 task_id；完成后 GET /backtest/tasks/{id} 取 result_id。"""
+    tid = task_queue.submit(f"backtest:{req.strategy}", _execute_backtest_task, req.model_dump())
+    return {"task_id": tid, "status": "running"}
+
+
+@router.get("/backtest/tasks/{task_id}")
+def backtest_task_status(task_id: str):
+    """查询异步回测任务状态（running/done/error + 进度 + result_id）。"""
+    t = task_queue.get(task_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
+    return t
+
+
+@router.get("/backtest/tasks")
+def backtest_task_list():
+    """最近任务列表（诊断用）。"""
+    return task_queue.list_tasks(limit=20)
+
+
+def _execute_backtest_task(payload: dict, _task_id: str = "") -> int:
+    """后台线程执行体：独立 Session 跑回测，返回回测记录 id。"""
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        req = BacktestRequest(**payload)
+
+        def cb(p: float, msg: str) -> None:
+            if _task_id:
+                task_queue.update_progress(_task_id, p, msg)
+
+        result = _do_backtest(req, db, progress_cb=cb)
+        return result.id
+    finally:
+        db.close()
 
 
 # ——— 单标的回测 ———
@@ -87,7 +135,7 @@ def _run_single(db, req, meta, params):
 
 
 # ——— 组合（指数增强）回测 ———
-def _run_portfolio(db, req, meta, params):
+def _run_portfolio(db, req, meta, params, progress_cb=None):
     index_code = meta.get("index_code", "000906")
     index_symbol = meta.get("index_symbol", "sh000906")
     rebalance_period = int(params.get("rebalance_period", 21))
@@ -124,10 +172,13 @@ def _run_portfolio(db, req, meta, params):
         int(params.get("beta_lookback", 120)),
         int(params.get("tail_lookback", 120)),
     ) + 5
-    for sym in union_syms:
+    total_union = len(union_syms)
+    for i, sym in enumerate(union_syms):
         bars = _load_bars(db, sym, req.start, req.end, req.adj)
         if len(bars) >= warmup_min:
             data[sym] = bars
+        if progress_cb and (i % 50 == 0 or i == total_union - 1):
+            progress_cb(i / max(total_union, 1), f"加载行情 {i}/{total_union}")
 
     if len(data) < 20:
         raise HTTPException(
