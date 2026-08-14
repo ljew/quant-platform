@@ -32,7 +32,7 @@ from app.schemas import (
     StrategyInfo,
     TradePoint,
 )
-from app.services import data_source, duckdb_store, ingestion
+from app.services import data_source, duckdb_store, ingestion, membership_store
 from app.core.engine.backtest_engine import BacktestEngine
 from app.core.engine.portfolio_backtest import PortfolioBacktestEngine
 from app.core.strategies.registry import get_strategy, list_strategies
@@ -145,8 +145,10 @@ def _run_portfolio(db, req, meta, params, progress_cb=None):
 
     # 1) 时点(point-in-time)成分股成员资格：覆盖整个回测区间的月度快照
     #    消除『用当前成分股回测整段历史』带来的前视/幸存者偏差。
+    #    优先读本地 index_membership 缓存（在线源波动不影响回测可复现性），
+    #    缺失月份才在线拉取并回填。
     try:
-        membership = data_source.get_index_membership(index_code, sd, ed)
+        membership = membership_store.get_membership(db, index_code, sd, ed)
     except Exception as e:
         raise HTTPException(
             status_code=400,

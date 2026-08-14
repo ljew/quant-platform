@@ -288,3 +288,27 @@ class PaperSnapshot(Base):
 
     def __repr__(self):
         return f"<PaperSnapshot {self.task_id} {self.date} {self.equity}>"
+
+
+class IndexMembership(Base):
+    """指数成分股时点快照（落库缓存，根治在线数据源波动导致回测不可复现）。
+
+    trade_date = 该快照对应的成分股生效日（tushare index_weight 每月最后一个
+    交易日）。回测时取「≤ 调仓日的最新快照」作合法股票池（point-in-time，
+    消除前视/幸存者偏差）。首次缺失时在线拉取并回填，之后回测完全离线可复现。
+    """
+
+    __tablename__ = "index_membership"
+    __table_args__ = (
+        UniqueConstraint("index_code", "trade_date", "symbol", name="uq_membership"),
+        Index("ix_membership_code_date", "index_code", "trade_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    index_code: Mapped[str] = mapped_column(String(8))      # 纯数字，如 000906
+    trade_date: Mapped[date] = mapped_column(Date)
+    symbol: Mapped[str] = mapped_column(String(16))          # 归一化后的 symbol（sh600519）
+    weight: Mapped[float] = mapped_column(Float, default=0.0)  # 成分权重（%），备用
+
+    def __repr__(self):
+        return f"<IndexMembership {self.index_code} {self.trade_date} {self.symbol}>"

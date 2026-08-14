@@ -22,7 +22,8 @@ from app.core.engine.backtest_engine import BacktestEngine
 from app.core.engine.portfolio_backtest import PortfolioBacktestEngine
 from app.core.strategies.registry import get_strategy
 from app.models import Stock, PaperTask, PaperTrade, PaperSnapshot, FundamentalsHistory
-from app.services.data_source import get_realtime_prices, get_index_membership
+from app.services.data_source import get_realtime_prices
+from app.services.membership_store import get_membership as _get_membership
 # 复用回测路由里的数据加载函数（DB 优先、缺失回源落地），避免重复实现
 from app.routers.strategy import _load_bars, _load_index_bars
 
@@ -87,7 +88,7 @@ def _load_portfolio(db, task: PaperTask) -> dict:
     sd = date(end.year - 5, 1, 1)
     start = sd.isoformat()
 
-    membership = get_index_membership(index_code, sd, end)
+    membership = _get_membership(db, index_code, sd, end)
     if not membership:
         raise ValueError(f"未获取到指数 {index_code} 的时点成分股")
     union: list[str] = []
