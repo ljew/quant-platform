@@ -541,15 +541,32 @@ document.getElementById("runBtn").onclick = async ()=>{
       const sub=await fetch(`${API}/strategy/backtest/async`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
       if(!sub.ok){ const e=await sub.json().catch(()=>({detail:sub.statusText})); throw new Error(e.detail||"提交失败"); }
       const {task_id}=await sub.json();
-      let t=null;
-      for(let i=0;i<300;i++){   // 最长 ~5 分钟
-        await new Promise(r=>setTimeout(r,1000));
-        const sr=await fetch(`${API}/strategy/backtest/tasks/${task_id}`);
-        t=await sr.json();
-        runHint.textContent=`进度 ${Math.round((t.progress||0)*100)}% · ${t.message||(t.status==='running'?'引擎计算中…':'')}`;
-        if(t.status==='done'||t.status==='error') break;
-      }
-      if(!t || t.status!=='done') throw new Error((t&&t.error)||"任务未在预期时间内完成");
+      // WebSocket 实时推送（设计 v1.0 /ws/backtest/{task_id}），轮询 3s 兜底
+      const wsUrl=(location.protocol==='https:'?'wss://':'ws://')+location.host+`${API}/strategy/backtest/ws/${task_id}`;
+      const done=await new Promise((resolve)=>{
+        let settled=false, ws=null;
+        const finish=(status,data)=>{ if(!settled){ settled=true; if(ws){try{ws.close()}catch(_){}} resolve({status,data}); } };
+        const pollTimer=setInterval(async ()=>{
+          try{
+            const sr=await fetch(`${API}/strategy/backtest/tasks/${task_id}`);
+            const tt=await sr.json();
+            if(tt.status==='done'||tt.status==='error'){ clearInterval(pollTimer); finish(tt.status,tt); }
+          }catch(_){}
+        },3000);
+        try{
+          ws=new WebSocket(wsUrl);
+          ws.onmessage=(ev)=>{
+            const d=JSON.parse(ev.data);
+            if(d.type==='error'){ clearInterval(pollTimer); finish('error',d); return; }
+            runHint.textContent=`进度 ${Math.round((d.progress||0)*100)}% · ${d.message||(d.status==='running'?'引擎计算中…':'')}`;
+            if(d.status==='done'||d.status==='error'){ clearInterval(pollTimer); finish(d.status,d); }
+          };
+          ws.onerror=()=>{};   // 兜底靠轮询
+          ws.onclose=()=>{};   // 兜底靠轮询
+        }catch(_){ /* 兜底靠轮询 */ }
+      });
+      const t=done.data;
+      if(done.status!=='done' || !t || t.status!=='done') throw new Error((t&&t.error)||"任务未在预期时间内完成");
       const res=await (await fetch(`${API}/strategy/backtests/${t.result_id}`)).json();
       renderResult(res);
       switchTab('tab-result');

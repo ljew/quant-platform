@@ -11,11 +11,12 @@
 """
 from __future__ import annotations
 
+import asyncio
 import itertools
 import json
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
@@ -96,6 +97,38 @@ def backtest_task_status(task_id: str):
 def backtest_task_list():
     """最近任务列表（诊断用）。"""
     return task_queue.list_tasks(limit=20)
+
+
+@router.websocket("/backtest/ws/{task_id}")
+async def ws_backtest_task(websocket: WebSocket, task_id: str):
+    """WebSocket 实时推送回测任务进度（设计 v1.0：/ws/backtest/{task_id}）。
+
+    连接后立即推送当前状态，之后每次任务状态变更（进度/完成/失败）实时推送；
+    done/error 后自动关闭。前端可据此替代轮询（保留轮询作兜底）。
+    """
+    await websocket.accept()
+    t = task_queue.get(task_id)
+    if t is None:
+        await websocket.send_json({"type": "error", "message": f"任务不存在: {task_id}"})
+        await websocket.close()
+        return
+    await websocket.send_json(t)
+    if t["status"] in ("done", "error"):
+        await websocket.close()
+        return
+    loop = asyncio.get_running_loop()
+    q: asyncio.Queue = asyncio.Queue()
+    task_queue.subscribe(task_id, loop, q)
+    try:
+        while True:
+            data = await q.get()
+            await websocket.send_json(data)
+            if data.get("status") in ("done", "error"):
+                break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        task_queue.unsubscribe(task_id, q)
 
 
 def _execute_backtest_task(payload: dict, _task_id: str = "") -> int:

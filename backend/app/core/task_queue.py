@@ -3,11 +3,13 @@
 单机/单进程阶段用线程池实现，提供与 Celery 等价的语义：
     submit() 提交后台任务 → 立即返回 task_id
     get()    查询状态（running/done/error + 进度 + 结果 id）
+    subscribe() 订阅任务状态变更（供 WebSocket 实时推送，线程安全）
 
 生产如需多进程/持久化，可替换为 Celery+Redis，接口层不变。
 """
 from __future__ import annotations
 
+import asyncio
 import inspect
 import threading
 import traceback
@@ -21,6 +23,23 @@ _lock = threading.RLock()
 
 # 任务历史保留上限（防内存无限增长）
 _MAX_TASKS = 200
+
+# task_id -> [(event_loop, asyncio.Queue)]：状态变更时经 loop.call_soon_threadsafe 广播
+_subscribers: dict[str, list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]]] = {}
+
+
+def _broadcast(tid: str) -> None:
+    """向订阅者推送任务最新状态（线程安全：跨线程调度到事件循环）。"""
+    with _lock:
+        t = dict(_tasks[tid]) if tid in _tasks else None
+        subs = list(_subscribers.get(tid, []))
+    if t is None or not subs:
+        return
+    for loop, q in subs:
+        try:
+            loop.call_soon_threadsafe(q.put_nowait, dict(t))
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def submit(name: str, fn: Callable, *args, **kwargs) -> str:
@@ -43,6 +62,7 @@ def submit(name: str, fn: Callable, *args, **kwargs) -> str:
         if len(_tasks) > _MAX_TASKS:
             for k in list(_tasks.keys())[: len(_tasks) - _MAX_TASKS]:
                 _tasks.pop(k, None)
+        _broadcast(tid)
 
     def _run() -> None:
         try:
@@ -61,6 +81,7 @@ def submit(name: str, fn: Callable, *args, **kwargs) -> str:
                 t["status"] = "error"
                 t["error"] = str(e)
                 t["traceback"] = traceback.format_exc()[-1500:]
+        _broadcast(tid)
 
     _executor.submit(_run)
     return tid
@@ -79,6 +100,21 @@ def update_progress(tid: str, progress: float, message: str = "") -> None:
             t["progress"] = round(progress, 4)
             if message:
                 t["message"] = message
+            _broadcast(tid)
+
+
+def subscribe(tid: str, loop: asyncio.AbstractEventLoop, q: asyncio.Queue) -> None:
+    """订阅任务状态变更（WebSocket 场景：在事件循环内创建 queue 后调用）。"""
+    with _lock:
+        _subscribers.setdefault(tid, []).append((loop, q))
+
+
+def unsubscribe(tid: str, q: asyncio.Queue) -> None:
+    with _lock:
+        subs = _subscribers.get(tid, [])
+        _subscribers[tid] = [(l, x) for l, x in subs if x is not q]
+        if not _subscribers[tid]:
+            _subscribers.pop(tid, None)
 
 
 def list_tasks(limit: int = 20) -> list[dict]:
