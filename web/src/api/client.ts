@@ -78,4 +78,59 @@ export const api = {
     ),
   backtestDetail: (id: number) => get<BacktestResult>(`/strategy/backtests/${id}`),
   backtestHistory: (limit = 30) => get<BacktestResult[]>(`/strategy/backtests?limit=${limit}`),
+  // 模拟盘
+  paperTasks: () => get<PaperTask[]>("/paper/tasks"),
+  paperCreate: (body: Record<string, unknown>) => post<PaperTask>("/paper/tasks", body),
+  paperRun: (id: number) => post<{ ok: boolean }>(`/paper/tasks/${id}/run`, {}),
+  paperToggle: (id: number) => post<PaperTask>(`/paper/tasks/${id}/toggle`, {}),
+  paperDelete: async (id: number) => {
+    const r = await fetch(`${BASE}/paper/tasks/${id}`, { method: "DELETE" });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({ detail: r.statusText }));
+      throw new Error(e.detail || r.statusText);
+    }
+    return r.json();
+  },
+  paperDetail: (id: number) => get<PaperDetail>(`/paper/tasks/${id}`),
 };
+
+// —— 模拟盘类型 ——
+export interface PaperTask {
+  id: number;
+  name: string;
+  strategy_key: string;
+  kind: "single" | "portfolio";
+  symbols: string;
+  index_code: string;
+  enabled: boolean;
+  initial_cash: number;
+  equity: number;
+  pnl: number;
+  pnl_pct: number;
+  positions_count: number;
+  last_run_at?: string;
+  error_msg?: string | null;
+}
+
+export interface PaperTrade {
+  trade_date: string;
+  symbol: string;
+  side: string;
+  price: number;
+  shares: number;
+  signal_type?: string;
+}
+
+export interface PaperDetail {
+  id: number;
+  kind: "single" | "portfolio";
+  equity: number;
+  pnl_pct?: number;
+  positions?: Record<string, unknown>;
+  curve?: { date: string; equity: number }[];
+  trades?: PaperTrade[];
+  factor_analysis?: unknown;
+  risk_limits?: Record<string, number> | null;
+  risk_clamps?: unknown[];
+  error_msg?: string | null;
+}
