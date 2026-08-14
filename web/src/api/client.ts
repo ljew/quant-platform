@@ -41,6 +41,8 @@ export interface BacktestResult {
   id: number;
   symbol: string;
   strategy_key?: string;
+  start_date?: string;
+  end_date?: string;
   total_return: number;
   annual_return: number;
   sharpe: number;
