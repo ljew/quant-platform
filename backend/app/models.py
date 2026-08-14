@@ -312,3 +312,30 @@ class IndexMembership(Base):
 
     def __repr__(self):
         return f"<IndexMembership {self.index_code} {self.trade_date} {self.symbol}>"
+
+
+class BrokerOrder(Base):
+    """券商订单（设计 v1.0 orders 表；当前由模拟券商写入）。
+
+    状态机：PENDING → SUBMITTED → PARTIAL_FILLED → FILLED / CANCELLED / REJECTED
+    """
+
+    __tablename__ = "broker_orders"
+    __table_args__ = (Index("ix_bo_symbol", "symbol"), Index("ix_bo_created", "created_at"))
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    order_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(16))
+    side: Mapped[str] = mapped_column(String(8))        # BUY / SELL
+    price: Mapped[float] = mapped_column(Float, default=0.0)
+    quantity: Mapped[int] = mapped_column(Integer, default=100)
+    status: Mapped[str] = mapped_column(String(20), default="PENDING")
+    filled_quantity: Mapped[int] = mapped_column(Integer, default=0)
+    filled_price: Mapped[float] = mapped_column(Float, default=0.0)
+    strategy_key: Mapped[str] = mapped_column(String(32), default="manual")
+    tag: Mapped[str] = mapped_column(String(128), default="")
+    message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<BrokerOrder {self.order_id} {self.symbol} {self.side} {self.status}>"
