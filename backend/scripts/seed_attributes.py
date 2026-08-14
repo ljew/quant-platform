@@ -26,3 +26,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    from app.services.duckdb_sync import sync_after_seed
+
+    sync_after_seed(["stocks"])
