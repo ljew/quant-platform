@@ -1,65 +1,36 @@
-# 生产环境部署 — Docker Compose
-# 开发环境无需 Docker，直接 `uvicorn app.main:app` 用 SQLite 即可运行。
-# 安装 Docker 后，本文件可一键拉起 全栈（Postgres+TimescaleDB / Redis / backend / frontend）。
-#
-# 使用：
-#   docker compose up -d
-#   # 后端 http://localhost:8000  ，前端 http://localhost:3000
-
+# 个人量化投研平台 — 一键部署（设计 v1.0）
+# 用法：cp .env.example .env（填 QUANT_TUSHARE_TOKEN）&& docker compose up -d --build
+# 访问：http://localhost:8000 （后端 FastAPI 直接托管前端页面 + /api）
 services:
-  postgres:
-    image: timescale/timescaledb:2.16.1-pg16
-    container_name: quant-postgres
-    environment:
-      POSTGRES_USER: quant
-      POSTGRES_PASSWORD: quant
-      POSTGRES_DB: quant
-    ports:
-      - "5432:5432"
-    volumes:
-      - quant_pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U quant"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   redis:
     image: redis:7-alpine
-    container_name: quant-redis
+    restart: unless-stopped
+    # 预留：完整版任务队列 Celery broker（当前后端用轻量线程池，未依赖 redis 也能跑）
     ports:
       - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
+      interval: 10s
       timeout: 3s
-      retries: 5
+      retries: 3
 
   backend:
     build:
-      context: ./backend
-    container_name: quant-backend
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
     environment:
-      QUANT_DATABASE_URL: postgresql://quant:quant@postgres:5432/quant
-      QUANT_CORS_ORIGINS: "http://localhost:3000"
+      - QUANT_DATABASE_URL=sqlite:////data/quant_dev.db
+      - QUANT_FRONTEND_DIR=/frontend
+      - QUANT_TUSHARE_TOKEN=${QUANT_TUSHARE_TOKEN:-}
+      - QUANT_DEBUG=false
+    volumes:
+      - quant_data:/data
     ports:
       - "8000:8000"
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
-
-  frontend:
-    build:
-      context: ./frontend
-    container_name: quant-frontend
-    ports:
-      - "3000:3000"
-    depends_on:
-      - backend
-    command: npx serve -s dist -l 3000
 
 volumes:
-  quant_pgdata:
+  quant_data:

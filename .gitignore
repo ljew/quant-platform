@@ -35,3 +35,6 @@ logs/
 
 # —— 前端依赖（如有）——
 node_modules/
+
+# .env.example 需提交（模板），例外规则
+!.env.example
