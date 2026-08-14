@@ -71,6 +71,27 @@ export default function PaperPage() {
     }
   };
 
+  // 「立即运行」：带反馈（禁用+提示），避免后台任务无感知
+  const [runningId, setRunningId] = useState<number | null>(null);
+  const runNow = async (id: number) => {
+    if (runningId !== null) return;
+    setRunningId(id);
+    setError("");
+    try {
+      await api.paperRun(id);
+      setProgressHint(`任务 #${id} 已触发，运行中…`);
+      // 后台线程执行，延时刷新两次以展示结果
+      setTimeout(() => { refresh(); setProgressHint(`任务 #${id} 运行完成，已刷新`); }, 4000);
+    } catch (e) {
+      setError((e as Error).message);
+      setProgressHint("");
+    } finally {
+      setRunningId(null);
+    }
+  };
+
+  const [progressHint, setProgressHint] = useState("");
+
   const remove = async (id: number) => {
     if (!window.confirm(`删除模拟盘任务 #${id}？`)) return;
     try {
@@ -111,6 +132,7 @@ export default function PaperPage() {
       <button onClick={create} style={btnStyle}>创建并运行</button>
       <button onClick={refresh} style={{ ...btnStyle, background: colors.muted }}>刷新</button>
       {error && <div style={{ color: colors.up, margin: "8px 0" }}>{error}</div>}
+      {progressHint && !error && <div style={{ color: colors.muted, margin: "8px 0", fontSize: 13 }}>{progressHint}</div>}
 
       {/* 任务列表 */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: 12, marginTop: 16 }}>
@@ -130,7 +152,9 @@ export default function PaperPage() {
             {t.error_msg && <div style={{ fontSize: 12, color: colors.up }}>{t.error_msg}</div>}
             <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
               <button onClick={(e) => { e.stopPropagation(); toggle(t.id); }} style={smallBtn(colors)}>{t.enabled ? "暂停" : "启用"}</button>
-              <button onClick={(e) => { e.stopPropagation(); api.paperRun(t.id).then(refresh); }} style={smallBtn(colors)}>立即运行</button>
+              <button onClick={(e) => { e.stopPropagation(); runNow(t.id); }} style={smallBtn(colors)} disabled={runningId === t.id}>
+                {runningId === t.id ? "运行中…" : "立即运行"}
+              </button>
               <button onClick={(e) => { e.stopPropagation(); remove(t.id); }} style={{ ...smallBtn(colors), color: colors.up }}>删除</button>
             </div>
           </div>
@@ -186,7 +210,7 @@ function DetailPanel({ detail }: { detail: PaperDetail }) {
             <tbody>
               {trades.slice(-15).reverse().map((t, i) => (
                 <tr key={i} style={{ borderTop: `1px solid ${colors.border}` }}>
-                  <td style={{ padding: "5px 8px" }}>{t.trade_date}</td>
+                  <td style={{ padding: "5px 8px" }}>{(t as { date?: string }).date ? (t as { date?: string }).date : t.trade_date}</td>
                   <td>{t.symbol}</td>
                   <td style={{ color: t.side === "BUY" ? colors.up : colors.down }}>{t.side === "BUY" ? "买入" : "卖出"}</td>
                   <td>{t.price}</td>

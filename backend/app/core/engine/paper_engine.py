@@ -303,6 +303,7 @@ def get_paper_task_detail(db, task: PaperTask) -> dict:
     ]
     trade_list = [
         {
+            "trade_date": t.date.isoformat() if hasattr(t.date, "isoformat") else str(t.date),
             "date": t.date, "symbol": t.symbol, "side": t.side, "price": t.price,
             "shares": t.shares, "cash_after": t.cash_after, "commission": t.commission,
             "pnl": t.pnl, "signal_type": t.signal_type, "signal_reason": t.signal_reason,
