@@ -31,6 +31,11 @@ class OrderPayload(BaseModel):
     quantity: int = Field(100, ge=1)
     strategy_key: str = "manual"
     tag: str = ""
+    # 风控参数（0 = 关闭对应项）
+    account_cash: float = 1_000_000.0
+    position_limit: float = 0.0
+    daily_loss_limit: float = 0.0
+    freq_limit: int = 5
 
 
 @router.get("/brokers")
@@ -40,8 +45,13 @@ def brokers():
 
 @router.post("/order")
 def submit_order(payload: OrderPayload, db: Session = Depends(get_db)):
-    """提交标准订单（当前为模拟撮合，立即 FILLED）。"""
-    broker = get_broker("simulated", db)
+    """提交标准订单（风控链检查 → 模拟撮合）。
+
+    风控：① 资金检查 ② 持仓限制 ③ 日亏损上限 ④ 涨跌停 ⑤ 频率限制；
+    任一拒绝则订单不入券商（返回 400 + 原因）。
+    """
+    from app.core.broker.risk import RiskGate
+
     req = OrderRequest(
         symbol=payload.symbol,
         side=OrderSide(payload.side),
@@ -50,6 +60,26 @@ def submit_order(payload: OrderPayload, db: Session = Depends(get_db)):
         strategy_key=payload.strategy_key,
         tag=payload.tag,
     )
+    # 风控链（仅对限价单有意义的涨跌停检查在 price>0 时生效）
+    gate = RiskGate(
+        db,
+        cash=payload.account_cash,
+        position_limit=payload.position_limit,
+        daily_loss_limit=payload.daily_loss_limit,
+        freq_limit=payload.freq_limit,
+    )
+    ok, reason = gate.check(req)
+    if not ok:
+        return {
+            "order_id": req.order_id,
+            "status": "REJECTED",
+            "symbol": payload.symbol,
+            "side": payload.side,
+            "message": f"风控拒绝：{reason}",
+            "risk": True,
+        }
+
+    broker = get_broker("simulated", db)
     result = broker.submit_order(req)
     if result.status.value in ("REJECTED",):
         raise HTTPException(status_code=400, detail=result.message)

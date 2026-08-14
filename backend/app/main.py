@@ -36,6 +36,9 @@ def on_startup():
     init_db()
     from app.core.engine.paper_scheduler import start_paper_scheduler
     start_paper_scheduler()
+    # 数据管道调度（QUANT_DATA_SCHEDULE=1 启用：每交易日 15:30 自动日更）
+    from app.core.data_scheduler import start_data_scheduler
+    start_data_scheduler()
 
 
 @app.get("/health", response_model=HealthResponse, tags=["meta"])
