@@ -23,8 +23,10 @@ _thread: threading.Thread | None = None
 
 
 def _trading_now(now: dt.datetime) -> bool:
-    """是否处于 A 股交易时段（本地时间，沙箱为 GMT+8）。"""
-    if now.weekday() >= 5:  # 周末
+    """是否处于 A 股交易时段（交易日 + 9:30-11:30 / 13:00-15:00）。"""
+    from app.core.trading_calendar import is_trading_day
+
+    if not is_trading_day(now):
         return False
     t = now.hour * 60 + now.minute
     if 9 * 60 + 30 <= t <= 11 * 60 + 30:
@@ -47,8 +49,10 @@ def _loop() -> None:
                     if t.kind == "single":
                         if _trading_now(now):
                             run_paper_task(db, t)
-                    else:  # portfolio：日频，收盘后跑一次
-                        if now.hour >= 15 and (
+                    else:  # portfolio：日频，交易日收盘后跑一次
+                        from app.core.trading_calendar import is_trading_day
+
+                        if now.hour >= 15 and is_trading_day(now) and (
                             t.last_run_at is None
                             or t.last_run_at.date() != now.date()
                         ):

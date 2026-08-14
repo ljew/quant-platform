@@ -26,8 +26,10 @@ def _today_str() -> str:
 
 
 def _is_trading_day(d: datetime) -> bool:
-    # 简化：周一~周五（节假日未排除；A股休市日运行会空转，无副作用）
-    return d.weekday() < 5
+    """是否为 A 股交易日（周末 + 法定节假日休市）。"""
+    from app.core.trading_calendar import is_trading_day as _td
+
+    return _td(d)
 
 
 def _run_update() -> bool:

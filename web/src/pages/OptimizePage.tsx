@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, OptimizeTrial, StrategyInfo } from "../api/client";
+import { useTheme } from "../theme";
 
 /** 参数寻优（网格搜索，设计 v1.0 策略研究模块）。 */
 export default function OptimizePage() {
@@ -13,6 +14,7 @@ export default function OptimizePage() {
   const [trials, setTrials] = useState<OptimizeTrial[]>([]);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
+  const { colors } = useTheme();
 
   useEffect(() => {
     api.strategies().then((s) => {
@@ -72,18 +74,18 @@ export default function OptimizePage() {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 12 }}>
         <label>
           策略（单标的）
-          <select value={key} onChange={(e) => onStrategyChange(e.target.value)} style={inputStyle}>
+          <select value={key} onChange={(e) => onStrategyChange(e.target.value)} style={inputStyle(colors)}>
             {strategies.map((s) => (
               <option key={s.key} value={s.key}>{s.name}</option>
             ))}
           </select>
         </label>
-        <label>标的<input value={symbol} onChange={(e) => setSymbol(e.target.value)} style={inputStyle} /></label>
-        <label>开始<input type="date" value={start} onChange={(e) => setStart(e.target.value)} style={inputStyle} /></label>
-        <label>结束<input type="date" value={end} onChange={(e) => setEnd(e.target.value)} style={inputStyle} /></label>
+        <label>标的<input value={symbol} onChange={(e) => setSymbol(e.target.value)} style={inputStyle(colors)} /></label>
+        <label>开始<input type="date" value={start} onChange={(e) => setStart(e.target.value)} style={inputStyle(colors)} /></label>
+        <label>结束<input type="date" value={end} onChange={(e) => setEnd(e.target.value)} style={inputStyle(colors)} /></label>
         <label>
           排序依据
-          <select value={rankBy} onChange={(e) => setRankBy(e.target.value)} style={inputStyle}>
+          <select value={rankBy} onChange={(e) => setRankBy(e.target.value)} style={inputStyle(colors)}>
             <option value="sharpe">夏普</option>
             <option value="total_return">总收益</option>
             <option value="max_drawdown">最大回撤（小优先）</option>
@@ -93,7 +95,7 @@ export default function OptimizePage() {
 
       {/* 参数取值列表 */}
       {(meta?.param_schema || []).length > 0 && (
-        <div style={{ background: "#fff", borderRadius: 10, padding: 12, marginBottom: 12, border: "1px solid #e8e8e8" }}>
+        <div style={{ background: colors.card, borderRadius: 10, padding: 12, marginBottom: 12, border: `1px solid ${colors.border}` }}>
           <div style={{ fontSize: 13, color: "#888", marginBottom: 8 }}>
             参数取值（逗号分隔，多个值即网格搜索）· 预估组合数 <b>{comboCount}</b>
           </div>
@@ -113,20 +115,20 @@ export default function OptimizePage() {
         </div>
       )}
 
-      <button onClick={run} disabled={running} style={{ padding: "8px 28px", borderRadius: 6, border: 0, background: "#3ba272", color: "#fff", cursor: "pointer" }}>
+      <button onClick={run} disabled={running} style={{ padding: "8px 28px", borderRadius: 6, border: 0, background: colors.accent, color: "#fff", cursor: "pointer" }}>
         {running ? "寻优中…" : "开始寻优"}
       </button>
-      {error && <div style={{ color: "#cf1322", margin: "8px 0" }}>{error}</div>}
+      {error && <div style={{ color: colors.up, margin: "8px 0" }}>{error}</div>}
 
       {/* 结果表格 */}
       {trials.length > 0 && (
-        <div style={{ marginTop: 16, background: "#fff", borderRadius: 10, padding: 14, border: "1px solid #e8e8e8" }}>
+        <div style={{ marginTop: 16, background: colors.card, borderRadius: 10, padding: 14, border: `1px solid ${colors.border}` }}>
           <div style={{ fontWeight: 700, marginBottom: 10 }}>
             共 {trials.length} 组参数结果（按{rankBy === "sharpe" ? "夏普" : rankBy === "total_return" ? "总收益" : "回撤"}排序）
           </div>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
             <thead>
-              <tr style={{ color: "#888", textAlign: "left" }}>
+              <tr style={{ color: colors.muted, textAlign: "left" }}>
                 <th style={{ padding: "6px 8px" }}>#</th>
                 {Object.keys(trials[0].params).map((k) => <th key={k}>{k}</th>)}
                 <th>总收益</th><th>年化</th><th>夏普</th><th>回撤</th><th>胜率</th><th>交易数</th>
@@ -137,7 +139,7 @@ export default function OptimizePage() {
                 <tr key={i} style={{ borderTop: "1px solid #f0f0f0", background: i === 0 ? "#f0f7ff" : undefined }}>
                   <td style={{ padding: "6px 8px" }}>{i + 1}</td>
                   {Object.values(t.params).map((v, j) => <td key={j}>{v}</td>)}
-                  <td style={{ color: t.total_return >= 0 ? "#cf1322" : "#237804" }}>{(t.total_return * 100).toFixed(2)}%</td>
+                  <td style={{ color: t.total_return >= 0 ? colors.up : colors.down }}>{(t.total_return * 100).toFixed(2)}%</td>
                   <td>{(t.annual_return * 100).toFixed(2)}%</td>
                   <td style={{ fontWeight: i === 0 ? 700 : 400 }}>{t.sharpe.toFixed(3)}</td>
                   <td>{(t.max_drawdown * 100).toFixed(1)}%</td>
@@ -154,11 +156,13 @@ export default function OptimizePage() {
   );
 }
 
-const inputStyle = {
+const inputStyle = (c: { text: string; card: string; border: string }) => ({
   width: "100%",
   padding: "6px 10px",
   borderRadius: 6,
-  border: "1px solid #d9d9d9",
+  border: `1px solid ${c.border}`,
+  background: c.card,
+  color: c.text,
   marginTop: 4,
   boxSizing: "border-box" as const,
-};
+});

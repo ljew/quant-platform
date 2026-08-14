@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import EChart from "../components/EChart";
 import { api, PaperDetail, PaperTask, StrategyInfo } from "../api/client";
+import { useTheme } from "../theme";
 
 /** 模拟盘（任务列表 + 创建 + 详情：净值曲线/成交）。 */
 export default function PaperPage() {
@@ -8,6 +9,7 @@ export default function PaperPage() {
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
   const [detail, setDetail] = useState<PaperDetail | null>(null);
   const [error, setError] = useState("");
+  const { colors } = useTheme();
 
   // 创建表单
   const [name, setName] = useState("");
@@ -87,10 +89,10 @@ export default function PaperPage() {
     <div style={{ padding: 16 }}>
       {/* 创建表单 */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 12 }}>
-        <label>任务名<input value={name} onChange={(e) => setName(e.target.value)} placeholder="自动命名" style={inputStyle} /></label>
+        <label>任务名<input value={name} onChange={(e) => setName(e.target.value)} placeholder="自动命名" style={inputStyle(colors)} /></label>
         <label>
           策略
-          <select value={skey} onChange={(e) => setSkey(e.target.value)} style={inputStyle}>
+          <select value={skey} onChange={(e) => setSkey(e.target.value)} style={inputStyle(colors)}>
             {strategies.filter((s) => !s.default_params?.multi_asset).map((s) => (
               <option key={s.key} value={s.key}>{s.name}</option>
             ))}
@@ -100,36 +102,36 @@ export default function PaperPage() {
           </select>
         </label>
         {isPortfolio ? (
-          <label>指数代码<input value={indexCode} onChange={(e) => setIndexCode(e.target.value)} style={inputStyle} /></label>
+          <label>指数代码<input value={indexCode} onChange={(e) => setIndexCode(e.target.value)} style={inputStyle(colors)} /></label>
         ) : (
-          <label>标的<input value={symbols} onChange={(e) => setSymbols(e.target.value)} style={inputStyle} /></label>
+          <label>标的<input value={symbols} onChange={(e) => setSymbols(e.target.value)} style={inputStyle(colors)} /></label>
         )}
-        <label>初始资金<input type="number" value={cash} onChange={(e) => setCash(Number(e.target.value))} style={inputStyle} /></label>
+        <label>初始资金<input type="number" value={cash} onChange={(e) => setCash(Number(e.target.value))} style={inputStyle(colors)} /></label>
       </div>
       <button onClick={create} style={btnStyle}>创建并运行</button>
-      <button onClick={refresh} style={{ ...btnStyle, background: "#888" }}>刷新</button>
-      {error && <div style={{ color: "#cf1322", margin: "8px 0" }}>{error}</div>}
+      <button onClick={refresh} style={{ ...btnStyle, background: colors.muted }}>刷新</button>
+      {error && <div style={{ color: colors.up, margin: "8px 0" }}>{error}</div>}
 
       {/* 任务列表 */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: 12, marginTop: 16 }}>
         {tasks.map((t) => (
-          <div key={t.id} onClick={() => openDetail(t.id)} style={{ background: "#fff", borderRadius: 10, padding: 14, cursor: "pointer", border: "1px solid #e8e8e8" }}>
+          <div key={t.id} onClick={() => openDetail(t.id)} style={{ background: colors.card, borderRadius: 10, padding: 14, cursor: "pointer", border: `1px solid ${colors.border}` }}>
             <div style={{ fontWeight: 600 }}>#{t.id} {t.name}</div>
-            <div style={{ fontSize: 12, color: "#888", margin: "4px 0" }}>
+            <div style={{ fontSize: 12, color: colors.muted, margin: "4px 0" }}>
               {t.strategy_key} · {t.kind === "portfolio" ? `指数 ${t.index_code}` : t.symbols}
             </div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: t.pnl_pct >= 0 ? "#cf1322" : "#237804" }}>
+            <div style={{ fontSize: 20, fontWeight: 700, color: t.pnl_pct >= 0 ? colors.up : colors.down }}>
               ¥{t.equity.toLocaleString(undefined, { maximumFractionDigits: 0 })}
               <span style={{ fontSize: 13, marginLeft: 8 }}>{t.pnl_pct >= 0 ? "+" : ""}{(t.pnl_pct * 100).toFixed(2)}%</span>
             </div>
-            <div style={{ fontSize: 12, color: "#888" }}>
+            <div style={{ fontSize: 12, color: colors.muted }}>
               持仓 {t.positions_count} · {t.enabled ? "🟢 自动" : "⚪ 暂停"} · {t.last_run_at?.slice(0, 16) || "未运行"}
             </div>
-            {t.error_msg && <div style={{ fontSize: 12, color: "#cf1322" }}>{t.error_msg}</div>}
+            {t.error_msg && <div style={{ fontSize: 12, color: colors.up }}>{t.error_msg}</div>}
             <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
-              <button onClick={(e) => { e.stopPropagation(); toggle(t.id); }} style={smallBtn}>{t.enabled ? "暂停" : "启用"}</button>
-              <button onClick={(e) => { e.stopPropagation(); api.paperRun(t.id).then(refresh); }} style={smallBtn}>立即运行</button>
-              <button onClick={(e) => { e.stopPropagation(); remove(t.id); }} style={{ ...smallBtn, color: "#cf1322" }}>删除</button>
+              <button onClick={(e) => { e.stopPropagation(); toggle(t.id); }} style={smallBtn(colors)}>{t.enabled ? "暂停" : "启用"}</button>
+              <button onClick={(e) => { e.stopPropagation(); api.paperRun(t.id).then(refresh); }} style={smallBtn(colors)}>立即运行</button>
+              <button onClick={(e) => { e.stopPropagation(); remove(t.id); }} style={{ ...smallBtn(colors), color: colors.up }}>删除</button>
             </div>
           </div>
         ))}
@@ -142,6 +144,7 @@ export default function PaperPage() {
 }
 
 function DetailPanel({ detail }: { detail: PaperDetail }) {
+  const { colors } = useTheme();
   const curve = detail.curve || [];
   const option = {
     backgroundColor: "transparent",
@@ -162,14 +165,14 @@ function DetailPanel({ detail }: { detail: PaperDetail }) {
   const trades = detail.trades || [];
   const limits = detail.risk_limits;
   return (
-    <div style={{ marginTop: 20, background: "#fff", borderRadius: 10, padding: 16, border: "1px solid #e8e8e8" }}>
+    <div style={{ marginTop: 20, background: colors.card, borderRadius: 10, padding: 16, border: `1px solid ${colors.border}` }}>
       <div style={{ fontWeight: 700, marginBottom: 12 }}>模拟盘 #{detail.id} 详情</div>
       <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginBottom: 12 }}>
-        <Metric label="当前净值" value={`¥${detail.equity.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
-        <Metric label="收益率" value={`${((detail.pnl_pct || 0) * 100).toFixed(2)}%`} />
-        <Metric label="成交笔数" value={`${trades.length}`} />
+        <Metric label="当前净值" colors={colors} value={`¥${detail.equity.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
+        <Metric label="收益率" colors={colors} value={`${((detail.pnl_pct || 0) * 100).toFixed(2)}%`} />
+        <Metric label="成交笔数" colors={colors} value={`${trades.length}`} />
         {limits && Object.keys(limits).length > 0 && (
-          <Metric label="风险截断" value={`${(detail.risk_clamps || []).length} 次`} />
+          <Metric label="风险截断" colors={colors} value={`${(detail.risk_clamps || []).length} 次`} />
         )}
       </div>
       {curve.length > 0 && <EChart option={option as never} height={340} />}
@@ -177,15 +180,15 @@ function DetailPanel({ detail }: { detail: PaperDetail }) {
         <div style={{ marginTop: 14 }}>
           <h4 style={{ margin: "0 0 8px", fontSize: 14 }}>最近成交</h4>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
-            <thead><tr style={{ color: "#888", textAlign: "left" }}>
+            <thead><tr style={{ color: colors.muted, textAlign: "left" }}>
               <th style={{ padding: "5px 8px" }}>日期</th><th>标的</th><th>方向</th><th>价格</th><th>数量</th><th>信号</th>
             </tr></thead>
             <tbody>
               {trades.slice(-15).reverse().map((t, i) => (
-                <tr key={i} style={{ borderTop: "1px solid #f0f0f0" }}>
+                <tr key={i} style={{ borderTop: `1px solid ${colors.border}` }}>
                   <td style={{ padding: "5px 8px" }}>{t.trade_date}</td>
                   <td>{t.symbol}</td>
-                  <td style={{ color: t.side === "BUY" ? "#cf1322" : "#237804" }}>{t.side === "BUY" ? "买入" : "卖出"}</td>
+                  <td style={{ color: t.side === "BUY" ? colors.up : colors.down }}>{t.side === "BUY" ? "买入" : "卖出"}</td>
                   <td>{t.price}</td>
                   <td>{t.shares}</td>
                   <td>{t.signal_type || "—"}</td>
@@ -195,19 +198,21 @@ function DetailPanel({ detail }: { detail: PaperDetail }) {
           </table>
         </div>
       )}
-      {detail.error_msg && <div style={{ color: "#cf1322", marginTop: 8 }}>{detail.error_msg}</div>}
+      {detail.error_msg && <div style={{ color: colors.up, marginTop: 8 }}>{detail.error_msg}</div>}
     </div>
   );
 }
 
-const inputStyle = {
+const inputStyle = (c: { text: string; card: string; border: string }) => ({
   width: "100%",
   padding: "6px 10px",
   borderRadius: 6,
-  border: "1px solid #d9d9d9",
+  border: `1px solid ${c.border}`,
+  background: c.card,
+  color: c.text,
   marginTop: 4,
   boxSizing: "border-box" as const,
-};
+});
 
 const btnStyle = {
   padding: "8px 22px",
@@ -219,19 +224,19 @@ const btnStyle = {
   marginRight: 8,
 };
 
-const smallBtn = {
+const smallBtn = (c: { card: string; border: string }) => ({
   padding: "3px 10px",
   borderRadius: 4,
-  border: "1px solid #d9d9d9",
-  background: "#fff",
+  border: `1px solid ${c.border}`,
+  background: c.card,
   fontSize: 12,
   cursor: "pointer",
-};
+});
 
-function Metric({ label, value }: { label: string; value: string }) {
+function Metric({ label, value, colors }: { label: string; value: string; colors: { card: string; text: string; muted: string; border: string } }) {
   return (
-    <div style={{ background: "#f6f8fa", borderRadius: 8, padding: "10px 16px", minWidth: 110 }}>
-      <div style={{ fontSize: 12, color: "#888" }}>{label}</div>
+    <div style={{ background: colors.card, borderRadius: 8, padding: "10px 16px", minWidth: 110, border: `1px solid ${colors.border}` }}>
+      <div style={{ fontSize: 12, color: colors.muted }}>{label}</div>
       <div style={{ fontSize: 17, fontWeight: 600 }}>{value}</div>
     </div>
   );

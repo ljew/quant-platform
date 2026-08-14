@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
 import * as echarts from "echarts";
+import { useTheme } from "../theme";
 
-/** ECharts 封装：传入 option 自动渲染/更新。 */
+/** ECharts 封装：传入 option 自动渲染/更新；自动注入主题背景与文字色。 */
 export default function EChart({
   option,
   height = 360,
@@ -11,6 +12,7 @@ export default function EChart({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
+  const { colors } = useTheme();
 
   useEffect(() => {
     if (!ref.current) return;
@@ -26,8 +28,16 @@ export default function EChart({
   }, []);
 
   useEffect(() => {
-    chartRef.current?.setOption(option, true);
-  }, [option]);
+    if (!chartRef.current) return;
+    const themed: echarts.EChartsOption = {
+      backgroundColor: colors.chartBg,
+      textStyle: { color: colors.text },
+      ...option,
+      legend: option.legend ? { textStyle: { color: colors.muted }, ...(option.legend as object) } : undefined,
+    };
+    chartRef.current.setOption(themed, true);
+    chartRef.current.resize();
+  }, [option, colors]);
 
   return <div ref={ref} style={{ width: "100%", height }} />;
 }
