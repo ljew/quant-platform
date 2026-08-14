@@ -53,6 +53,11 @@ def _load_from_db(db: Session, index_code: str, sd: date, ed: date) -> dict[str,
     return snaps
 
 
+def _ts_code(index_code: str) -> str:
+    """tushare 指数代码后缀：39 开头为深市（.SZ），其余默认沪市（.SH）。"""
+    return f"{index_code}.SZ" if str(index_code).startswith("39") else f"{index_code}.SH"
+
+
 def _fetch_online(index_code: str, ms: date, me: date) -> tuple[str, set] | None:
     """在线拉取某自然月的成分快照（tushare index_weight 最后一个交易日）。"""
     from app.services import data_source
@@ -61,7 +66,7 @@ def _fetch_online(index_code: str, ms: date, me: date) -> tuple[str, set] | None
         pro = data_source._require_tushare_pro()
     except Exception:  # noqa: BLE001
         return None
-    ts_code = f"{index_code}.SH"
+    ts_code = _ts_code(index_code)
     try:
         df = pro.index_weight(
             index_code=ts_code,
