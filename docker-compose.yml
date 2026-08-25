@@ -1,6 +1,8 @@
 # 个人量化投研平台 — 一键部署（设计 v1.0）
-# 用法：cp .env.example .env（填 QUANT_TUSHARE_TOKEN）&& docker compose up -d --build
-# 访问：http://localhost:8000 （后端 FastAPI 直接托管前端页面 + /api）
+# 用法：docker compose up -d --build
+# 访问：http://localhost:8000 （后端托管 React 构建产物 + /api）
+# 数据：./data 目录 bind 挂载（复用本机 SQLite/DuckDB，容器内外一致）
+# 调度：QUANT_DATA_SCHEDULE=1 → 每交易日 17:00 ETL 自动增量 + 因子落库
 services:
   redis:
     image: redis:7-alpine
@@ -18,19 +20,17 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    restart: unless-stopped
+    restart: unless-stopped        # 容器级常驻：崩溃自动重启 + 开机自启
     environment:
       - QUANT_DATABASE_URL=sqlite:////data/quant_dev.db
       - QUANT_FRONTEND_DIR=/frontend
       - QUANT_TUSHARE_TOKEN=${QUANT_TUSHARE_TOKEN:-}
+      - QUANT_DATA_SCHEDULE=1       # ETL 每晚 17:00 自动增量 + 因子落库
       - QUANT_DEBUG=false
     volumes:
-      - quant_data:/data
+      - ./data:/data                # bind 挂载本机数据（复用现有 SQLite/DuckDB）
     ports:
       - "8000:8000"
     depends_on:
       redis:
         condition: service_healthy
-
-volumes:
-  quant_data:
