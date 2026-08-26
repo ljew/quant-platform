@@ -97,7 +97,49 @@ export const api = {
   paperDetail: (id: number) => get<PaperDetail>(`/paper/tasks/${id}`),
   // 监控
   monitor: () => get<MonitorStatus>("/monitor/status"),
+  // 因子挖掘
+  factorValidate: (expr: string) => post<{ ok: boolean; error?: string; sample_value?: number | null }>("/factor/validate", { expr }),
+  factorFunctions: () => get<Record<string, Record<string, string>>>("/factor/functions"),
+  factorMine: (payload: Record<string, unknown>) => post<FactorMineReport>("/factor/mine", payload),
+  factorMineResults: (limit = 20) => get<FactorMineSummary[]>("/factor/mine/results?limit=" + limit),
+  factorMineDetail: (id: number) => get<FactorMineReport>(`/factor/mine/results/${id}`),
+  factorMineDelete: (id: number) => post<{ ok: boolean }>(`/factor/mine/results/${id}/delete`, {}),
 };
+
+// —— 因子挖掘类型 ——
+export interface FactorMineReport {
+  ok: boolean;
+  error?: string;
+  id?: number;
+  name: string;
+  expr: string;
+  rating: string;
+  ic_mean: number;
+  icir: number;
+  t_stat: number;
+  ic_win_rate: number;
+  ic_series: { date: string; ic: number }[];
+  groups: number;
+  group_means: Record<string, number>;
+  monotonic_spread: number;
+  mono_score: number;
+  long_short: [string, number][];
+  corr_with_existing: Record<string, number>;
+  max_abs_corr: number;
+  n_periods: number;
+  n_stocks: number;
+  forward_days: number;
+}
+
+export interface FactorMineSummary {
+  id: number;
+  name: string;
+  expr: string;
+  rating: string;
+  ic_mean: number | null;
+  icir: number | null;
+  created_at: string;
+}
 
 // —— 监控类型 ——
 export interface MonitorStatus {

@@ -386,3 +386,21 @@ FACTOR_COLUMNS = [
     "idio_vol", "skewness", "tail_risk", "roe", "revenue_yoy", "profit_yoy",
     "earnings_surprise",
 ]
+
+
+class FactorMineResult(Base):
+    """因子挖掘结果（自定义表达式检验报告）。"""
+
+    __tablename__ = "factor_mine_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64))
+    expr: Mapped[str] = mapped_column(Text)
+    rating: Mapped[str] = mapped_column(String(16), default="")
+    ic_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
+    icir: Mapped[float | None] = mapped_column(Float, nullable=True)
+    result_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<FactorMineResult #{self.id} {self.name} {self.rating}>"
