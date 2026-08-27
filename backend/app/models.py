@@ -442,3 +442,34 @@ class NewsStockDaily(Base):
 
     def __repr__(self):
         return f"<NewsStockDaily {self.symbol} {self.date} m={self.mentions}>"
+
+
+class PipelineRun(Base):
+    """数据管道运行记录（监控）。"""
+
+    __tablename__ = "pipeline_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trigger: Mapped[str] = mapped_column(String(16), default="manual")  # manual/scheduler
+    status: Mapped[str] = mapped_column(String(12), default="RUNNING")  # RUNNING/SUCCESS/FAILED
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    def __repr__(self):
+        return f"<PipelineRun #{self.id} {self.status}>"
+
+
+class PipelineStepLog(Base):
+    """管道步骤日志。"""
+
+    __tablename__ = "pipeline_run_steps"
+    __table_args__ = (Index("ix_prs_run", "run_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(48))
+    status: Mapped[str] = mapped_column(String(10), default="OK")  # OK/SKIP/FAIL
+    duration_sec: Mapped[float] = mapped_column(Float, default=0.0)
+    rows: Mapped[int] = mapped_column(Integer, default=0)
+    message: Mapped[str] = mapped_column(Text, default="")

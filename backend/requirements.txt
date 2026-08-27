@@ -17,3 +17,6 @@ duckdb-engine==0.17.0
 # 数据源（均 lazy import，未安装时平台仍可启动，仅数据接入功能不可用）
 akshare==1.16.99
 tushare==1.4.29
+# datahub 数据枢纽（Bronze/Silver 分层存储 + 源配置）
+pyarrow>=14.0
+PyYAML>=6.0

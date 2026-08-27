@@ -20,6 +20,8 @@ from app.models import (
     KlineDaily,
     IndexKlineDaily,
     IndexMembership,
+    PipelineRun,
+    PipelineStepLog,
 )
 from app.config import settings
 
@@ -168,6 +170,7 @@ def monitor_status():
                 },
                 "tasks": {"running": running, "recent": tasks},
                 "paper": _paper_stats(db),
+                "pipeline": _pipeline_stats(db),
             },
             "disk": {
                 "data_dir_mb": _dir_size_mb(_DATA_DIR),
@@ -176,3 +179,31 @@ def monitor_status():
         }
     finally:
         db.close()
+
+
+def _pipeline_stats(db) -> dict:
+    """数据管道最近运行记录（监控页任务执行情况）。"""
+    from app.datahub.runner import init_models
+
+    init_models()
+    runs = db.execute(
+        select(PipelineRun).order_by(PipelineRun.id.desc()).limit(8)
+    ).scalars().all()
+    out = []
+    for r in runs:
+        steps = db.execute(
+            select(PipelineStepLog).where(PipelineStepLog.run_id == r.id)
+            .order_by(PipelineStepLog.id)
+        ).scalars().all()
+        out.append({
+            "run_id": r.id, "trigger": r.trigger, "status": r.status,
+            "started_at": r.started_at.isoformat(timespec="seconds") if r.started_at else None,
+            "finished_at": r.finished_at.isoformat(timespec="seconds") if r.finished_at else None,
+            "error": (r.error or "")[:200] or None,
+            "steps": [
+                {"name": st.name, "status": st.status, "duration_sec": st.duration_sec,
+                 "rows": st.rows}
+                for st in steps
+            ],
+        })
+    return {"runs": out}

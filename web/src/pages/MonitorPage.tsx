@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, MonitorStatus } from "../api/client";
+import { Badge, Card } from "../components/ui";
 import { useTheme } from "../theme";
 import { PageHeader } from "../components/ui";
 
@@ -143,6 +144,34 @@ export default function MonitorPage() {
           </div>
         </Panel>
       </div>
+
+      {/* —— 数据管道运行记录 —— */}
+      {data.services.pipeline && data.services.pipeline.runs.length > 0 && (
+        <Card title="⏱ 数据管道运行记录（extract → score → factor）" colors={colors} pad={0} style={{ marginTop: 14 }}>
+          {data.services.pipeline.runs.map((r) => (
+            <div key={r.run_id} style={{ padding: "10px 16px", borderBottom: `1px solid ${colors.border}` }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <Badge text={r.status === "SUCCESS" ? "成功" : r.status === "FAILED" ? "失败" : r.status}
+                  color={r.status === "SUCCESS" ? colors.down : r.status === "FAILED" ? colors.up : colors.accent} soft />
+                <span className="num" style={{ fontSize: 13, fontWeight: 600 }}>#{r.run_id}</span>
+                <span style={{ fontSize: 12, color: colors.muted }}>{r.trigger} · {r.started_at}{r.finished_at ? ` → ${r.finished_at.slice(11)}` : ""}</span>
+                {r.error && <span style={{ fontSize: 11.5, color: colors.up }}>{r.error.slice(0, 80)}</span>}
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                {(r.steps || []).map((st) => (
+                  <span key={st.name} style={{
+                    fontSize: 11.5, padding: "2px 9px", borderRadius: 5,
+                    background: st.status === "FAIL" ? `${colors.up}14` : colors.tableStripe,
+                    border: `1px solid ${st.status === "FAIL" ? colors.up : colors.border}`,
+                  }}>
+                    {st.name} · {st.duration_sec}s{st.rows > 0 ? ` · ${st.rows.toLocaleString()}行` : ""}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </Card>
+      )}
       {error && <div style={{ color: colors.up, marginTop: 10 }}>{error}</div>}
     </div>
   );

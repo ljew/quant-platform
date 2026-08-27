@@ -1,0 +1,33 @@
+# 数据源配置（声明式）—— datahub 按此驱动抽取管道
+# type: tushare_bars / wechat_articles / ...
+# enabled: 关闭后 pipeline 跳过该源
+# params: 传递给对应 extractor 的参数
+
+sources:
+  core_index_kline:
+    type: index_kline_tushare
+    enabled: true
+    description: 8 核心指数日K（增量）
+    params:
+      symbols: [sh000906, sh000300, sh000905, sh000852, sh000001, sz399001, sz399006, sh000016]
+
+  stock_kline_core:
+    type: stock_kline_tushare
+    enabled: true
+    description: 核心池个股前复权日K（增量）
+    params:
+      pool: core          # core=核心指数成分并集；或直接列 symbols
+      lookback_days: 30
+
+  stock_attributes:
+    type: attributes_tushare
+    enabled: true
+    description: 全市场截面属性（daily_basic）
+
+  wechat_articles:
+    type: wechat_articles_sqlite
+    enabled: true
+    description: 公众号财经语料（文本管道输入）
+    params:
+      db_path: /Users/happyljew/Desktop/kimiwork/Xiaoan_0811_bak/wechat-monitor/knowledge.db
+      body_chars: 4000

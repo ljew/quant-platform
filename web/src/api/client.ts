@@ -195,6 +195,13 @@ export interface MonitorStatus {
     };
     tasks: { running: number; recent: { id: string; name: string; status: string; progress: number; message: string }[] };
     paper: { tasks: number; enabled: number };
+    pipeline?: {
+      runs: {
+        run_id: number; trigger: string; status: string;
+        started_at: string | null; finished_at: string | null; error: string | null;
+        steps: { name: string; status: string; duration_sec: number; rows: number }[];
+      }[];
+    };
   };
   disk: { data_dir_mb: number; data_dir: string };
 }
