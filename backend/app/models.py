@@ -421,3 +421,24 @@ class NewsMarketDaily(Base):
 
     def __repr__(self):
         return f"<NewsMarketDaily {self.date} senti={self.net_sentiment}>"
+
+
+class NewsStockDaily(Base):
+    """个股新闻情绪日频因子（文章内公司简称匹配 + 多空词典计分）。"""
+
+    __tablename__ = "news_stock_daily"
+    __table_args__ = (
+        UniqueConstraint("symbol", "date", name="uq_news_stock"),
+        Index("ix_nsd_date", "date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(16))
+    date: Mapped[date] = mapped_column(Date)
+    mentions: Mapped[int] = mapped_column(Integer, default=0)
+    bull_score: Mapped[int] = mapped_column(Integer, default=0)
+    bear_score: Mapped[int] = mapped_column(Integer, default=0)
+    net_sentiment: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    def __repr__(self):
+        return f"<NewsStockDaily {self.symbol} {self.date} m={self.mentions}>"

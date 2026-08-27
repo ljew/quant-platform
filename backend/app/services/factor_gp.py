@@ -238,10 +238,27 @@ def build_context(db: Session, start: str, end: str, forward: int, step: int,
                 if v is not None and math.isfinite(v):
                     bucket.setdefault(fac_name, {})[sym] = v
 
+    # —— 个股新闻情绪预载（news_senti 变量数据源）——
+    from app.models import NewsStockDaily
+
+    news_map: dict[str, dict[date, float]] = {}
+    for sym2, d2, senti2 in db.execute(select(NewsStockDaily.symbol, NewsStockDaily.date, NewsStockDaily.net_sentiment)).all():
+        if senti2 is not None:
+            news_map.setdefault(sym2, {})[d2] = float(senti2)
+
+    def _news_lookup(sym: str, snap: date) -> float | None:
+        """snap 当日或最近 3 个自然日的均值情绪。"""
+        hist = news_map.get(sym)
+        if not hist:
+            return None
+        vals = [hist[d2] for d2 in hist if 0 <= (snap - d2).days <= 3]
+        return _mean(vals) if vals else None
+
     return {
         "syms": syms, "attrs": attrs, "es_map": es_map, "aligned": aligned,
         "axis_dates": axis_dates, "bench_aligned": bench_aligned, "snap_pairs": snap_pairs,
         "ortho_cache": ortho_cache,
+        "news_lookup": _news_lookup,
     }
 
 
@@ -328,6 +345,7 @@ def evaluate_candidate(expr: str, ctx: dict, groups: int,
                   "pe_ttm": a.get("pe_ttm"), "pb": a.get("pb"), "market_cap": a.get("market_cap"),
                   "roe": a.get("roe"), "revenue_yoy": a.get("revenue_yoy"),
                   "profit_yoy": a.get("profit_yoy"), "earnings_surprise": ctx["es_map"].get(sym),
+                  "news_senti": ctx["news_lookup"](sym, snap),
                   "industry": a.get("industry")}
             try:
                 v = eval_factor(expr, ns)

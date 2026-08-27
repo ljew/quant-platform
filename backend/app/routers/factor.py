@@ -41,7 +41,7 @@ FUNCTION_REF = {
         "mkt_b": "基准(中证800)对齐序列", "pe_ttm": "市盈率", "pb": "市净率",
         "market_cap": "市值", "roe": "净资产收益率", "revenue_yoy": "营收增速",
         "profit_yoy": "利润增速", "earnings_surprise": "盈余惊喜(PEAD)",
-        "industry": "行业",
+        "news_senti": "个股新闻情绪(-1~1,近3日)", "industry": "行业",
     },
 }
 

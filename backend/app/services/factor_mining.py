@@ -84,7 +84,7 @@ def validate_expr(expr: str) -> tuple[bool, str, float | None]:
         return False, f"语法错误: {e.msg}", None
     allowed_vars = {
         "c_m", "c_r", "c_v", "c_b", "c_t", "mkt_b", "pe_ttm", "pb", "market_cap",
-        "roe", "revenue_yoy", "profit_yoy", "earnings_surprise", "industry",
+        "roe", "revenue_yoy", "profit_yoy", "earnings_surprise", "industry", "news_senti",
     }
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
@@ -108,7 +108,7 @@ def validate_expr(expr: str) -> tuple[bool, str, float | None]:
         "c_m": closes, "c_r": closes, "c_v": closes, "c_b": closes, "c_t": closes,
         "mkt_b": closes, "pe_ttm": 15.0, "pb": 2.0, "market_cap": 1e10,
         "roe": 0.12, "revenue_yoy": 0.10, "profit_yoy": 0.08,
-        "earnings_surprise": 0.02, "industry": "测试",
+        "earnings_surprise": 0.02, "news_senti": 0.02, "industry": "测试",
     }
     try:
         v = eval_factor(expr, ns)
@@ -124,7 +124,7 @@ _W_SL, _W_PC, _W_F = 0.15, 0.25, 0.6
 
 _ALLOWED_VARS = {
     "c_m", "c_r", "c_v", "c_b", "c_t", "mkt_b", "pe_ttm", "pb", "market_cap",
-    "roe", "revenue_yoy", "profit_yoy", "earnings_surprise", "industry",
+    "roe", "revenue_yoy", "profit_yoy", "earnings_surprise", "industry", "news_senti",
 }
 
 
@@ -248,6 +248,23 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
     attrs = _attrs_map(db, syms)
     es_map = _es_map(db, syms)
 
+    # 个股新闻情绪 lookup（当日或近3日均值）
+    from app.models import NewsStockDaily
+
+    news_hist: dict[str, dict] = {}
+    for ns_sym, ns_d, ns_v in db.execute(
+        select(NewsStockDaily.symbol, NewsStockDaily.date, NewsStockDaily.net_sentiment)
+    ).all():
+        if ns_v is not None:
+            news_hist.setdefault(ns_sym, {})[ns_d] = float(ns_v)
+
+    def news_lookup(sym: str, asof: date) -> float | None:
+        hist = news_hist.get(sym)
+        if not hist:
+            return None
+        vals = [hist[d2] for d2 in hist if 0 <= (asof - d2).days <= 3]
+        return _mean(vals) if vals else None
+
     # 截面日期：区间内每 step 个交易日取 1 个
     all_dates = _dates_in_range(db, sd, ed)
     snapshots = [d for i, d in enumerate(all_dates) if i % step == 0 and i + forward < len(all_dates)]
@@ -306,9 +323,12 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
                 if len(mkt_b) != len(seg):
                     continue
             a = attrs.get(sym, {}) or {}
+            # 个股新闻情绪（当日或近3日）
+            nl = news_lookup(sym, snap) if news_lookup else None
             ns = {
                 "c_m": seg, "c_r": seg, "c_v": seg, "c_b": seg, "c_t": seg,
                 "mkt_b": mkt_b,
+                "news_senti": nl,
                 "pe_ttm": a.get("pe_ttm"), "pb": a.get("pb"), "market_cap": a.get("market_cap"),
                 "roe": a.get("roe"), "revenue_yoy": a.get("revenue_yoy"),
                 "profit_yoy": a.get("profit_yoy"),
