@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import FactorMineResult
-from app.services.factor_mining import mine_factor, validate_expr
+from app.services.factor_mining import mine_factor, validate_expr, compute_complexity
+from app.services.factor_gp import gp_search, DIRECTION_TEMPLATES
 
 router = APIRouter(prefix="/factor", tags=["factor"])
 
@@ -86,6 +87,60 @@ def mine(payload: MinePayload, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(row)
     result["id"] = row.id
+    return result
+
+
+@router.post("/mine/{rid}/save")
+def mine_save(rid: int, db: Session = Depends(get_db)):
+    """（占位保留）已自动落库。"""
+    return {"ok": True}
+
+
+class GpMinePayload(BaseModel):
+    directions: list[str] = Field(default_factory=list)
+    name_prefix: str = "GP"
+    pop_size: int = Field(14, ge=6, le=40)
+    generations: int = Field(6, ge=2, le=20)
+    start: str = ""
+    end: str = ""
+    forward: int = Field(20, ge=1, le=60)
+    step: int = Field(30, ge=10, le=60)
+    pool_size: int | None = Field(220, description="快评抽样池；null=全核心池")
+    top_k: int = Field(3, ge=1, le=5)
+
+
+@router.get("/gp/directions")
+def gp_directions():
+    return [
+        {"key": k, "note": v.get("note", "")} for k, v in DIRECTION_TEMPLATES.items()
+    ]
+
+
+@router.post("/gp/mine")
+def gp_mine(payload: GpMinePayload, db: Session = Depends(get_db)):
+    """遗传规划批量挖掘：进化搜索 → 精英全池精评 → 落库。同步执行约 1~3 分钟。"""
+    result = gp_search(
+        db, directions=payload.directions or None,
+        pop_size=payload.pop_size, generations=payload.generations,
+        start=payload.start, end=payload.end, forward=payload.forward,
+        step=payload.step, pool_size=payload.pool_size, top_k=payload.top_k,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "GP 挖掘失败"))
+    saved = []
+    for i, el in enumerate(result.get("elites", [])):
+        row = FactorMineResult(
+            name=f"{payload.name_prefix}-{i + 1}·{el.get('rating', '')}",
+            expr=el["expr"], rating=el["rating"],
+            ic_mean=el["ic_mean"], icir=el["icir"],
+            result_json=json.dumps(el, ensure_ascii=False, default=str),
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        el["id"] = row.id
+        saved.append(row.id)
+    result["saved_ids"] = saved
     return result
 
 

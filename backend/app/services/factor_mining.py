@@ -119,6 +119,33 @@ def validate_expr(expr: str) -> tuple[bool, str, float | None]:
         return False, f"{type(e).__name__}: {e}", None
 
 
+# 复杂度权重（QuantaAlpha C(f) = α₁·语法长度 + α₂·参数数 + α₃·log(1+特征数)）
+_W_SL, _W_PC, _W_F = 0.15, 0.25, 0.6
+
+_ALLOWED_VARS = {
+    "c_m", "c_r", "c_v", "c_b", "c_t", "mkt_b", "pe_ttm", "pb", "market_cap",
+    "roe", "revenue_yoy", "profit_yoy", "earnings_surprise", "industry",
+}
+
+
+def compute_complexity(expr: str) -> dict:
+    """AST 复杂度（QuantaAlpha）：结构长度 + 参数计数 + 信息源多样性，越低越好。"""
+    import ast
+
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except Exception:  # noqa: BLE001
+        return {"sl": 0, "pc": 0, "nf": 0, "score": 0.0}
+    nodes = sum(1 for _ in ast.walk(tree))
+    # 参数计数：数字常量（可调参数）
+    pc = sum(1 for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)))
+    nf = len({n.id for n in ast.walk(tree)
+              if isinstance(n, ast.Name) and n.id in _ALLOWED_VARS and not n.id.startswith("c_")
+              } | {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id in ("c_m", "c_r", "c_v")})
+    score = round(_W_SL * (nodes - 1) + _W_PC * pc + _W_F * math.log1p(max(nf, 0)), 3)
+    return {"sl": nodes - 1, "pc": pc, "nf": nf, "score": score}
+
+
 # ============ 数据加载 ============
 def _core_universe(db: Session) -> list[str]:
     from app.services.etl import _get_universe
@@ -364,6 +391,7 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
         "max_abs_corr": corr_table["max_abs_corr"],
         "rating": rating,
         "n_periods": len(ic_list),
+        "complexity": compute_complexity(expr),
         "n_stocks": len(syms),
         "forward_days": forward,
     }

@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import EChart from "../components/EChart";
 import { Badge, Btn, Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
-import { api, FactorMineReport, FactorMineSummary } from "../api/client";
+import { api, FactorMineReport, FactorMineSummary, GpMineResult } from "../api/client";
 import { useTheme, ThemeColors } from "../theme";
+
+const DIRECTION_CN: Record<string, string> = {
+  momentum: "动量趋势", volatility: "波动率结构", value: "估值变换",
+  quality: "质量成长", reversal: "均值回归",
+};
 
 /** 因子挖掘：自定义表达式 → IC/ICIR/分组单调/多空/相关性检验报告。 */
 export default function FactorMinePage() {
@@ -20,6 +25,13 @@ export default function FactorMinePage() {
   const [report, setReport] = useState<FactorMineReport | null>(null);
   const [history, setHistory] = useState<FactorMineSummary[]>([]);
   const [error, setError] = useState("");
+  // GP 自动挖掘
+  const [gpDirs, setGpDirs] = useState<{ key: string; note: string }[]>([]);
+  const [gpSel, setGpSel] = useState<string[]>(["momentum", "volatility", "value"]);
+  const [gpPop, setGpPop] = useState(14);
+  const [gpGens, setGpGens] = useState(6);
+  const [gpRunning, setGpRunning] = useState(false);
+  const [gpResult, setGpResult] = useState<GpMineResult | null>(null);
 
   const loadHistory = useCallback(() => {
     api.factorMineResults(15).then(setHistory).catch(() => {});
@@ -27,8 +39,28 @@ export default function FactorMinePage() {
 
   useEffect(() => {
     api.factorFunctions().then(setFns).catch(() => {});
+    api.factorGpDirections().then(setGpDirs).catch(() => {});
     loadHistory();
   }, [loadHistory]);
+
+  const runGp = async () => {
+    setGpRunning(true);
+    setError("");
+    setGpResult(null);
+    try {
+      const r = await api.factorGpMine({
+        directions: gpSel, name_prefix: "GP", pop_size: gpPop, generations: gpGens,
+        start, end, forward, step: 30, pool_size: 220, top_k: 3,
+      });
+      setGpResult(r);
+      loadHistory();
+      if (r.elites.length > 0) setReport(r.elites[0]);
+    } catch (e) {
+      setError(`GP 挖掘失败: ${(e as Error).message}`);
+    } finally {
+      setGpRunning(false);
+    }
+  };
 
   const doValidate = async () => {
     setValid(null);
@@ -140,6 +172,90 @@ export default function FactorMinePage() {
             流程：逐期截面计算因子值 → Spearman IC vs 未来收益 → 分组单调性 / 多空累计 /
             与现有 14 因子冗余度 → 综合评级。
           </div>
+        </Card>
+      </div>
+
+      {/* —— GP 自动挖掘 —— */}
+      <div style={{ marginBottom: 16 }}>
+        <Card
+          title="GP 自动挖掘（遗传规划 · QuantaAlpha 式进化搜索）"
+          colors={colors}
+          extra={<span style={{ fontSize: 11.5, color: colors.muted }}>研究方向互补播种 → 变异进化 → 精英全池精评</span>}
+        >
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+            <span style={{ fontSize: 12.5, color: colors.muted }}>研究方向：</span>
+            {gpDirs.map((d) => {
+              const on = gpSel.includes(d.key);
+              return (
+                <button key={d.key}
+                  onClick={() => setGpSel((s) => (on ? s.filter((x) => x !== d.key) : [...s, d.key]))}
+                  style={{
+                    padding: "5px 13px", borderRadius: 999, cursor: "pointer", fontSize: 12.5,
+                    border: `1px solid ${on ? colors.accent : colors.border}`,
+                    background: on ? `${colors.accent}1a` : "transparent",
+                    color: on ? colors.accent : colors.muted, fontWeight: on ? 600 : 400,
+                  }}
+                  title={d.note}
+                >
+                  {DIRECTION_CN[d.key] || d.key}
+                </button>
+              );
+            })}
+            <span style={{ flex: 1 }} />
+            <label style={{ fontSize: 12, color: colors.muted }}>种群
+              <input type="number" min={6} max={40} value={gpPop} onChange={(e) => setGpPop(Number(e.target.value) || 14)} style={{ ...inputStyle(colors), width: 64, marginLeft: 6 }} /></label>
+            <label style={{ fontSize: 12, color: colors.muted }}>代数
+              <input type="number" min={2} max={20} value={gpGens} onChange={(e) => setGpGens(Number(e.target.value) || 6)} style={{ ...inputStyle(colors), width: 64, marginLeft: 6 }} /></label>
+            <Btn onClick={runGp} disabled={gpRunning || gpSel.length === 0}>{gpRunning ? "进化中（约1~3分钟）…" : "启动自动挖掘"}</Btn>
+          </div>
+
+          {gpRunning && (
+            <div style={{ fontSize: 12.5, color: colors.muted }}>
+              遗传规划正在进化：种群 {gpPop} × {gpGens} 代，方向[{gpSel.map((d) => DIRECTION_CN[d] || d).join(" / ")}]，完成后精英将自动全池精评…
+            </div>
+          )}
+
+          {gpResult && (
+            <div>
+              {/* 进化曲线 */}
+              <EChart height={150} option={{
+                tooltip: { trigger: "axis" },
+                grid: { left: 46, right: 14, top: 22, bottom: 26 },
+                xAxis: { type: "category", data: gpResult.evolution_log.map((e) => `G${e.gen}`), axisLabel: { fontSize: 10 } },
+                yAxis: { type: "value", scale: true },
+                series: [{ name: "最优IC", type: "line", data: gpResult.evolution_log.map((e) => e.best_ic), showSymbol: true, lineStyle: { color: colors.accent, width: 2 } }],
+              } as never} />
+              <div style={{ fontSize: 11.5, color: colors.muted, margin: "4px 0 10px" }}>
+                共评估 {gpResult.n_candidates_evaluated} 个候选表达式 · 入库 {gpResult.saved_ids.length} 条
+              </div>
+              {/* 精英表 */}
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                <thead><tr style={{ color: colors.muted, textAlign: "left" }}>
+                  <th style={{ padding: "7px 10px" }}>排名</th><th>表达式</th><th>IC</th><th>ICIR</th><th>t 值</th><th>评级</th><th>复杂度</th><th></th>
+                </tr></thead>
+                <tbody>
+                  {gpResult.elites.map((el, i) => {
+                    const cx = (el as { complexity?: { score?: number } }).complexity?.score ?? "—";
+                    return (
+                      <tr key={i} style={{ borderTop: `1px solid ${colors.border}` }}>
+                        <td style={{ padding: "7px 10px" }}>{i + 1}</td>
+                        <td style={{ fontFamily: "'SF Mono', Menlo, monospace", fontSize: 11.5 }}>{el.expr}</td>
+                        <td className="num">{el.ic_mean.toFixed(4)}</td>
+                        <td className="num">{el.icir.toFixed(3)}</td>
+                        <td className="num">{el.t_stat.toFixed(2)}</td>
+                        <td><RatingBadge rating={el.rating} colors={colors} /></td>
+                        <td className="num">{cx}</td>
+                        <td><a style={{ color: colors.accent, cursor: "pointer", fontSize: 12 }} onClick={() => setReport(el)}>报告</a></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <div style={{ marginTop: 8, fontSize: 11.5, color: colors.muted }}>
+                IC 为负的因子并非无效——排序取反即得正向因子，可在表达式中加负号使用。
+              </div>
+            </div>
+          )}
         </Card>
       </div>
 

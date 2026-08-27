@@ -105,7 +105,22 @@ export const api = {
   factorMineResults: (limit = 20) => get<FactorMineSummary[]>("/factor/mine/results?limit=" + limit),
   factorMineDetail: (id: number) => get<FactorMineReport>(`/factor/mine/results/${id}`),
   factorMineDelete: (id: number) => post<{ ok: boolean }>(`/factor/mine/results/${id}/delete`, {}),
+  // GP 自动挖掘
+  factorGpDirections: () => get<{ key: string; note: string }[]>("/factor/gp/directions"),
+  factorGpMine: (payload: Record<string, unknown>) => post<GpMineResult>("/factor/gp/mine", payload),
 };
+
+// —— GP 自动挖掘类型 ——
+export interface GpMineResult {
+  ok: boolean;
+  directions: string[];
+  pop_size: number;
+  generations: number;
+  n_candidates_evaluated: number;
+  evolution_log: { gen: number; best_ic: number; avg_fitness: number }[];
+  saved_ids: number[];
+  elites: (FactorMineReport & { quick_ic?: number; fitness?: number })[];
+}
 
 // —— 因子挖掘类型 ——
 export interface FactorMineReport {
