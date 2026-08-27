@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import EChart from "../components/EChart";
 import { api, BacktestResult, StrategyInfo } from "../api/client";
 import { useTheme } from "../theme";
+import { PageHeader } from "../components/ui";
 
 /** 策略回测（React 版：异步任务 + WebSocket 进度 + 动态参数表单 + 历史列表 + 成交标记）。 */
 export default function BacktestPage() {
@@ -135,7 +136,8 @@ export default function BacktestPage() {
   })();
 
   return (
-    <div style={{ padding: 16 }}>
+    <div style={{ maxWidth: 1280, margin: "0 auto" }}>
+      <PageHeader title="策略回测" desc="异步任务 · WebSocket 进度 · 成交标记" />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))", gap: 10, marginBottom: 12 }}>
         <label>
           策略

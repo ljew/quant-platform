@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, MonitorStatus } from "../api/client";
 import { useTheme } from "../theme";
+import { PageHeader } from "../components/ui";
 
 /** 平台监控页：数据情况 + 系统服务状态（30s 自动刷新）。 */
 export default function MonitorPage() {
@@ -38,7 +39,8 @@ export default function MonitorPage() {
   const { freshness } = data.data;
 
   return (
-    <div style={{ padding: 16 }}>
+    <div style={{ maxWidth: 1280, margin: "0 auto" }}>
+      <PageHeader title="系统监控" desc="数据情况 · 服务状态 · 30 秒自动刷新" />
       {/* 顶部信息条 */}
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
         <Chip colors={colors} ok label={`后端 ${data.server.version}`} />

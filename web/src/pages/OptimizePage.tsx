@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, OptimizeTrial, StrategyInfo } from "../api/client";
 import { useTheme } from "../theme";
+import { PageHeader } from "../components/ui";
 
 /** 参数寻优（网格搜索，设计 v1.0 策略研究模块）。 */
 export default function OptimizePage() {
@@ -70,7 +71,8 @@ export default function OptimizePage() {
   }, 1);
 
   return (
-    <div style={{ padding: 16 }}>
+    <div style={{ maxWidth: 1280, margin: "0 auto" }}>
+      <PageHeader title="参数寻优" desc="网格搜索 · 多维参数组合 · 夏普/收益/回撤排序" />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 12 }}>
         <label>
           策略（单标的）

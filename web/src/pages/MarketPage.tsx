@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import EChart from "../components/EChart";
 import { api, KlineBar } from "../api/client";
 import { useTheme } from "../theme";
+import { PageHeader } from "../components/ui";
 
 const SYMBOLS = ["sh600519", "sz000858", "sh000906", "sz300750", "sh688166"];
 
@@ -115,7 +116,8 @@ export default function MarketPage() {
   }, [bars, colors]);
 
   return (
-    <div style={{ padding: 16 }}>
+    <div style={{ maxWidth: 1280, margin: "0 auto" }}>
+      <PageHeader title="行情看板" desc="K线 + 成交量 + MACD 三图联动" />
       <div style={{ marginBottom: 12, display: "flex", gap: 8, alignItems: "center" }}>
         {SYMBOLS.map((s) => (
           <button

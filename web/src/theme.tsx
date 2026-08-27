@@ -19,35 +19,46 @@ export interface ThemeColors {
 }
 
 export const lightColors: ThemeColors = {
-  bg: "#f5f7fa",
+  bg: "#f4f6fa",
   card: "#ffffff",
-  text: "#333333",
-  muted: "#888888",
-  border: "#e8e8e8",
-  header: "#001529",
-  headerText: "#ffffff",
-  up: "#cf1322",
-  down: "#237804",
-  accent: "#1668dc",
-  tableStripe: "#f0f7ff",
+  text: "#1f2533",
+  muted: "#7a8299",
+  border: "#e6eaf2",
+  header: "#0e1729",
+  headerText: "#f2f5fb",
+  up: "#d92c2c",
+  down: "#1a8a48",
+  accent: "#2456c8",
+  tableStripe: "#f2f6fd",
   chartBg: "#ffffff",
-  axis: "#666666",
+  axis: "#667089",
 };
 
 export const darkColors: ThemeColors = {
-  bg: "#12151c",
-  card: "#1d2130",
-  text: "#d8dbe4",
-  muted: "#8b90a0",
-  border: "#2c3040",
-  header: "#0c0f17",
+  bg: "#0f131c",
+  card: "#171c28",
+  text: "#dbe0ea",
+  muted: "#8b93a7",
+  border: "#262d3d",
+  header: "#090d15",
   headerText: "#e8eaf2",
-  up: "#ff4d4f",
-  down: "#49aa19",
-  accent: "#3b82f6",
-  tableStripe: "#1a2336",
-  chartBg: "#1d2130",
-  axis: "#8b90a0",
+  up: "#ff5257",
+  down: "#45b854",
+  accent: "#4d82f0",
+  tableStripe: "#141b2b",
+  chartBg: "#171c28",
+  axis: "#8b93a7",
+};
+
+/** 侧边栏专属色（明暗主题都用深色，投研终端感） */
+export const sidebarTheme = {
+  bg: "#0c1220",
+  activeBg: "rgba(77,130,240,0.18)",
+  activeText: "#6d9dff",
+  text: "#96a0b5",
+  hoverBg: "rgba(255,255,255,0.05)",
+  brand: "#e8ecf5",
+  divider: "rgba(255,255,255,0.07)",
 };
 
 type ThemeMode = "light" | "dark";

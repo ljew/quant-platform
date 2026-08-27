@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import EChart from "../components/EChart";
 import { api, PaperDetail, PaperTask, StrategyInfo } from "../api/client";
 import { useTheme } from "../theme";
+import { PageHeader } from "../components/ui";
 
 /** 模拟盘（任务列表 + 创建 + 详情：净值曲线/成交）。 */
 export default function PaperPage() {
@@ -107,7 +108,8 @@ export default function PaperPage() {
   const isPortfolio = Boolean(meta?.default_params?.multi_asset);
 
   return (
-    <div style={{ padding: 16 }}>
+    <div style={{ maxWidth: 1280, margin: "0 auto" }}>
+      <PageHeader title="模拟盘" desc="实时价撮合 · 组合日频调仓 · 风险截断" />
       {/* 创建表单 */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 12 }}>
         <label>任务名<input value={name} onChange={(e) => setName(e.target.value)} placeholder="自动命名" style={inputStyle(colors)} /></label>
