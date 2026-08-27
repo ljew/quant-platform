@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import EChart from "../components/EChart";
 import { api, KlineBar } from "../api/client";
 import { useTheme } from "../theme";
-import { PageHeader } from "../components/ui";
+import { Card, PageHeader } from "../components/ui";
 
 const SYMBOLS = ["sh600519", "sz000858", "sh000906", "sz300750", "sh688166"];
 
@@ -117,28 +117,39 @@ export default function MarketPage() {
 
   return (
     <div style={{ maxWidth: 1280, margin: "0 auto" }}>
-      <PageHeader title="行情看板" desc="K线 + 成交量 + MACD 三图联动" />
-      <div style={{ marginBottom: 12, display: "flex", gap: 8, alignItems: "center" }}>
-        {SYMBOLS.map((s) => (
-          <button
-            key={s}
-            onClick={() => setSymbol(s)}
-            style={{
-              padding: "6px 14px",
-              borderRadius: 6,
-              border: `1px solid ${colors.border}`,
-              background: s === symbol ? colors.accent : colors.card,
-              color: s === symbol ? "#fff" : colors.text,
-              cursor: "pointer",
-            }}
-          >
-            {s}
-          </button>
-        ))}
-      </div>
+      <PageHeader title="行情看板" desc="K线 + 成交量 + MACD 三图联动 · 缩放与十字光标跨图同步"
+        actions={
+          <div style={{ display: "flex", gap: 6, background: colors.card, borderRadius: 999, padding: 4, border: `1px solid ${colors.border}` }}>
+            {SYMBOLS.map((s) => (
+              <button
+                key={s}
+                onClick={() => setSymbol(s)}
+                className="num"
+                style={{
+                  padding: "5px 14px",
+                  borderRadius: 999,
+                  border: 0,
+                  background: s === symbol ? colors.accent : "transparent",
+                  color: s === symbol ? "#fff" : colors.muted,
+                  cursor: "pointer",
+                  fontSize: 12.5,
+                  fontWeight: s === symbol ? 600 : 400,
+                  transition: "background .15s",
+                }}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        }
+      />
       {error && <div style={{ color: colors.up, marginBottom: 8 }}>{error}</div>}
       {loading && <div style={{ color: colors.muted, marginBottom: 8 }}>加载中…</div>}
-      {bars.length > 0 && <EChart option={option as never} height={560} />}
+      {bars.length > 0 && (
+        <Card title={`${symbol} 日线`} colors={colors} pad={6}>
+          <EChart option={option as never} height={560} />
+        </Card>
+      )}
     </div>
   );
 }

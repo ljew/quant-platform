@@ -47,6 +47,7 @@ export interface BacktestResult {
   annual_return: number;
   sharpe: number;
   max_drawdown: number;
+  trade_count?: number;
   benchmark_total_return?: number;
   excess_return?: number;
   equity_curve?: { date: string; equity: number }[];

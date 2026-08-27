@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, OptimizeTrial, StrategyInfo } from "../api/client";
 import { useTheme } from "../theme";
-import { PageHeader } from "../components/ui";
+import { Btn, Card, PageHeader, inputStyle as _is } from "../components/ui";
 
 /** 参数寻优（网格搜索，设计 v1.0 策略研究模块）。 */
 export default function OptimizePage() {
@@ -73,7 +73,8 @@ export default function OptimizePage() {
   return (
     <div style={{ maxWidth: 1280, margin: "0 auto" }}>
       <PageHeader title="参数寻优" desc="网格搜索 · 多维参数组合 · 夏普/收益/回撤排序" />
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 12 }}>
+      <Card title="回测设置" colors={colors}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
         <label>
           策略（单标的）
           <select value={key} onChange={(e) => onStrategyChange(e.target.value)} style={inputStyle(colors)}>
@@ -94,13 +95,11 @@ export default function OptimizePage() {
           </select>
         </label>
       </div>
+      </Card>
 
       {/* 参数取值列表 */}
       {(meta?.param_schema || []).length > 0 && (
-        <div style={{ background: colors.card, borderRadius: 10, padding: 12, marginBottom: 12, border: `1px solid ${colors.border}` }}>
-          <div style={{ fontSize: 13, color: "#888", marginBottom: 8 }}>
-            参数取值（逗号分隔，多个值即网格搜索）· 预估组合数 <b>{comboCount}</b>
-          </div>
+        <Card title={`参数取值（逗号分隔 = 网格搜索）· 预估组合数 ${comboCount}`} colors={colors}>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             {meta!.param_schema.map((f) => (
               <label key={f.key} style={{ fontSize: 12 }}>
@@ -114,12 +113,10 @@ export default function OptimizePage() {
               </label>
             ))}
           </div>
-        </div>
+        </Card>
       )}
 
-      <button onClick={run} disabled={running} style={{ padding: "8px 28px", borderRadius: 6, border: 0, background: colors.accent, color: "#fff", cursor: "pointer" }}>
-        {running ? "寻优中…" : "开始寻优"}
-      </button>
+      <Btn onClick={run} disabled={running}>{running ? "寻优中…" : "开始寻优"}</Btn>
       {error && <div style={{ color: colors.up, margin: "8px 0" }}>{error}</div>}
 
       {/* 结果表格 */}

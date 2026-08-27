@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import EChart from "../components/EChart";
 import { api, BacktestResult, StrategyInfo } from "../api/client";
 import { useTheme } from "../theme";
-import { PageHeader } from "../components/ui";
+import { Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
 
 /** 策略回测（React 版：异步任务 + WebSocket 进度 + 动态参数表单 + 历史列表 + 成交标记）。 */
 export default function BacktestPage() {
@@ -184,70 +184,68 @@ export default function BacktestPage() {
       <div style={{ margin: "10px 0", color: colors.muted }}>{progress}</div>
 
       {result && (
-        <div>
-          <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginBottom: 16 }}>
-            <Metric label="总收益" value={`${(result.total_return * 100).toFixed(2)}%`} colors={colors} />
-            <Metric label="年化" value={`${(result.annual_return * 100).toFixed(2)}%`} colors={colors} />
-            <Metric label="夏普" value={result.sharpe.toFixed(2)} colors={colors} />
-            <Metric label="最大回撤" value={`${(result.max_drawdown * 100).toFixed(2)}%`} colors={colors} />
-            <Metric label="超额收益" value={`${((result.excess_return || 0) * 100).toFixed(2)}%`} colors={colors} />
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
+            <KpiCard label="总收益" value={`${(result.total_return * 100).toFixed(2)}%`}
+              tone={result.total_return >= 0 ? "up" : "down"} colors={colors} />
+            <KpiCard label="年化收益" value={`${(result.annual_return * 100).toFixed(2)}%`}
+              tone={result.annual_return >= 0 ? "up" : "down"} colors={colors} />
+            <KpiCard label="夏普比率" value={result.sharpe.toFixed(2)}
+              tone={Math.abs(result.sharpe) >= 1 ? "accent" : "neutral"} colors={colors} />
+            <KpiCard label="最大回撤" value={`${(result.max_drawdown * 100).toFixed(2)}%`}
+              sub={result.max_drawdown <= -0.2 ? "回撤较深" : undefined}
+              tone="neutral" colors={colors} />
+            <KpiCard label="超额收益" value={`${((result.excess_return || 0) * 100).toFixed(2)}%`}
+              sub="vs 基准指数"
+              tone={(result.excess_return || 0) >= 0 ? "up" : "down"} colors={colors} />
+            <KpiCard label="交易笔数" value={String(result.trade_count ?? "—")} tone="neutral" colors={colors} />
           </div>
-          {(result.equity_curve || []).length > 0 && <EChart option={equityOption as never} height={380} />}
+          {(result.equity_curve || []).length > 0 && (
+            <Card title="净值曲线与成交点位（点击图例切换买卖标记）" colors={colors} pad={8}>
+              <EChart option={equityOption as never} height={380} />
+            </Card>
+          )}
           {result.risk_limits && Object.keys(result.risk_limits).length > 0 && (
-            <div style={{ marginTop: 10, color: colors.muted }}>
-              风险硬上限: {JSON.stringify(result.risk_limits)} · 截断 {result.risk_clamps?.length || 0} 次
-            </div>
+            <Card title="风险硬上限" colors={colors}>
+              <div style={{ color: colors.muted, fontSize: 13 }}>
+                上限配置: <code>{JSON.stringify(result.risk_limits)}</code> · 触发截断{" "}
+                <b style={{ color: (result.risk_clamps?.length || 0) > 0 ? colors.up : colors.down }}>
+                  {result.risk_clamps?.length || 0} 次
+                </b>
+              </div>
+            </Card>
           )}
         </div>
       )}
 
       {history.length > 0 && (
-        <div style={{ marginTop: 24, background: colors.card, borderRadius: 10, padding: 14, border: `1px solid ${colors.border}` }}>
-          <h3 style={{ fontSize: 15, margin: "0 0 8px" }}>最近回测</h3>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-            <thead>
-              <tr style={{ color: colors.muted, textAlign: "left" }}>
-                <th style={{ padding: "6px 8px" }}>ID</th>
-                <th>策略</th><th>标的</th><th>区间</th><th>总收益</th><th>夏普</th>
-              </tr>
-            </thead>
-            <tbody>
-              {history.map((h) => (
-                <tr key={h.id} onClick={() => loadHistory(h.id)} style={{ cursor: "pointer", borderTop: `1px solid ${colors.border}` }}>
-                  <td style={{ padding: "6px 8px" }}>#{h.id}</td>
-                  <td>{h.strategy_key || "—"}</td>
-                  <td>{h.symbol}</td>
-                  <td>{h.start_date} ~ {h.end_date}</td>
-                  <td style={{ color: (h.total_return || 0) >= 0 ? colors.up : colors.down }}>
-                    {((h.total_return || 0) * 100).toFixed(2)}%
-                  </td>
-                  <td>{h.sharpe?.toFixed(2) ?? "—"}</td>
+        <div style={{ marginTop: 16 }}>
+          <Card title={`最近回测（${history.length}）`} colors={colors} pad={0}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ color: colors.muted, textAlign: "left" }}>
+                  <th style={{ padding: "9px 14px" }}>ID</th>
+                  <th>策略</th><th>标的</th><th>区间</th><th>总收益</th><th>夏普</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {history.map((h) => (
+                  <tr key={h.id} onClick={() => loadHistory(h.id)} style={{ cursor: "pointer", borderTop: `1px solid ${colors.border}` }}>
+                    <td style={{ padding: "9px 14px" }}>#{h.id}</td>
+                    <td>{h.strategy_key || "—"}</td>
+                    <td className="num">{h.symbol}</td>
+                    <td style={{ color: colors.muted }}>{h.start_date} ~ {h.end_date}</td>
+                    <td className="num" style={{ color: (h.total_return || 0) >= 0 ? colors.up : colors.down, fontWeight: 600 }}>
+                      {((h.total_return || 0) * 100).toFixed(2)}%
+                    </td>
+                    <td className="num">{h.sharpe?.toFixed(2) ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
         </div>
       )}
-    </div>
-  );
-}
-
-const inputStyle = (c: { text: string; card: string; border: string }) => ({
-  width: "100%",
-  padding: "6px 10px",
-  borderRadius: 6,
-  border: `1px solid ${c.border}`,
-  background: c.card,
-  color: c.text,
-  marginTop: 4,
-  boxSizing: "border-box" as const,
-});
-
-function Metric({ label, value, colors }: { label: string; value: string; colors: { card: string; text: string; muted: string; border: string } }) {
-  return (
-    <div style={{ background: colors.card, borderRadius: 8, padding: "10px 18px", minWidth: 110, border: `1px solid ${colors.border}` }}>
-      <div style={{ fontSize: 12, color: colors.muted }}>{label}</div>
-      <div style={{ fontSize: 18, fontWeight: 600, color: colors.text }}>{value}</div>
     </div>
   );
 }

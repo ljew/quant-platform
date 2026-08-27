@@ -29,6 +29,13 @@ body {
 }
 
 button { font-family: inherit; }
+
+/* 数字等宽（金融表格/代码标识用） */
+.num {
+  font-variant-numeric: tabular-nums;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Mono", Menlo, monospace;
+}
+
 input, select {
   color: var(--text);
   background: var(--card);
