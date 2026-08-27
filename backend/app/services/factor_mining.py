@@ -450,12 +450,9 @@ def _corr_with_existing(db, expr, syms, attrs, es_map, aligned, axis_dates, benc
         mkt_b = bench_aligned[i0: idx + 1][-len(seg):]
         if len(mkt_b) != len(seg):
             continue
-        a = attrs.get(sym, {}) or {}
-        ns = {"c_m": seg, "c_r": seg, "c_v": seg, "c_b": seg, "c_t": seg, "mkt_b": mkt_b,
-              "pe_ttm": a.get("pe_ttm"), "pb": a.get("pb"), "market_cap": a.get("market_cap"),
-              "roe": a.get("roe"), "revenue_yoy": a.get("revenue_yoy"),
-              "profit_yoy": a.get("profit_yoy"), "earnings_surprise": es_map.get(sym),
-              "industry": a.get("industry")}
+        from app.datahub.ns_vars import make_ns
+        ns = make_ns(seg, bench_aligned[i0: idx + 1],
+                     attrs.get(sym, {}) or {}, esv=es_map.get(sym))
         try:
             v = eval_factor(expr, ns)
         except Exception:  # noqa: BLE001

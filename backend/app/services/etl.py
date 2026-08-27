@@ -253,16 +253,10 @@ def compute_factor_cross_section(db: Session, syms: list[str], trade_date: date)
         if len(mkt_b) != len(closes):
             continue
         attrs = attrs_map.get(sym, {}) or {}
-        ns = {
-            "c_m": closes, "c_r": closes, "c_v": closes, "c_b": closes, "c_t": closes,
-            "mkt_b": mkt_b,
-            "pe_ttm": attrs.get("pe_ttm"), "pb": attrs.get("pb"),
-            "market_cap": attrs.get("market_cap"),
-            "roe": attrs.get("roe"), "revenue_yoy": attrs.get("revenue_yoy"),
-            "profit_yoy": attrs.get("profit_yoy"),
-            "earnings_surprise": _earnings_surprise_latest(db, sym),
-            "industry": attrs.get("industry"),
-        }
+        from app.datahub.ns_vars import make_ns
+        esv = _earnings_surprise_latest(db, sym)
+        ns = make_ns(closes, mkt_b, attrs,
+                     news=news_lookup(sym, trade_date), esv=esv)
         vals = {}
         for f in FACTORS:
             vals[f.name] = eval_factor(f.expr, ns)

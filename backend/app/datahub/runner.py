@@ -179,6 +179,14 @@ def step_score_sentiment(db) -> int:
     return n
 
 
+def step_sync_duckdb(db) -> int:
+    """分析库同步（Gold 层写入后）。"""
+    from app.services.duckdb_sync import sync_after_seed
+
+    sync_after_seed()
+    return 0
+
+
 def step_compute_factors(db) -> int:
     """Gold：核心池最新截面因子计算（复用 ETL）。"""
     from app.services.etl import compute_factor_cross_section, _get_universe
@@ -314,12 +322,13 @@ def step_compute_mined_factors(db) -> int:
             rows_by_fac.setdefault(fac.name, []).append(
                 FactorMinedDaily(factor_name=fac.name, date=last, symbol=sym2, value=v))
         n += len(vals)
-    # 幂等写入：先删当日同名因子行再插入
+    # 幂等写入：Core API 删除当日同名因子行（立即生效），再批量插入
+    from sqlalchemy import delete as sa_delete
+
     for fname, objs in rows_by_fac.items():
-        exist = db.execute(select(FactorMinedDaily).where(
-            FactorMinedDaily.factor_name == fname, FactorMinedDaily.date == last)).all()
-        for e in exist:
-            db.delete(e)
+        db.execute(sa_delete(FactorMinedDaily).where(
+            FactorMinedDaily.factor_name == fname,
+            FactorMinedDaily.date == last))
         db.add_all(objs)
     db.commit()
     return n
@@ -335,6 +344,7 @@ STEPS = [
     ("score_sentiment", step_score_sentiment),
     ("compute_mined_factors", step_compute_mined_factors),
     ("compute_factors", step_compute_factors),
+    ("sync_duckdb", step_sync_duckdb),
 ]
 
 
