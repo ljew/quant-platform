@@ -108,7 +108,27 @@ export const api = {
   // GP 自动挖掘
   factorGpDirections: () => get<{ key: string; note: string }[]>("/factor/gp/directions"),
   factorGpMine: (payload: Record<string, unknown>) => post<GpMineResult>("/factor/gp/mine", payload),
+  // 新闻情绪因子（文本管道第一层）
+  factorNewsDaily: (limit = 500) =>
+    get<{ date: string; n_articles: number; n_finance: number; bull: number; bear: number; net_sentiment: number | null }[]>(`/factor/news/daily?limit=${limit}`),
+  factorNewsTest: (extreme_pct: number, horizon: number) =>
+    post<NewsEventReport>("/factor/news/event-test", { extreme_pct, horizon }),
 };
+
+export interface NewsEventReport {
+  ok: boolean;
+  error?: string;
+  extreme_pct: number;
+  horizon: number;
+  hi_threshold?: number;
+  lo_threshold?: number;
+  baseline_ret: number;
+  n_days_all: number;
+  bull: { n_days: number; avg_ret: number; win_rate: number };
+  bear: { n_days: number; avg_ret: number; win_rate: number };
+  edge_long_vs_base?: number | null;
+  edge_short_vs_base?: number | null;
+}
 
 // —— GP 自动挖掘类型 ——
 export interface GpMineResult {

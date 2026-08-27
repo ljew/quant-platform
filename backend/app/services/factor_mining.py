@@ -450,3 +450,72 @@ def _corr_with_existing(db, expr, syms, attrs, es_map, aligned, axis_dates, benc
             corr[col] = round(_spearman([p[0] for p in pairs], [p[1] for p in pairs]), 4)
     max_abs = max((abs(v) for v in corr.values()), default=0.0)
     return {"corr": corr, "max_abs_corr": round(max_abs, 3)}
+
+
+# ============ 新闻情绪择时检验（文本因子第一层） ============
+def news_event_test(db: Session, extreme_pct: float = 0.10, horizon: int = 5,
+                    min_articles: int = 5) -> dict:
+    """极端新闻情绪日的未来指数收益检验。
+
+    看多日 = net_sentiment ≥ 分位数(1-extreme_pct)；看空日 ≤ extreme_pct。
+    收益基准 = 中证800(sh000906) 之后 horizon 个交易日收盘收益。
+    """
+    from app.models import NewsMarketDaily, IndexKlineDaily
+
+    rows = db.execute(
+        select(NewsMarketDaily.date, NewsMarketDaily.net_sentiment, NewsMarketDaily.n_finance)
+        .where(NewsMarketDaily.n_finance >= min_articles)
+        .order_by(NewsMarketDaily.date)
+    ).all()
+    if len(rows) < 50:
+        return {"ok": False, "error": "情绪样本不足"}
+
+    bench = db.execute(
+        select(IndexKlineDaily.trade_date, IndexKlineDaily.close)
+        .where(IndexKlineDaily.symbol == "sh000906", IndexKlineDaily.trade_date >= rows[0][0])
+        .order_by(IndexKlineDaily.trade_date)
+    ).all()
+    dates = [r[0] for r in bench]
+    closes = [float(r[1]) for r in bench]
+    pos_of = {d: i for i, d in enumerate(dates)}
+
+    def fwd_return(d: date) -> float | None:
+        i = pos_of.get(d)
+        if i is None or i + horizon >= len(closes):
+            return None
+        return closes[i + horizon] / closes[i] - 1.0
+
+    sentis = [float(r[1]) for r in rows]
+    s_sorted = sorted(sentis)
+    hi_th = s_sorted[int(len(s_sorted) * (1 - extreme_pct))]
+    lo_th = s_sorted[int(len(s_sorted) * extreme_pct)]
+
+    bull_rets, bear_rets, all_rets = [], [], []
+    for d, senti, _nf in rows:
+        fr = fwd_return(d)
+        if fr is None:
+            continue
+        all_rets.append(fr)
+        if senti >= hi_th:
+            bull_rets.append(fr)
+        elif senti <= lo_th:
+            bear_rets.append(fr)
+
+    base = _mean(all_rets) if all_rets else 0.0
+    win = lambda xs: (sum(1 for x in xs if x > 0) / len(xs)) if xs else 0.0
+    return {
+        "ok": True,
+        "extreme_pct": extreme_pct,
+        "horizon": horizon,
+        "hi_threshold": round(hi_th, 4),
+        "lo_threshold": round(lo_th, 4),
+        "baseline_ret": round(base, 5),
+        "n_days_all": len(all_rets),
+        "bull": {"n_days": len(bull_rets), "avg_ret": round(_mean(bull_rets), 5),
+                 "win_rate": round(win(bull_rets), 3)},
+        "bear": {"n_days": len(bear_rets), "avg_ret": round(_mean(bear_rets), 5),
+                 "win_rate": round(win(bear_rets), 3)},
+        "edge_long_vs_base": round(_mean(bull_rets) - base, 5) if bull_rets else None,
+        "edge_short_vs_base": round(base - _mean(bear_rets), 5) if bear_rets else None,
+        "note": "看多日做多显著跑赢基线 / 看空日做空有超额 → 情绪指标具择时价值",
+    }

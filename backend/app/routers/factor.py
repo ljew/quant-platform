@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import FactorMineResult
-from app.services.factor_mining import mine_factor, validate_expr, compute_complexity
+from app.services.factor_mining import mine_factor, validate_expr, compute_complexity, news_event_test
 from app.services.factor_gp import gp_search, DIRECTION_TEMPLATES
 
 router = APIRouter(prefix="/factor", tags=["factor"])
@@ -109,6 +109,32 @@ class GpMinePayload(BaseModel):
     top_k: int = Field(3, ge=1, le=5)
     orthogonal: bool = Field(False, description="正交增量模式：残差IC，专挖重复发现之外的alpha")
     crisis_only: bool = Field(False, description="危机Alpha：仅基准下跌窗口评IC")
+
+
+class NewsTestPayload(BaseModel):
+    extreme_pct: float = Field(0.10, ge=0.02, le=0.3)
+    horizon: int = Field(5, ge=1, le=60)
+
+
+@router.get("/news/daily")
+def news_daily(db: Session = Depends(get_db), limit: int = 500):
+    """市场新闻情绪时序（倒序）。"""
+    from app.models import NewsMarketDaily
+
+    rows = db.execute(
+        select(NewsMarketDaily).order_by(NewsMarketDaily.date.desc()).limit(min(limit, 1500))
+    ).scalars().all()
+    return [
+        {"date": r.date.isoformat(), "n_articles": r.n_articles, "n_finance": r.n_finance,
+         "bull": r.bull_score, "bear": r.bear_score, "net_sentiment": r.net_sentiment}
+        for r in rows
+    ]
+
+
+@router.post("/news/event-test")
+def news_event(payload: NewsTestPayload, db: Session = Depends(get_db)):
+    """极端新闻情绪日 → 未来 N 日指数收益检验（择时有效性）。"""
+    return news_event_test(db, extreme_pct=payload.extreme_pct, horizon=payload.horizon)
 
 
 @router.get("/gp/directions")

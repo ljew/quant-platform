@@ -404,3 +404,20 @@ class FactorMineResult(Base):
 
     def __repr__(self):
         return f"<FactorMineResult #{self.id} {self.name} {self.rating}>"
+
+
+class NewsMarketDaily(Base):
+    """市场新闻情绪日频因子（文本数据管道第一层，词典法打分）。"""
+
+    __tablename__ = "news_market_daily"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    date: Mapped[date] = mapped_column(Date, unique=True)
+    n_articles: Mapped[int] = mapped_column(Integer, default=0)
+    n_finance: Mapped[int] = mapped_column(Integer, default=0)
+    bull_score: Mapped[int] = mapped_column(Integer, default=0)
+    bear_score: Mapped[int] = mapped_column(Integer, default=0)
+    net_sentiment: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    def __repr__(self):
+        return f"<NewsMarketDaily {self.date} senti={self.net_sentiment}>"
