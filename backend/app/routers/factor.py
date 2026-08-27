@@ -209,3 +209,68 @@ def mine_result_delete(rid: int, db: Session = Depends(get_db)):
     db.delete(r)
     db.commit()
     return {"ok": True}
+
+
+# ============ 因子注册表（生命周期管理） ============
+class RegistryPayload(BaseModel):
+    name: str = Field(..., min_length=1)
+    expr: str
+    direction: int = 1
+    category: str = "mined"
+    source_id: int | None = None
+    ic_mean: float | None = None
+    notes: str = ""
+
+
+@router.get("/registry")
+def registry_list(db: Session = Depends(get_db), status: str = ""):
+    from app.models import FactorRegistry
+
+    q = select(FactorRegistry).order_by(FactorRegistry.id.desc())
+    if status:
+        q = q.where(FactorRegistry.status == status)
+    rows = db.execute(q).scalars().all()
+    return [
+        {"id": r.id, "name": r.name, "expr": r.expr, "direction": r.direction,
+         "category": r.category, "status": r.status, "ic_mean": r.ic_mean,
+         "source_id": r.source_id, "created_at": r.created_at.isoformat(timespec="seconds")
+         if r.created_at else None}
+        for r in rows
+    ]
+
+
+@router.post("/registry/register")
+def registry_register(payload: RegistryPayload, db: Session = Depends(get_db)):
+    """登记因子（candidate）；同名重复登记返回已有 id。"""
+    from app.models import FactorRegistry
+
+    exist = db.execute(select(FactorRegistry).where(
+        FactorRegistry.name == payload.name)).scalar()
+    if exist:
+        return {"ok": True, "id": exist.id, "status": exist.status, "existed": True}
+    row = FactorRegistry(name=payload.name, expr=payload.expr,
+                         direction=payload.direction, category=payload.category,
+                         source_id=payload.source_id, ic_mean=payload.ic_mean,
+                         notes=payload.notes)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"ok": True, "id": row.id, "status": row.status}
+
+
+@router.post("/registry/{rid}/toggle")
+def registry_toggle(rid: int, db: Session = Depends(get_db)):
+    """candidate<->enabled 切换；enabled 才进入每日计算。"""
+    from app.models import FactorRegistry
+
+    row = db.get(FactorRegistry, rid)
+    if not row:
+        raise HTTPException(status_code=404, detail="不存在")
+    if row.status == "candidate":
+        row.status = "enabled"
+    elif row.status == "enabled":
+        row.status = "disabled"
+    else:
+        row.status = "candidate"
+    db.commit()
+    return {"ok": True, "id": rid, "status": row.status}

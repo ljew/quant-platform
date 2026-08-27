@@ -115,7 +115,15 @@ export const api = {
     post<NewsEventReport>("/factor/news/event-test", { extreme_pct, horizon }),
   // 数据健康度
   monitorHealth: () => get<HealthReport>(`/monitor/health-report`),
+  // 因子注册表
+  factorRegistryRegister: (payload: Record<string, unknown>) =>
+    post<{ ok: boolean; id: number; status: string; existed?: boolean }>("/factor/registry/register", payload),
 };
+
+export interface RegistryRow {
+  id: number; name: string; expr: string; direction: number;
+  category: string; status: string; ic_mean: number | null; created_at: string;
+}
 
 export interface HealthCheck {
   name: string;

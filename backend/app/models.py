@@ -473,3 +473,37 @@ class PipelineStepLog(Base):
     duration_sec: Mapped[float] = mapped_column(Float, default=0.0)
     rows: Mapped[int] = mapped_column(Integer, default=0)
     message: Mapped[str] = mapped_column(Text, default="")
+
+
+class FactorRegistry(Base):
+    """因子注册表：挖掘/文本因子生命周期管理（登记→验证→启用→生产）。"""
+
+    __tablename__ = "factor_registry"
+    __table_args__ = (UniqueConstraint("name", name="uq_fr_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64))
+    expr: Mapped[str] = mapped_column(Text)
+    direction: Mapped[int] = mapped_column(Integer, default=1)  # 1 正向 -1 反向
+    category: Mapped[str] = mapped_column(String(24), default="mined")
+    source_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 来源 mine result
+    status: Mapped[str] = mapped_column(String(12), default="candidate")  # candidate/enabled/disabled
+    ic_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class FactorMinedDaily(Base):
+    """启用挖掘因子的日频截面值（长表）。"""
+
+    __tablename__ = "factor_mined_daily"
+    __table_args__ = (
+        UniqueConstraint("factor_name", "date", "symbol", name="uq_fmd"),
+        Index("ix_fmd_date", "date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    factor_name: Mapped[str] = mapped_column(String(64))
+    date: Mapped[date] = mapped_column(Date)
+    symbol: Mapped[str] = mapped_column(String(16))
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)

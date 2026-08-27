@@ -407,6 +407,28 @@ function MineReport({ report, colors }: { report: FactorMineReport; colors: Them
           <code style={{ fontSize: 12.5, color: colors.muted, background: colors.tableStripe, padding: "4px 10px", borderRadius: 6 }}>{report.expr}</code>
           <span style={{ flex: 1 }} />
           <span style={{ fontSize: 12, color: colors.muted }}>{report.n_periods} 期截面 · {report.n_stocks} 只 · 未来 {report.forward_days} 日</span>
+          {report.id && (
+            <span style={{ flex: 1 }} />
+          )}
+          {report.id && (
+            <button
+              onClick={async () => {
+                try {
+                  const r = await api.factorRegistryRegister({
+                    name: report.name, expr: report.expr, category: "mined",
+                    source_id: report.id, ic_mean: report.ic_mean,
+                  });
+                  window.alert(r.existed ? "该因子已在注册表中" : `已登记入因子库 (#${r.id}, ${r.status})`);
+                } catch (e) {
+                  window.alert(`登记失败: ${(e as Error).message}`);
+                }
+              }}
+              style={{ padding: "4px 12px", borderRadius: 6, border: `1px solid ${colors.accent}`,
+                       background: "transparent", color: colors.accent, cursor: "pointer", fontSize: 12 }}
+            >
+              登记入因子库
+            </button>
+          )}
         </div>
       </Card>
 

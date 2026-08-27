@@ -16,7 +16,9 @@ from sqlalchemy import select
 from app.datahub.registry import write_bronze
 from app.datahub.source_config import get_source
 from app.database import SessionLocal, init_db
-from app.models import KlineDaily, NewsMarketDaily, PipelineRun, PipelineStepLog
+from app.models import (KlineDaily, NewsMarketDaily, NewsStockDaily, PipelineRun,
+                        PipelineStepLog, Stock, IndexKlineDaily, FactorRegistry,
+                        FactorMinedDaily)
 
 # ============ 步骤实现 ============
 
@@ -232,6 +234,97 @@ def step_clean_text(db) -> int:
     return metrics.get("rows_out", 0)
 
 
+def step_compute_mined_factors(db) -> int:
+    """Gold：启用状态注册因子的最新截面 → factor_mined_daily（长表，幂等覆盖）。"""
+    from app.models import FactorRegistry, FactorMinedDaily
+    from app.core.engine.factor_expr import eval_factor
+
+    enabled = db.execute(select(FactorRegistry).where(
+        FactorRegistry.status == "enabled")).scalars().all()
+    if not enabled:
+        return 0
+    syms = db.execute(select(Stock.symbol)).scalars().all()
+    last = db.execute(select(KlineDaily.trade_date)
+                      .order_by(KlineDaily.trade_date.desc()).limit(1)).scalar()
+    if not last:
+        return 0
+
+    n = 0
+    axis = db.execute(select(KlineDaily.trade_date).distinct()
+                      .order_by(KlineDaily.trade_date)).all()
+    axis = [a[0] for a in axis]
+    try:
+        idx0 = max(0, len(axis) - 131)
+        slice_dates = axis[idx0:]
+    except Exception:  # noqa: BLE001
+        return 0
+    aligned: dict[str, dict] = {}
+    for sym2, td2, c2 in db.execute(select(KlineDaily.symbol, KlineDaily.trade_date,
+                                           KlineDaily.close).where(
+            KlineDaily.adj == "qfq", KlineDaily.trade_date >= slice_dates[0])):
+        aligned.setdefault(sym2, {})[td2] = float(c2)
+    bench_map = {}
+    for td2, c2 in db.execute(select(IndexKlineDaily.trade_date, IndexKlineDaily.close).where(
+            IndexKlineDaily.symbol == "sh000906",
+            IndexKlineDaily.trade_date >= slice_dates[0]).order_by(IndexKlineDaily.trade_date)):
+        bench_map[td2] = float(c2)
+
+    # 个股新闻情绪 lookup（当日或近3日均值）
+    from app.models import NewsStockDaily
+
+    news_hist: dict[str, dict] = {}
+    for ns_sym, ns_d, ns_v in db.execute(
+        select(NewsStockDaily.symbol, NewsStockDaily.date, NewsStockDaily.net_sentiment)
+    ).all():
+        if ns_v is not None:
+            news_hist.setdefault(ns_sym, {})[ns_d] = float(ns_v)
+
+    def _news_lookup(sym2: str) -> float | None:
+        hist = news_hist.get(sym2)
+        if not hist or not last:
+            return None
+        vals = [hist[d2] for d2 in hist if 0 <= (last - d2).days <= 3]
+        return (sum(vals) / len(vals)) if vals else None
+
+    snap_slice = [d for d in slice_dates]
+    rows_by_fac: dict[str, list] = {}
+    for fac in enabled:
+        vals: list[tuple[str, float]] = []
+        for sym2 in syms:
+            amap = aligned.get(sym2)
+            if not amap or len(amap) < 55:
+                continue
+            seg = [amap.get(d2) for d2 in snap_slice[-126:] if d2 in amap]
+            mkt_b = [bench_map.get(d2) for d2 in snap_slice[-len(seg):]]
+            try:
+                v = eval_factor(fac.expr, {"c_m": seg, "c_r": seg, "c_v": seg,
+                                           "c_b": seg, "c_t": seg, "mkt_b": mkt_b,
+                                           "pe_ttm": None, "pb": None,
+                                           "market_cap": None, "roe": None,
+                                           "revenue_yoy": None, "profit_yoy": None,
+                                           "earnings_surprise": None,
+                                           "news_senti": _news_lookup(sym2)})
+            except Exception:  # noqa: BLE001
+                v = None
+            if v is not None:
+                import math as _m
+                if _m.isfinite(v):
+                    vals.append((sym2, v))
+        for sym2, v in vals:
+            rows_by_fac.setdefault(fac.name, []).append(
+                FactorMinedDaily(factor_name=fac.name, date=last, symbol=sym2, value=v))
+        n += len(vals)
+    # 幂等写入：先删当日同名因子行再插入
+    for fname, objs in rows_by_fac.items():
+        exist = db.execute(select(FactorMinedDaily).where(
+            FactorMinedDaily.factor_name == fname, FactorMinedDaily.date == last)).all()
+        for e in exist:
+            db.delete(e)
+        db.add_all(objs)
+    db.commit()
+    return n
+
+
 STEPS = [
     ("extract_index_kline", step_extract_index_kline),
     ("extract_stock_kline", step_extract_stock_kline),
@@ -240,6 +333,7 @@ STEPS = [
     ("extract_wechat_articles", step_extract_wechat_articles),
     ("clean_text", step_clean_text),
     ("score_sentiment", step_score_sentiment),
+    ("compute_mined_factors", step_compute_mined_factors),
     ("compute_factors", step_compute_factors),
 ]
 
