@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, HealthReport, MonitorStatus } from "../api/client";
+import { api, DataflowReport, HealthReport, MonitorStatus } from "../api/client";
 import { Badge, Card } from "../components/ui";
 import { useTheme } from "../theme";
 import { PageHeader } from "../components/ui";
+import { Arrow, FlowCol, LayerRow } from "../components/flow";
 
 /** 平台监控页：数据情况 + 系统服务状态（30s 自动刷新）。 */
 export default function MonitorPage() {
@@ -10,12 +11,14 @@ export default function MonitorPage() {
   const [error, setError] = useState("");
   const [lastRefresh, setLastRefresh] = useState("");
   const [health, setHealth] = useState<HealthReport | null>(null);
+  const [dataflow, setDataflow] = useState<DataflowReport | null>(null);
   const { colors } = useTheme();
 
   const refresh = useCallback(async () => {
     try {
       const d = await api.monitor();
       setHealth(await api.monitorHealth());
+      api.monitorDataflow().then(setDataflow).catch(() => {});
       setData(d);
       setLastRefresh(new Date().toLocaleTimeString());
       setError("");
@@ -96,6 +99,48 @@ export default function MonitorPage() {
                 ))}
               </div>
             ))}
+          </div>
+        </Card>
+      )}
+
+      {/* —— 数据管道全景 —— */}
+      {dataflow && (
+        <Card title="数据管道全景 · 从哪里来 / 怎么处理 / 最新到哪" colors={colors} style={{ marginTop: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 26px 1fr 26px 1fr 26px 1.1fr", alignItems: "stretch" }}>
+            <FlowCol title="① 数据源" colors={colors}>
+              {dataflow.sources.map((sc) => (
+                <div key={sc.name} style={{ fontSize: 11, marginBottom: 7 }}>
+                  <span style={{ color: sc.enabled ? colors.down : colors.up }}>●</span>{" "}
+                  <b>{sc.name}</b>
+                  <div style={{ color: colors.muted }}>{sc.description}</div>
+                </div>
+              ))}
+            </FlowCol>
+            <Arrow />
+            <FlowCol title="② Bronze 原始层" colors={colors}>
+              <LayerRow label="行情日K快照" v={`${dataflow.bronze.market_bars.files} 文件 · ${dataflow.bronze.market_bars.size_mb}MB`} colors={colors} />
+              <LayerRow label="公众号文章批次" v={`${dataflow.bronze.text_articles.files} 个 · ${dataflow.bronze.text_articles.size_mb}MB`} colors={colors} />
+              <div style={{ fontSize: 10.5, color: colors.muted, marginTop: 4 }}>
+                最新写入 {dataflow.bronze.text_articles.latest ?? "—"}
+              </div>
+            </FlowCol>
+            <Arrow />
+            <FlowCol title="③ Silver 清洗打分" colors={colors}>
+              {Object.entries(dataflow.silver.files).map(([f, st]) => (
+                <LayerRow key={f} label={f} v={st.mtime?.slice(5, 16) ?? "—"} colors={colors} />
+              ))}
+              <div style={{ fontSize: 10.5, color: colors.muted, marginTop: 4 }}>
+                打分器: {dataflow.scorers.filter((x) => x.active).map((x) => x.version).join(" + ")}
+                {dataflow.silver.quality ? " · 质检已出" : ""}
+              </div>
+            </FlowCol>
+            <Arrow />
+            <FlowCol title="④ Gold 因子层（最新数据）" colors={colors}>
+              <LayerRow label="个股K线" v={`${(dataflow.gold.kline_daily as number).toLocaleString()} 行 @${dataflow.gold.kline_latest}`} colors={colors} />
+              <LayerRow label="因子截面" v={`${(dataflow.gold.factor_daily as number).toLocaleString()} 行 @${dataflow.gold.factor_latest}`} colors={colors} />
+              <LayerRow label="新闻情绪" v={`市场 ${dataflow.gold.news_market_daily} 天 / 个股 ${(dataflow.gold.news_stock_daily as number).toLocaleString()} 行`} colors={colors} />
+              <LayerRow label="注册因子" v={`${dataflow.gold.registry_enabled} 启用 · ${(dataflow.gold.mined_rows as number).toLocaleString()} 行`} colors={colors} />
+            </FlowCol>
           </div>
         </Card>
       )}

@@ -348,6 +348,15 @@ STEPS = [
 ]
 
 
+def init_models():
+    """确保管道记录表存在。"""
+    from app.database import Base, engine
+
+    init_db()
+    Base.metadata.create_all(engine, tables=[
+        PipelineRun.__table__, PipelineStepLog.__table__])
+
+
 def run_pipeline(trigger: str = "manual", only: list[str] | None = None,
                  stop_on_fail: bool = True) -> int:
     """执行管道；每步落 pipeline_run_steps，run 状态含耗时/行数/错误。返回 run_id。"""

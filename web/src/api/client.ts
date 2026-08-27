@@ -113,8 +113,9 @@ export const api = {
     get<{ date: string; n_articles: number; n_finance: number; bull: number; bear: number; net_sentiment: number | null }[]>(`/factor/news/daily?limit=${limit}`),
   factorNewsTest: (extreme_pct: number, horizon: number) =>
     post<NewsEventReport>("/factor/news/event-test", { extreme_pct, horizon }),
-  // 数据健康度
+  // 数据健康度 + 数据流全景
   monitorHealth: () => get<HealthReport>(`/monitor/health-report`),
+  monitorDataflow: () => get<DataflowReport>(`/monitor/dataflow`),
   // 因子注册表
   factorRegistryRegister: (payload: Record<string, unknown>) =>
     post<{ ok: boolean; id: number; status: string; existed?: boolean }>("/factor/registry/register", payload),
@@ -290,4 +291,12 @@ export interface PaperDetail {
   risk_limits?: Record<string, number> | null;
   risk_clamps?: unknown[];
   error_msg?: string | null;
+}
+
+export interface DataflowReport {
+  sources: { name: string; type: string; enabled: boolean; description: string; params_brief: string }[];
+  bronze: Record<string, { files: number; size_mb: number; latest: string | null }>;
+  silver: { files: Record<string, { size_kb?: number; mtime: string | null }>; quality: Record<string, unknown> | null };
+  gold: Record<string, number | string | null>;
+  scorers: { version: string; desc: string; active: boolean }[];
 }

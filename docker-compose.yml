@@ -27,8 +27,10 @@ services:
       - QUANT_TUSHARE_TOKEN=${QUANT_TUSHARE_TOKEN:-}
       - QUANT_DATA_SCHEDULE=1       # ETL 每晚 17:00 自动增量 + 因子落库
       - QUANT_DEBUG=false
+      - QUANT_SOURCES_YAML=/app/config/sources.yaml
     volumes:
       - ./data:/data                # bind 挂载本机数据（复用现有 SQLite/DuckDB）
+      - ./config:/app/config        # 数据源配置（改 sources.yaml 无需重建镜像）
     ports:
       - "8000:8000"
     depends_on:

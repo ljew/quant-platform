@@ -118,6 +118,17 @@ def _paper_stats(db) -> dict:
 
 
 @router.get("/health-report")
+def data_health_endpoint():
+    """数据健康度报告。"""
+    return health_report()
+
+
+@router.get("/dataflow")
+def data_flow():
+    """数据流全景（源头/Bronze/Silver/Gold）。"""
+    from app.services.dataflow_svc import dataflow_report
+
+    return dataflow_report(SessionLocal())
 def data_health():
     """数据健康度：采集/处理/应用三层评分 + 告警列表。"""
     return health_report()
