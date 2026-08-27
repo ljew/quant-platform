@@ -50,8 +50,35 @@ def _is_trading_day(d: datetime) -> bool:
 
 
 def _run_update() -> bool:
-    """子进程执行 ETL 每日管道（tushare 采集→增量入库→因子落库；独立进程隔离崩溃）。"""
+    """每日数据任务。
+
+    P5 起：优先执行 datahub 管道（extract→clean→score→mined→factor，
+    运行记录入 pipeline_runs 供监控），任一步骤失败自动降级 etl_daily。
+    """
+    from app.database import SessionLocal
+
     backend = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # backend/
+    # —— 新管道优先 ——
+    try:
+        from app.datahub.runner import run_pipeline
+
+        rid = run_pipeline(trigger="scheduler")
+        from app.models import PipelineRun
+
+        with SessionLocal() as db:
+            st = db.get(PipelineRun, rid)
+        if st and st.status == "SUCCESS":
+            logger.info("datahub 管道完成 run_id=%s", rid)
+            _status["last_success"] = datetime.now().isoformat(timespec="seconds")
+            return True
+        # 步骤部分失败 → 降级 etl_daily 兜底
+        err = (st.error if st else None) or f"pipeline status={st.status if st else '?'}"
+        logger.warning("datahub 管道未完全成功(run_id=%s)，降级 etl_daily: %s", rid, err[:200])
+        _status["last_error"] = f"pipeline fallback: {str(err)[:200]}"
+    except Exception as e:  # noqa: BLE001
+        logger.error("datahub 管道异常(%s)，降级 etl_daily: %s", type(e).__name__, e)
+        _status["last_error"] = f"pipeline fallback: {str(e)[:200]}"
+
     script = os.path.join(backend, "scripts", "etl_daily.py")
     env = dict(os.environ)
     env["PYTHONPATH"] = backend
