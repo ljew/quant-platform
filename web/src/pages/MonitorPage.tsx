@@ -1,17 +1,22 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, DataflowReport, HealthReport, MonitorStatus } from "../api/client";
 import { Badge, Card } from "../components/ui";
+import { Arrow, FlowCol, LayerRow } from "../components/flow";
+import type { ThemeColors } from "../theme";
 import { useTheme } from "../theme";
 import { PageHeader } from "../components/ui";
-import { Arrow, FlowCol, LayerRow } from "../components/flow";
 
-/** 平台监控页：数据情况 + 系统服务状态（30s 自动刷新）。 */
+/** 平台监控页：一眼结论 → 告警 → 数据管道全景 → 运行记录。 */
+
 export default function MonitorPage() {
   const [data, setData] = useState<MonitorStatus | null>(null);
   const [error, setError] = useState("");
-  const [lastRefresh, setLastRefresh] = useState("");
   const [health, setHealth] = useState<HealthReport | null>(null);
   const [dataflow, setDataflow] = useState<DataflowReport | null>(null);
+  const [lastRefresh, setLastRefresh] = useState("");
+  const [showDetail, setShowDetail] = useState(false);
+  const [running, setRunning] = useState(false);
+  const alarmRef = useRef<HTMLDivElement>(null);
   const { colors } = useTheme();
 
   const refresh = useCallback(async () => {
@@ -21,7 +26,6 @@ export default function MonitorPage() {
       api.monitorDataflow().then(setDataflow).catch(() => {});
       setData(d);
       setLastRefresh(new Date().toLocaleTimeString());
-      setError("");
     } catch (e) {
       setError((e as Error).message);
     }
@@ -29,83 +33,156 @@ export default function MonitorPage() {
 
   useEffect(() => {
     refresh();
-    const timer = setInterval(refresh, 30000);
-    return () => clearInterval(timer);
+    const t = setInterval(refresh, 30000);
+    return () => clearInterval(t);
   }, [refresh]);
 
-  if (!data) {
-    return (
-      <div style={{ padding: 16, color: colors.muted }}>
-        {error ? `加载失败: ${error}` : "加载中…"}
-        <button onClick={refresh} style={btnStyle(colors)}>重试</button>
-      </div>
-    );
-  }
-
-  const { freshness } = data.data;
+  if (!data) return <div style={{ padding: 24, color: "#888" }}>加载监控数据…{error}</div>;
+  const st = data.services;
+  const fresh = health?.layers;
 
   return (
     <div style={{ maxWidth: 1280, margin: "0 auto" }}>
-      <PageHeader title="系统监控" desc="数据情况 · 服务状态 · 30 秒自动刷新" />
-      {/* —— 数据健康度 —— */}
+      <PageHeader title="系统监控" desc="健康度 · 告警 · 数据管道全景 · 任务执行"
+        actions={
+          <>
+            <button
+              onClick={async () => {
+                try {
+                  const r = await fetch("/api/v1/monitor/pipeline/run", { method: "POST" }).then((x) => x.json());
+                  if (!r.ok) window.alert(r.error || "已在运行");
+                  else setTimeout(refresh, 2500);
+                } catch (e) {
+                  window.alert(`触发失败: ${(e as Error).message}`);
+                }
+              }}
+              disabled={running}
+              style={{
+                padding: "6px 14px", borderRadius: 7, border: `1px solid ${colors.accent}`,
+                background: running ? colors.tableStripe : `${colors.accent}14`,
+                color: colors.accent, cursor: running ? "wait" : "pointer", fontSize: 12.5,
+              }}
+            >
+              ▶ 立即运行管道
+            </button>
+            <span style={{ fontSize: 11.5, color: colors.muted }}>刷新于 {lastRefresh}（30s 自动）</span>
+          </>
+        }
+      />
+      {error && <div style={{ color: colors.up, marginBottom: 10 }}>{error}</div>}
+
+      {/* —— 第一屏：一句话结论 + 三个数据新鲜度大字 —— */}
       {health && (
-        <Card colors={colors} pad={0} style={{ marginBottom: 16 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "160px 1fr 1.4fr", minHeight: 150 }}>
-            <div style={{ padding: 18, borderRight: `1px solid ${colors.border}`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-              <div style={{ fontSize: 12, color: colors.muted }}>整体健康度</div>
-              <ScoreRing score={health.overall_score} status={health.overall_status} colors={colors} />
-            </div>
-            <div style={{ padding: 18, borderRight: `1px solid ${colors.border}` }}>
-              <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>分层评分（采集 / 处理 / 应用）</div>
-              {Object.entries(health.layers).map(([k, ly]) => (
-                <div key={k} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 9 }}>
-                  <span style={{ width: 62, fontSize: 12.5 }}>{ly.label}</span>
-                  <div style={{ flex: 1, height: 8, borderRadius: 4, background: colors.tableStripe }}>
-                    <div style={{
-                      width: `${ly.score}%`, height: "100%", borderRadius: 4,
-                      background: ly.status === "healthy" ? colors.down : ly.status === "warn" ? "#e8a520" : colors.up,
-                      transition: "width .4s",
-                    }} />
+        <Card colors={colors} style={{ marginBottom: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1.1fr 2fr 0.9fr", gap: 18, alignItems: "center" }}>
+            {/* 结论 */}
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <span className="num" style={{
+                  fontSize: 44, fontWeight: 800,
+                  color: health.overall_status === "healthy" ? colors.down : health.overall_status === "warn" ? "#e8a520" : colors.up,
+                }}>
+                  {health.overall_score}
+                </span>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 16 }}>
+                    {health.overall_status === "healthy" ? "系统运行正常"
+                      : health.overall_status === "warn" ? "存在需要关注的告警"
+                        : "系统状态异常"}
                   </div>
-                  <b className="num" style={{ width: 34, textAlign: "right", fontSize: 14 }}>{ly.score}</b>
+                  <div style={{ fontSize: 12, color: colors.muted }}>综合健康度 / 100</div>
+                </div>
+              </div>
+              {/* 三层迷你条 */}
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                {Object.entries(health.layers).map(([k, ly]) => (
+                  <span key={k} style={{ fontSize: 11.5 }}>
+                    <b className="num" style={{ color: ly.status === "healthy" ? colors.down : ly.status === "warn" ? "#e8a520" : colors.up }}>{ly.score}</b> {ly.label}
+                  </span>
+                ))}
+              </div>
+            </div>
+            {/* 数据新鲜度 */}
+            <FreshGrid dataflow={dataflow} colors={colors} />
+            {/* 告警入口 */}
+            <div ref={alarmRef}>
+              <AlarmSummary health={health} colors={colors}
+                onJump={() => setShowDetail(true)} />
+            </div>
+          </div>
+          {/* 明细折叠 */}
+          {showDetail && (
+            <div style={{ borderTop: `1px solid ${colors.border}`, marginTop: 12 }}>
+              {Object.entries(health.layers).map(([k, ly]) => (
+                <div key={k}>
+                  <div style={{ padding: "6px 16px", background: colors.tableStripe, fontWeight: 600, fontSize: 12 }}>{ly.label}</div>
+                  {(ly.checks || []).map((c) => (
+                    <div key={c.name} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 16px", fontSize: 12.5, borderBottom: `1px solid ${colors.border}` }}>
+                      <span style={{ color: c.status === "ok" ? colors.down : c.status === "error" ? colors.up : "#e8a520", width: 14 }}>{c.status === "ok" ? "●" : c.status === "warn" ? "◐" : "✕"}</span>
+                      <span style={{ width: 190 }}>{c.name}</span>
+                      <span className="num" style={{ flex: 1, color: colors.muted }}>{c.value}</span>
+                      <span style={{ color: colors.muted }}>期望: {c.expect}</span>
+                    </div>
+                  ))}
                 </div>
               ))}
+              <button onClick={() => setShowDetail(false)}
+                style={{ margin: 8, fontSize: 12, color: colors.accent, background: "none", border: 0, cursor: "pointer" }}>
+                收起明细
+              </button>
             </div>
-            <div style={{ padding: 14 }}>
-              <div style={{ fontSize: 12, color: colors.muted, marginBottom: 8 }}>⚠ 告警中心 ({health.alerts.length})</div>
-              <div style={{ maxHeight: 116, overflowY: "auto" }}>
-                {health.alerts.length === 0 ? (
-                  <div style={{ color: colors.down, fontSize: 13 }}>✓ 无告警</div>
-                ) : health.alerts.map((a, i) => (
-                  <div key={i} style={{ fontSize: 12, marginBottom: 5, display: "flex", gap: 7 }}>
-                    <Badge text={a.level === "error" ? "严重" : "警告"} color={a.level === "error" ? colors.up : "#e8a520"} soft />
-                    <span><b>{a.layer}</b> · {a.check}: {a.detail}（期望 {a.expect}）</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div style={{ borderTop: `1px solid ${colors.border}`, maxHeight: 220, overflowY: "auto" }}>
-            {Object.entries(health.layers).map(([k, ly]) => (
-              <div key={k}>
-                <div style={{ padding: "6px 16px", background: colors.tableStripe, fontWeight: 600, fontSize: 12 }}>{ly.label}</div>
-                {ly.checks.map((c) => (
-                  <div key={c.name} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 16px", fontSize: 12.5, borderBottom: `1px solid ${colors.border}` }}>
-                    <span style={{ color: c.status === "ok" ? colors.down : c.status === "error" ? colors.up : "#e8a520", width: 14 }}>{c.status === "ok" ? "●" : "◐"}</span>
-                    <span style={{ width: 190 }}>{c.name}</span>
-                    <span className="num" style={{ flex: 1, color: colors.muted }}>{c.value}</span>
-                    <span style={{ color: colors.muted }}>期望: {c.expect}</span>
-                  </div>
-                ))}
-              </div>
-            ))}
-          </div>
+          )}
+          {!showDetail && (
+            <button onClick={() => setShowDetail(true)}
+              style={{ margin: "4px 0", padding: "6px 0", width: "100%", borderTop: `1px solid ${colors.border}`, fontSize: 12, color: colors.accent, background: "none", borderLeft: 0, borderRight: 0, borderBottom: 0, cursor: "pointer" }}>
+              查看全部 {Object.values(health.layers).reduce((n, ly) => n + (ly.checks?.length || 0), 0)} 项检查明细
+            </button>
+          )}
         </Card>
       )}
 
-      {/* —— 数据管道全景 —— */}
+      {/* —— 第二层：两栏 = 最近运行 + 系统服务 —— */}
+      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 14 }}>
+        {/* 管道运行记录 */}
+        {st.pipeline && st.pipeline.runs.length > 0 && (
+          <Card title={`最近管道执行（${st.pipeline.runs.length} 次）`} colors={colors} pad={0}>
+            {st.pipeline.runs.map((r) => (
+              <div key={r.run_id} style={{ padding: "9px 14px", borderBottom: `1px solid ${colors.border}` }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <Badge text={r.status === "SUCCESS" ? "成功" : r.status === "FAILED" ? "失败" : r.status}
+                    color={r.status === "SUCCESS" ? colors.down : r.status === "FAILED" ? colors.up : colors.accent} soft />
+                  <span className="num" style={{ fontSize: 13, fontWeight: 600 }}>#{r.run_id}</span>
+                  <span style={{ fontSize: 11.5, color: colors.muted }}>{r.trigger} · {r.started_at}{r.finished_at ? ` → ${r.finished_at.slice(11)}` : ""}</span>
+                  {r.error && <span style={{ fontSize: 11, color: colors.up }}>{r.error.slice(0, 60)}</span>}
+                </div>
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 5 }}>
+                  {(r.steps || []).map((s) => (
+                    <span key={s.name} style={{
+                      fontSize: 11, padding: "2px 8px", borderRadius: 5,
+                      background: s.status === "FAIL" ? `${colors.up}14` : colors.tableStripe,
+                      border: `1px solid ${s.status === "FAIL" ? colors.up : colors.border}`,
+                    }}>
+                      {s.name} · {s.duration_sec}s{s.rows > 0 ? ` · ${s.rows.toLocaleString()}行` : ""}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </Card>
+        )}
+        {/* 系统服务 */}
+        <Panel title="⚙ 系统服务" colors={colors}>
+          <BigNum label="回测任务" v={`${st.tasks.running}`} sub="运行中" tone={st.tasks.running > 0 ? "accent" : "neutral"} colors={colors} />
+          <BigNum label="模拟盘任务" v={`${st.paper.enabled}/${st.paper.tasks}`} sub="启用/总数" tone="neutral" colors={colors} />
+          <div style={{ marginTop: 14, fontSize: 12, color: colors.muted }}>
+            后端启动 {fmtUptime(data.server.uptime_sec)} · {data.server.db} · 30s 自动刷新
+          </div>
+        </Panel>
+      </div>
+
+      {/* —— 第三层：数据管道全景 —— */}
       {dataflow && (
-        <Card title="数据管道全景 · 从哪里来 / 怎么处理 / 最新到哪" colors={colors} style={{ marginTop: 14 }}>
+        <Card title="数据从哪里来 · 怎么处理 · 最新到哪" colors={colors} style={{ marginTop: 14 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 26px 1fr 26px 1fr 26px 1.1fr", alignItems: "stretch" }}>
             <FlowCol title="① 数据源" colors={colors}>
               {dataflow.sources.map((sc) => (
@@ -126,8 +203,8 @@ export default function MonitorPage() {
             </FlowCol>
             <Arrow />
             <FlowCol title="③ Silver 清洗打分" colors={colors}>
-              {Object.entries(dataflow.silver.files).map(([f, st]) => (
-                <LayerRow key={f} label={f} v={st.mtime?.slice(5, 16) ?? "—"} colors={colors} />
+              {Object.entries(dataflow.silver.files).map(([f, st2]) => (
+                <LayerRow key={f} label={f} v={st2.mtime?.slice(5, 16) ?? "—"} colors={colors} />
               ))}
               <div style={{ fontSize: 10.5, color: colors.muted, marginTop: 4 }}>
                 打分器: {dataflow.scorers.filter((x) => x.active).map((x) => x.version).join(" + ")}
@@ -145,219 +222,107 @@ export default function MonitorPage() {
         </Card>
       )}
 
-      {/* 顶部信息条 */}
-      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
-        <Chip colors={colors} ok label={`后端 ${data.server.version}`} />
-        <Chip colors={colors} ok={data.services.data_source.tushare} label={`tushare ${data.services.data_source.tushare ? "在线" : "离线"}`} />
-        <Chip colors={colors} ok={data.services.data_source.akshare} label={`akshare ${data.services.data_source.akshare ? "在线" : "离线"}`} />
-        <Chip colors={colors} ok label={`数据目录 ${data.disk.data_dir_mb} MB`} />
-        <span style={{ flex: 1 }} />
-        <button onClick={refresh} style={btnStyle(colors)}>刷新</button>
-        <span style={{ fontSize: 12, color: colors.muted }}>30s 自动刷新 · {lastRefresh}</span>
+      {/* —— 第四层：数据表详情（原数据情况面板）—— */}
+      <div style={{ marginTop: 14 }}>
+        <DataTable data={data} colors={colors} />
       </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(420px,1fr))", gap: 14 }}>
-        {/* 数据情况 */}
-        <Panel title="📊 数据情况" colors={colors}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
-            <BigNum label="SQLite 总记录" value={data.data.sqlite_total.toLocaleString()} colors={colors} />
-            <BigNum label="DuckDB 总记录" value={data.data.duckdb_total.toLocaleString()} colors={colors} />
-            <BigNum label="表数量" value={`${Object.keys(data.data.sqlite).length}`} colors={colors} />
-          </div>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
-            <thead>
-              <tr style={{ color: colors.muted, textAlign: "left" }}>
-                <th style={{ padding: "5px 8px" }}>表</th>
-                <th>SQLite</th>
-                <th>DuckDB</th>
-                <th>同步</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Object.entries(data.data.sqlite).map(([t, n]) => {
-                const dk = data.data.duckdb[t];
-                const sync = dk === undefined ? "仅业务" : dk === n ? "✓" : "✗";
-                return (
-                  <tr key={t} style={{ borderTop: `1px solid ${colors.border}` }}>
-                    <td style={{ padding: "5px 8px" }}>{t}</td>
-                    <td>{n.toLocaleString()}</td>
-                    <td>{dk !== undefined ? dk.toLocaleString() : "—"}</td>
-                    <td style={{ color: sync === "✓" ? colors.down : colors.up }}>{sync}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-
-          {/* 数据新鲜度 */}
-          <div style={{ marginTop: 14, fontWeight: 600, fontSize: 13 }}>数据新鲜度（最新截面日期）</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 8, marginTop: 8 }}>
-            {Object.entries(freshness).map(([k, v]) => (
-              <div key={k} style={{ background: colors.card, borderRadius: 8, padding: 10, border: `1px solid ${colors.border}` }}>
-                <div style={{ fontSize: 12, color: colors.muted }}>{v.label}</div>
-                <div style={{ fontSize: 14, fontWeight: 600, marginTop: 2 }}>{v.latest || "—"}</div>
-                <div style={{ fontSize: 12, color: v.stale ? colors.up : colors.down }}>
-                  {v.days_ago === null ? "未知" : v.stale ? `已 ${v.days_ago} 天（异常）` : `${v.days_ago} 天前`}
-                </div>
-              </div>
-            ))}
-          </div>
-        </Panel>
-
-        {/* 系统服务 */}
-        <Panel title="⚙️ 系统服务" colors={colors}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10 }}>
-            <ServiceCard colors={colors} title="ETL 数据调度" ok={data.services.schedulers.etl.enabled}
-              desc={`每日 ${data.services.schedulers.etl.run_hour} 后运行`}
-              sub={[
-                `已运行 ${data.services.schedulers.etl.runs_total} 次`,
-                data.services.schedulers.etl.last_success ? `最近成功 ${data.services.schedulers.etl.last_success}` : "尚未运行",
-                data.services.schedulers.etl.last_error ? `⚠ ${data.services.schedulers.etl.last_error.slice(0, 40)}` : "",
-              ]}
-            />
-            <ServiceCard colors={colors} title="模拟盘调度" ok={data.services.schedulers.paper.alive}
-              desc={`每 ${data.services.schedulers.paper.interval_sec}s 检查`}
-              sub={[`任务 ${data.services.paper.enabled}/${data.services.paper.tasks} 启用`]}
-            />
-            <ServiceCard colors={colors} title="任务队列" ok={data.services.tasks.running === 0}
-              desc={data.services.tasks.running > 0 ? `${data.services.tasks.running} 个运行中` : "空闲"}
-              sub={data.services.tasks.recent.slice(0, 3).map((t) => `${t.name} · ${t.status}`)}
-            />
-            <ServiceCard colors={colors} title="数据源" ok={data.services.data_source.tushare && data.services.data_source.akshare}
-              desc={`tushare ${data.services.data_source.tushare ? "✓" : "✗"} / akshare ${data.services.data_source.akshare ? "✓" : "✗"}`}
-              sub={[]}
-            />
-          </div>
-
-          {data.services.tasks.recent.length > 0 && (
-            <div style={{ marginTop: 14 }}>
-              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>最近任务</div>
-              {data.services.tasks.recent.slice(0, 5).map((t) => (
-                <div key={t.id} style={{ fontSize: 12, color: colors.muted, marginBottom: 3, display: "flex", gap: 8 }}>
-                  <span style={{ color: t.status === "done" ? colors.down : t.status === "error" ? colors.up : colors.accent }}>{t.status}</span>
-                  <span>{t.name}</span>
-                  <span>{Math.round((t.progress || 0) * 100)}%</span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div style={{ marginTop: 14, fontSize: 12, color: colors.muted }}>
-            后端启动 {fmtUptime(data.server.uptime_sec)} · 服务器时间 {data.server.time} · {data.server.db}
-          </div>
-        </Panel>
-      </div>
-
-      {/* —— 数据管道运行记录 —— */}
-      {data.services.pipeline && data.services.pipeline.runs.length > 0 && (
-        <Card title="⏱ 数据管道运行记录（extract → score → factor）" colors={colors} pad={0} style={{ marginTop: 14 }}>
-          {data.services.pipeline.runs.map((r) => (
-            <div key={r.run_id} style={{ padding: "10px 16px", borderBottom: `1px solid ${colors.border}` }}>
-              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                <Badge text={r.status === "SUCCESS" ? "成功" : r.status === "FAILED" ? "失败" : r.status}
-                  color={r.status === "SUCCESS" ? colors.down : r.status === "FAILED" ? colors.up : colors.accent} soft />
-                <span className="num" style={{ fontSize: 13, fontWeight: 600 }}>#{r.run_id}</span>
-                <span style={{ fontSize: 12, color: colors.muted }}>{r.trigger} · {r.started_at}{r.finished_at ? ` → ${r.finished_at.slice(11)}` : ""}</span>
-                {r.error && <span style={{ fontSize: 11.5, color: colors.up }}>{r.error.slice(0, 80)}</span>}
-              </div>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
-                {(r.steps || []).map((st) => (
-                  <span key={st.name} style={{
-                    fontSize: 11.5, padding: "2px 9px", borderRadius: 5,
-                    background: st.status === "FAIL" ? `${colors.up}14` : colors.tableStripe,
-                    border: `1px solid ${st.status === "FAIL" ? colors.up : colors.border}`,
-                  }}>
-                    {st.name} · {st.duration_sec}s{st.rows > 0 ? ` · ${st.rows.toLocaleString()}行` : ""}
-                  </span>
-                ))}
-              </div>
-            </div>
-          ))}
-        </Card>
-      )}
-      {error && <div style={{ color: colors.up, marginTop: 10 }}>{error}</div>}
     </div>
   );
 }
 
-function fmtUptime(sec: number): string {
+/* ================= 子组件 ================= */
+
+function FreshGrid({ dataflow, colors }: { dataflow: DataflowReport | null; colors: { text: string; muted: string; up: string; down: string; card: string; border: string } }) {
+  if (!dataflow) return null;
+  const daysAgo = (d: string | null) => {
+    if (!d) return -1;
+    return Math.floor((Date.now() - new Date(d + "T00:00:00+08:00").getTime()) / 86400000);
+  };
+  const items = [
+    { k: "行情K线", latest: dataflow.gold.kline_latest as string },
+    { k: "因子截面", latest: dataflow.gold.factor_latest as string },
+    { k: "新闻情绪", latest: dataflow.gold.news_latest as string },
+  ];
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
+      {items.map((it) => {
+        const ago = daysAgo(it.latest);
+        const toneColor = ago <= 1 ? colors.down : ago <= 3 ? "#e8a520" : colors.up;
+        return (
+          <div key={it.k} style={{ background: colors.card, borderRadius: 9, padding: "8px 12px", border: `1px solid ${colors.border}` }}>
+            <div style={{ fontSize: 11, color: colors.muted }}>{it.k}</div>
+            <div style={{ fontSize: 17, fontWeight: 700, color: toneColor, fontVariantNumeric: "tabular-nums" }}>
+              {ago === 0 ? "今日" : ago > 0 ? `${ago}天前` : it.latest}
+            </div>
+            <div style={{ fontSize: 10.5, color: colors.muted }}>{it.latest ?? "无数据"}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function AlarmSummary({ health, colors, onJump }: {
+  health: HealthReport; colors: ThemeColors; onJump: () => void;
+}) {
+  const alerts = health.alerts || [];
+  return (
+    <div onClick={onJump} style={{ background: alerts.length ? `${colors.up}08` : `${colors.down}0d`, borderRadius: 9, padding: "10px 12px", border: `1px solid ${alerts.length ? colors.up : colors.down}55`, cursor: "pointer" }}>
+      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 5, color: alerts.length ? colors.up : colors.down }}>
+        {alerts.length ? `⚠ ${alerts.length} 条告警` : "✓ 无告警"}
+      </div>
+      {alerts.slice(0, 3).map((a, i) => (
+        <div key={i} style={{ fontSize: 11.5, marginBottom: 3 }}>
+          <b>{a.layer}</b> · {a.check}
+        </div>
+      ))}
+      {alerts.length > 3 && <div style={{ fontSize: 11, color: colors.muted }}>…点击查看全部</div>}
+    </div>
+  );
+}
+
+function DataTable({ data, colors }: { data: MonitorStatus; colors: ThemeColors }) {
+  const rows = Object.entries(data.data.sqlite || {});
+  return (
+    <details open={false} style={{ background: colors.card, borderRadius: 10, border: `1px solid ${colors.border}`, padding: 0 }}>
+      <summary style={{ padding: "10px 16px", cursor: "pointer", fontWeight: 600, fontSize: 14 }}>SQLite 表级数据量（展开查看）</summary>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+        <thead><tr style={{ color: colors.muted, textAlign: "left" }}><th style={{ padding: "6px 14px" }}>表</th><th>行数</th></tr></thead>
+        <tbody>
+          {rows.slice(0, 20).map(([t, n]) => (
+            <tr key={t}><td style={{ padding: "4px 14px" }}>{t}</td><td>{(n as number).toLocaleString()}</td></tr>
+          ))}
+        </tbody>
+      </table>
+    </details>
+  );
+}
+
+function Panel({ title, children, colors }: { title: string; children: React.ReactNode; colors: ThemeColors }) {
+  return (
+    <div style={{ background: colors.card, borderRadius: 10, border: `1px solid ${colors.border}`, overflow: "hidden" }}>
+      <div style={{ padding: "12px 16px", fontWeight: 600, fontSize: 14, borderBottom: `1px solid ${colors.border}` }}>{title}</div>
+      <div style={{ padding: 14 }}>{children}</div>
+    </div>
+  );
+}
+
+function BigNum({ label, v, sub, tone, colors }: {
+  label: string; v: string; sub?: string; tone?: "up" | "down" | "neutral" | "accent";
+  colors: { card: string; border: string; muted: string; up: string; down: string; accent: string; text: string };
+}) {
+  const color = tone === "up" ? colors.up : tone === "down" ? colors.down : tone === "accent" ? colors.accent : colors.text;
+  return (
+    <div style={{ display: "inline-block", marginRight: 22 }}>
+      <div style={{ fontSize: 11.5, color: colors.muted }}>{label}</div>
+      <div style={{ fontSize: 21, fontWeight: 700, color, fontVariantNumeric: "tabular-nums" }}>{v}</div>
+      {sub && <div style={{ fontSize: 10.5, color: colors.muted }}>{sub}</div>}
+    </div>
+  );
+}
+
+function fmtUptime(sec: number) {
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
-  return h > 0 ? `${h}h${m}m` : m > 0 ? `${m}m${s}s` : `${s}s`;
-}
-
-function Chip({ ok, label, colors }: { ok: boolean; label: string; colors: { card: string; border: string; up: string; down: string; text: string } }) {
-  return (
-    <span style={{
-      padding: "4px 12px", borderRadius: 999, fontSize: 12,
-      background: colors.card, border: `1px solid ${colors.border}`,
-      color: ok ? colors.down : colors.up,
-    }}>
-      {ok ? "● " : "○ "}{label}
-    </span>
-  );
-}
-
-function BigNum({ label, value, colors }: { label: string; value: string; colors: { card: string; muted: string; text: string; border: string } }) {
-  return (
-    <div style={{ background: colors.card, borderRadius: 8, padding: "10px 12px", border: `1px solid ${colors.border}` }}>
-      <div style={{ fontSize: 12, color: colors.muted }}>{label}</div>
-      <div style={{ fontSize: 20, fontWeight: 700 }}>{value}</div>
-    </div>
-  );
-}
-
-function Panel({ title, children, colors }: { title: string; children: React.ReactNode; colors: { card: string; border: string } }) {
-  return (
-    <div style={{ background: colors.card, borderRadius: 12, padding: 16, border: `1px solid ${colors.border}` }}>
-      <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 15 }}>{title}</div>
-      {children}
-    </div>
-  );
-}
-
-function ServiceCard({ title, ok, desc, sub, colors }: {
-  title: string; ok: boolean; desc: string; sub: string[];
-  colors: { card: string; border: string; up: string; down: string; muted: string };
-}) {
-  return (
-    <div style={{ background: colors.card, borderRadius: 8, padding: 12, border: `1px solid ${colors.border}` }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontWeight: 600, fontSize: 13 }}>{title}</span>
-        <span style={{ color: ok ? colors.down : colors.up, fontSize: 13 }}>{ok ? "✓" : "✗"}</span>
-      </div>
-      <div style={{ fontSize: 12, color: colors.muted, margin: "4px 0" }}>{desc}</div>
-      {sub.filter(Boolean).map((s, i) => (
-        <div key={i} style={{ fontSize: 11, color: colors.muted, marginTop: 2 }}>{s}</div>
-      ))}
-    </div>
-  );
-}
-
-const btnStyle = (c: { card: string; border: string; text: string }) => ({
-  padding: "6px 16px",
-  borderRadius: 6,
-  border: `1px solid ${c.border}`,
-  background: c.card,
-  color: c.text,
-  cursor: "pointer",
-  fontSize: 13,
-});
-
-function ScoreRing({ score, status, colors }: { score: number; status: string; colors: { down: string; up: string; muted: string } }) {
-  const color = status === "healthy" ? colors.down : status === "warn" ? "#e8a520" : colors.up;
-  return (
-    <div style={{ position: "relative", width: 86, height: 86, marginTop: 8 }}>
-      <svg viewBox="0 0 36 36" style={{ width: "100%", height: "100%", transform: "rotate(-90deg)" }}>
-        <circle cx="18" cy="18" r="15.9" fill="none" stroke="rgba(128,128,128,.18)" strokeWidth="3.4" />
-        <circle cx="18" cy="18" r="15.9" fill="none" stroke={color} strokeWidth="3.4"
-          strokeDasharray={`${score},100`} strokeLinecap="round" />
-      </svg>
-      <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-        <span className="num" style={{ fontSize: 22, fontWeight: 700, color }}>{score}</span>
-        <span style={{ fontSize: 9.5, color: colors.muted }}>{status === "healthy" ? "健康" : status === "warn" ? "警告" : "异常"}</span>
-      </div>
-    </div>
-  );
+  return h > 0 ? `${h}时${m}分` : `${m}分`;
 }

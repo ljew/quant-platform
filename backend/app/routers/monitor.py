@@ -123,6 +123,30 @@ def data_health_endpoint():
     return health_report()
 
 
+import threading
+
+_running_pipeline = {"locked": False}
+
+
+@router.post("/pipeline/run")
+def pipeline_run_now():
+    """手动立即运行数据管道（后台线程）。"""
+    if _running_pipeline["locked"]:
+        return {"ok": False, "error": "已有管道在运行中"}
+    from app.datahub.runner import run_pipeline
+
+    def _bg():
+        _running_pipeline["locked"] = True
+        try:
+            rid = run_pipeline(trigger="manual")
+            logger.info("手动管道完成 run_id=%s", rid)
+        finally:
+            _running_pipeline["locked"] = False
+
+    threading.Thread(target=_bg, daemon=True).start()
+    return {"ok": True}
+
+
 @router.get("/dataflow")
 def data_flow():
     """数据流全景（源头/Bronze/Silver/Gold）。"""
