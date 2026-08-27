@@ -110,6 +110,19 @@ def health_report(db=None) -> dict:
         process_checks.append(_mk("新闻情绪连续性", news_days >= 6,
                                   f"14 天内 {news_days} 天", "≥6 天"))
 
+        # 最近质检报告（Silver 层）
+        try:
+            from app.datahub.cleaners.core import read_latest_report
+            rep = read_latest_report()
+            gen_at = (rep or {}).get("generated_at", "")
+            days_ago_rep = ((datetime.now() - datetime.fromisoformat(gen_at)).days
+                            if gen_at else -1)
+            process_checks.append(_mk("Silver 质检报告",
+                                      bool(rep) and days_ago_rep <= 7,
+                                      f"{gen_at}" if gen_at else "无", "≤7 天"))
+        except Exception:  # noqa: BLE001
+            process_checks.append(_mk("Silver 质检报告", None, "不可用", "存在"))
+
         # 最近管道失败率
         runs = db.execute(select(PipelineRun).order_by(PipelineRun.id.desc()).limit(10)).scalars().all()
         fails = sum(1 for r in runs if r.status == "FAILED")

@@ -188,11 +188,57 @@ def step_compute_factors(db) -> int:
 
 
 # ============ 步骤注册与执行器 ============
+def step_clean_bars(db) -> int:
+    """Silver：K线清洗 + 质检报告。"""
+    from app.datahub.cleaners.core import clean_bars, write_report
+
+    df = _latest_close_snapshot(db)
+    if df is None:
+        return 0
+    cleaned, metrics = clean_bars(df)
+    report = {"bars": {k: v for k, v in metrics.items() if k != "silver_file"}}
+    write_report(None, report)
+    return len(cleaned)
+
+
+def step_clean_text(db) -> int:
+    """Silver：文章去重清洗 → text_cleaned。"""
+    import os as _os
+    from app.datahub.cleaners.core import clean_articles, latest_run_dir, write_report
+
+    base = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(
+        _os.path.abspath(__file__)))), "..", "data", "raw", "text", "wechat_articles")
+    frames = []
+    if _os.path.isdir(base):
+        for f in sorted(_os.listdir(base)):
+            if f.endswith(".parquet"):
+                try:
+                    frames.append(pd.read_parquet(_os.path.join(base, f)))
+                except Exception:  # noqa: BLE001
+                    pass
+    _, metrics = clean_articles(frames)
+    rep = read_report = None
+    del rep
+    prev = None
+    try:
+        from app.datahub.cleaners.core import read_latest_report
+        prev = read_latest_report()
+    except Exception:  # noqa: BLE001
+        pass
+    sections = (prev or {}).get("sections", {})
+    sections["text"] = metrics
+    if "bars" in sections or metrics:
+        write_report(None, sections)
+    return metrics.get("rows_out", 0)
+
+
 STEPS = [
     ("extract_index_kline", step_extract_index_kline),
     ("extract_stock_kline", step_extract_stock_kline),
     ("extract_attributes", step_extract_attributes),
+    ("clean_bars", step_clean_bars),
     ("extract_wechat_articles", step_extract_wechat_articles),
+    ("clean_text", step_clean_text),
     ("score_sentiment", step_score_sentiment),
     ("compute_factors", step_compute_factors),
 ]
