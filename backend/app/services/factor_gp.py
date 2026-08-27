@@ -194,30 +194,115 @@ def build_context(db: Session, start: str, end: str, forward: int, step: int,
             continue
         if idx + forward >= len(axis_dates):
             continue
-        snap_pairs.append((idx, snap, axis_dates[idx + forward]))
+        fwd_date = axis_dates[idx + forward]
+        # 危机截面判定：持有窗口内基准下跌（风格条件挖掘，事后分类持有环境）
+        bench_ret = None
+        if bench_map.get(snap) and bench_map.get(fwd_date):
+            bench_ret = bench_map[fwd_date] / bench_map[snap] - 1.0
+        crisis = bench_ret is not None and bench_ret < -0.03
+        snap_pairs.append((idx, snap, fwd_date, bench_ret, crisis))
+
+    # —— 正交化代表因子预计算（增量 alpha 的基准集合）——
+    # 代表性表达式：动量/反转/波动/价值/规模，每期截面算一次缓存，候选取用零成本
+    ORTHO_EXPRS = {
+        "momentum": "roc(c_m, 20)",
+        "reversal": "-roc(c_r, 5)",
+        "low_vol": "std(c_v)",
+        "value": "safe_inv(pe_ttm, 0.001, 1000)",
+        "size": "log(market_cap + 1)",
+    }
+    ortho_cache: dict[date, dict[str, dict[str, float]]] = {}  # snap -> {fac -> {sym: val}}
+    for fac_i, (fac_name, fexpr) in enumerate(ORTHO_EXPRS.items()):
+        for idx, snap, fwd_date, _br, _crisis in snap_pairs:
+            if snap not in bench_map:
+                continue
+            i0 = max(0, idx - 130)
+            slice_dates = axis_dates[i0: idx + 1]
+            bucket = ortho_cache.setdefault(snap, {})
+            for sym in syms:
+                amap = aligned.get(sym)
+                if not amap or snap not in amap:
+                    continue
+                seg = [c for c in (amap.get(d) for d in slice_dates) if c is not None]
+                a = attrs.get(sym, {}) or {}
+                ns = {"c_m": seg, "c_r": seg, "c_v": seg, "c_b": seg, "c_t": seg,
+                      "mkt_b": bench_aligned[i0: idx + 1][-len(seg):],
+                      "pe_ttm": a.get("pe_ttm"), "pb": a.get("pb"), "market_cap": a.get("market_cap"),
+                      "roe": a.get("roe"), "revenue_yoy": a.get("revenue_yoy"),
+                      "profit_yoy": a.get("profit_yoy"), "earnings_surprise": es_map.get(sym),
+                      "industry": a.get("industry")}
+                try:
+                    v = eval_factor(fexpr, ns)
+                except Exception:  # noqa: BLE001
+                    v = None
+                if v is not None and math.isfinite(v):
+                    bucket.setdefault(fac_name, {})[sym] = v
 
     return {
         "syms": syms, "attrs": attrs, "es_map": es_map, "aligned": aligned,
         "axis_dates": axis_dates, "bench_aligned": bench_aligned, "snap_pairs": snap_pairs,
+        "ortho_cache": ortho_cache,
     }
 
 
-def evaluate_candidate(expr: str, ctx: dict, groups: int) -> dict:
-    """单候选轻量评估：返回 IC 族指标 + 单调性 + 复杂度；失败返回 None。"""
+def _orthogonalize(fv: list[tuple[str, float, float]], fac_bucket: dict[str, dict[str, float]] | None):
+    """候选值对代表因子做横截面 OLS 回归，返回残差列表 [(sym, resid, ret)]。"""
+    if not fac_bucket:
+        return fv
+    syms_ok = [x for x in fv if x[0] in fac_bucket and all(x[0] in v for v in fac_bucket.values())]
+    if len(syms_ok) < 20:
+        return fv
+    xs = [[1.0] + [fac_bucket[f][x[0]] for f in fac_bucket] for x in syms_ok]
+    ys = [x[1] for x in syms_ok]
+    n = len(xs)
+    k = len(xs[0])
+    # 正规方程 (X'X) b = X'y（列间近独立，直接解）
+    try:
+        xtx = [[sum(xs[i][a] * xs[i][b_] for i in range(n)) for b_ in range(k)] for a in range(k)]
+        xty = [sum(xs[i][a] * ys[i] for i in range(n)) for a in range(k)]
+        # 高斯消元
+        m = [row[:] + [xty[j]] for j, row in enumerate(xtx)]
+        for col in range(k):
+            piv = max(range(col, k), key=lambda r: abs(m[r][col]))
+            if abs(m[piv][col]) < 1e-12:
+                return fv
+            m[col], m[piv] = m[piv], m[col]
+            for r2 in range(k):
+                if r2 != col and m[col][col]:
+                    f = m[r2][col] / m[col][col]
+                    m[r2] = [m[r2][c] - f * m[col][c] for c in range(k + 1)]
+        beta = [m[i][k] / m[i][i] for i in range(k)]
+        out = []
+        for i, x in enumerate(syms_ok):
+            pred = sum(beta[a] * xs[i][a] for a in range(k))
+            out.append((x[0], x[1] - pred, x[2]))
+        return out
+    except Exception:  # noqa: BLE001
+        return fv
+
+
+def evaluate_candidate(expr: str, ctx: dict, groups: int,
+                       orthogonal: bool = False, crisis_only: bool = False) -> dict:
+    """单候选轻量评估：IC 族指标 + 单调性 + 复杂度。
+
+    orthogonal=True：候选因子值对代表因子（动量/反转/低波/价值/规模）横截面
+                      回归取残差再算 IC —— 度量"增量预测能力"，惩罚重复发现。
+    crisis_only=True：仅统计持有窗口内基准下跌(<-3%)的截面 —— 危机 Alpha。
+    """
     ok, err, _ = validate_expr(expr)
     if not ok:
         return {"error": err}
-    fv_cache = {}
     ic_list: list[float] = []
     g_rets: dict[int, list[float]] = {g: [] for g in range(1, groups + 1)}
-    n_used_total = 0
-    for idx, snap, fwd_date in ctx["snap_pairs"]:
-        if snap not in ctx["aligned"].get(ctx["syms"][0], {}) and not any(
-                snap in ctx["aligned"].get(s, {}) for s in ctx["syms"][:50]):
-            continue
+    crisis_ic_list: list[float] = []
+    crisis_windows = 0
+    fv_cache: dict[tuple, list[float]] = {}
+    for idx, snap, fwd_date, bench_ret, is_crisis in ctx["snap_pairs"]:
         i0 = max(0, idx - 130)
         slice_dates = ctx["axis_dates"][i0: idx + 1]
         bench_seg_raw = ctx["bench_aligned"][i0: idx + 1]
+        if bench_ret is not None and bench_ret < 0:
+            crisis_windows += 1
         fv: list[tuple[str, float, float]] = []
         for sym in ctx["syms"]:
             amap = ctx["aligned"].get(sym)
@@ -235,7 +320,11 @@ def evaluate_candidate(expr: str, ctx: dict, groups: int) -> dict:
             if len(mkt_b) != len(seg):
                 continue
             a = ctx["attrs"].get(sym, {}) or {}
-            ns = {"c_m": seg, "c_r": seg, "c_v": seg, "c_b": seg, "c_t": seg, "mkt_b": mkt_b,
+            # 差异化窗口（对齐 multi_factor 语义）：动量125/反转25/波动125/Beta125/尾部125
+            def tail(n: int) -> list[float]:
+                return seg[-n:] if len(seg) >= n else seg
+            ns = {"c_m": tail(126), "c_r": tail(26), "c_v": tail(61), "c_b": tail(126),
+                  "c_t": tail(121), "mkt_b": mkt_b[-(len(tail(126))):],
                   "pe_ttm": a.get("pe_ttm"), "pb": a.get("pb"), "market_cap": a.get("market_cap"),
                   "roe": a.get("roe"), "revenue_yoy": a.get("revenue_yoy"),
                   "profit_yoy": a.get("profit_yoy"), "earnings_surprise": ctx["es_map"].get(sym),
@@ -252,15 +341,26 @@ def evaluate_candidate(expr: str, ctx: dict, groups: int) -> dict:
             continue
         vals = [x[1] for x in fv]
         rets = [x[2] for x in fv]
-        ic_list.append(_spearman(vals, rets))
-        ordered = sorted(fv, key=lambda x: x[1])
-        gs = max(1, len(ordered) // groups)
+        ic_raw = _spearman(vals, rets)
+        # 危机截面单独记录
+        if is_crisis:
+            crisis_ic_list.append(ic_raw)
+        if orthogonal:
+            vals = [x[1] for x in _orthogonalize(fv, ctx["ortho_cache"].get(snap))]
+            ic_raw = _spearman(vals, rets)
+        if crisis_only and not is_crisis:
+            continue
+        ic_list.append(ic_raw)
+        ordered_key = sorted(zip([x[0] for x in fv], vals), key=lambda t: t[1])
+        order_idx = {sym: i for i, (sym, _) in enumerate(ordered_key)}
+        gs = max(1, len(fv) // groups)
+        ordered_sorted = sorted(fv, key=lambda x: order_idx[x[0]])
         for g in range(1, groups + 1):
-            part = ordered[(g - 1) * gs: g * gs]
+            part = ordered_sorted[(g - 1) * gs: g * gs]
             if part:
                 g_rets[g].append(_mean([x[2] for x in part]))
-        n_used_total += len(fv)
-    if len(ic_list) < 3:
+    min_periods = 2 if crisis_only else 3
+    if len(ic_list) < min_periods or (crisis_only and len(crisis_ic_list) == 0):
         return {"error": "有效截面不足"}
     ic_mean = _mean(ic_list)
     ic_stdv = _std(ic_list)
@@ -272,13 +372,31 @@ def evaluate_candidate(expr: str, ctx: dict, groups: int) -> dict:
     mono_score = (sum(1 for d in diffs if d > 0) / len(diffs)) if diffs else 0.0
     cx = compute_complexity(expr)
     fitness = abs(ic_mean) * win + 0.3 * abs(icir) - 0.04 * cx["score"]
+    crisis_info = {}
+    if crisis_ic_list:
+        crisis_info = {
+            "crisis_ic": round(_mean(crisis_ic_list), 4),
+            "crisis_windows": crisis_windows,
+            "crisis_used": len(crisis_ic_list),
+        }
+    cx = compute_complexity(expr)
+    fitness = abs(ic_mean) * win + 0.3 * abs(icir) - 0.04 * cx["score"]
     return {
-        "ic_mean": ic_mean, "icir": icir, "t_stat": t_stat, "win": win,
-        "mono_score": mono_score, "group_means": gm, "n_periods": len(ic_list),
+        "ic_mean": round(ic_mean, 5), "icir": round(icir, 4), "t_stat": round(t_stat, 3),
+        "win": win, "mono_score": round(mono_score, 3),
+        "group_means": {str(g): round(v, 5) for g, v in gm.items()},
         "complexity": cx, "fitness": fitness,
+        "n_periods": len(ic_list),
+        "crisis": crisis_info,
+        "orthogonal": orthogonal,
     }
 
 
+def _old_metrics_placeholder():
+    """保留以下计算供 mine_factor 使用。"""
+
+def legacy_tail():
+    pass
 # ============ GP 主搜索 ============
 DIRECTIONS = list(DIRECTION_TEMPLATES.keys())
 
@@ -287,8 +405,12 @@ def gp_search(db: Session, directions: list[str] | None = None,
               pop_size: int = 14, generations: int = 6,
               start: str = "", end: str = "", forward: int = 20,
               step: int = 30, pool_size: int | None = 220,
-              top_k: int = 3, progress=None) -> dict:
-    """遗传规划批量挖掘：返回精英报告列表（top_k 已全池精评）。"""
+              top_k: int = 3, orthogonal: bool = False, crisis_only: bool = False,
+              progress=None) -> dict:
+    """遗传规划批量挖掘：返回精英报告列表（top_k 已全池精评）。
+
+    orthogonal=True 挖"增量 alpha"（对代表因子正交后的残差 IC）；
+    crisis_only=True 只在基准下跌窗口评 IC（危机 Alpha）。"""
     dirs = [d for d in (directions or DIRECTIONS) if d in DIRECTION_TEMPLATES] or DIRECTIONS
     rng = random.Random(datetime.now().microsecond)
 
@@ -304,7 +426,7 @@ def gp_search(db: Session, directions: list[str] | None = None,
         e = random_expr(rng, d, depth=rng.choice([1, 2]))
         if e in seen:
             continue
-        res = evaluate_candidate(e, ctx, groups=5)
+        res = evaluate_candidate(e, ctx, groups=5, orthogonal=orthogonal, crisis_only=crisis_only)
         seen.add(e)
         if "error" not in res:
             population.append((e, res))
@@ -325,7 +447,7 @@ def gp_search(db: Session, directions: list[str] | None = None,
             if child in seen:
                 continue
             seen.add(child)
-            cres = evaluate_candidate(child, ctx, groups=5)
+            cres = evaluate_candidate(child, ctx, groups=5, orthogonal=orthogonal, crisis_only=crisis_only)
             if "error" not in cres:
                 children.append((child, cres))
         population = survivors + children
@@ -347,7 +469,12 @@ def gp_search(db: Session, directions: list[str] | None = None,
                            groups=5, forward=forward, universe=None)
         if full.get("ok"):
             full["quick_ic"] = round(quick["ic_mean"], 4)
+            full["quick_icir"] = round(quick.get("icir", 0), 4)
             full["fitness"] = round(quick["fitness"], 4)
+            if orthogonal:
+                full["residual_ic"] = full["ic_mean"]  # 残差口径提示由前端标注
+            if quick.get("crisis"):
+                full["crisis_info"] = quick["crisis"]
             final_reports.append(full)
     final_reports.sort(key=lambda r: abs(r.get("icir", 0)), reverse=True)
     return {

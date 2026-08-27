@@ -31,6 +31,8 @@ export default function FactorMinePage() {
   const [gpPop, setGpPop] = useState(14);
   const [gpGens, setGpGens] = useState(6);
   const [gpRunning, setGpRunning] = useState(false);
+  const [gpOrtho, setGpOrtho] = useState(false);
+  const [gpCrisis, setGpCrisis] = useState(false);
   const [gpResult, setGpResult] = useState<GpMineResult | null>(null);
 
   const loadHistory = useCallback(() => {
@@ -51,6 +53,7 @@ export default function FactorMinePage() {
       const r = await api.factorGpMine({
         directions: gpSel, name_prefix: "GP", pop_size: gpPop, generations: gpGens,
         start, end, forward, step: 30, pool_size: 220, top_k: 3,
+        orthogonal: gpOrtho, crisis_only: gpCrisis,
       });
       setGpResult(r);
       loadHistory();
@@ -206,12 +209,22 @@ export default function FactorMinePage() {
               <input type="number" min={6} max={40} value={gpPop} onChange={(e) => setGpPop(Number(e.target.value) || 14)} style={{ ...inputStyle(colors), width: 64, marginLeft: 6 }} /></label>
             <label style={{ fontSize: 12, color: colors.muted }}>代数
               <input type="number" min={2} max={20} value={gpGens} onChange={(e) => setGpGens(Number(e.target.value) || 6)} style={{ ...inputStyle(colors), width: 64, marginLeft: 6 }} /></label>
+            <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}
+              title="候选因子先对动量/反转/低波/价值/规模做横截面回归取残差，再算IC——专挖现有因子之外的增量alpha">
+              <input type="checkbox" checked={gpOrtho} onChange={(e) => setGpOrtho(e.target.checked)} />
+              正交增量模式
+            </label>
+            <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}
+              title="仅在基准下跌窗口(<-3%)评IC——专挖危机Alpha">
+              <input type="checkbox" checked={gpCrisis} onChange={(e) => setGpCrisis(e.target.checked)} />
+              危机Alpha
+            </label>
             <Btn onClick={runGp} disabled={gpRunning || gpSel.length === 0}>{gpRunning ? "进化中（约1~3分钟）…" : "启动自动挖掘"}</Btn>
           </div>
 
           {gpRunning && (
             <div style={{ fontSize: 12.5, color: colors.muted }}>
-              遗传规划正在进化：种群 {gpPop} × {gpGens} 代，方向[{gpSel.map((d) => DIRECTION_CN[d] || d).join(" / ")}]，完成后精英将自动全池精评…
+              遗传规划正在进化：种群 {gpPop} × {gpGens} 代 · 方向[{gpSel.map((d) => DIRECTION_CN[d] || d).join("/")}] · {gpOrtho ? "正交增量" : "原始IC"}{gpCrisis ? " · 仅危机窗口" : ""}
             </div>
           )}
 
@@ -231,11 +244,12 @@ export default function FactorMinePage() {
               {/* 精英表 */}
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                 <thead><tr style={{ color: colors.muted, textAlign: "left" }}>
-                  <th style={{ padding: "7px 10px" }}>排名</th><th>表达式</th><th>IC</th><th>ICIR</th><th>t 值</th><th>评级</th><th>复杂度</th><th></th>
+                  <th style={{ padding: "7px 10px" }}>排名</th><th>表达式</th><th>IC</th><th>ICIR</th><th>t 值</th><th>评级</th><th>复杂度</th><th>危机</th><th></th>
                 </tr></thead>
                 <tbody>
                   {gpResult.elites.map((el, i) => {
                     const cx = (el as { complexity?: { score?: number } }).complexity?.score ?? "—";
+                    const ci = (el as { crisis_info?: { crisis_ic?: number; crisis_used?: number } }).crisis_info;
                     return (
                       <tr key={i} style={{ borderTop: `1px solid ${colors.border}` }}>
                         <td style={{ padding: "7px 10px" }}>{i + 1}</td>
@@ -245,6 +259,7 @@ export default function FactorMinePage() {
                         <td className="num">{el.t_stat.toFixed(2)}</td>
                         <td><RatingBadge rating={el.rating} colors={colors} /></td>
                         <td className="num">{cx}</td>
+                        <td className="num">{ci ? `${ci.crisis_ic}`.slice(0, 6) + ` (${ci.crisis_used})` : "—"}</td>
                         <td><a style={{ color: colors.accent, cursor: "pointer", fontSize: 12 }} onClick={() => setReport(el)}>报告</a></td>
                       </tr>
                     );

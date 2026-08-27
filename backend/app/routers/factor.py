@@ -107,6 +107,8 @@ class GpMinePayload(BaseModel):
     step: int = Field(30, ge=10, le=60)
     pool_size: int | None = Field(220, description="快评抽样池；null=全核心池")
     top_k: int = Field(3, ge=1, le=5)
+    orthogonal: bool = Field(False, description="正交增量模式：残差IC，专挖重复发现之外的alpha")
+    crisis_only: bool = Field(False, description="危机Alpha：仅基准下跌窗口评IC")
 
 
 @router.get("/gp/directions")
@@ -124,6 +126,7 @@ def gp_mine(payload: GpMinePayload, db: Session = Depends(get_db)):
         pop_size=payload.pop_size, generations=payload.generations,
         start=payload.start, end=payload.end, forward=payload.forward,
         step=payload.step, pool_size=payload.pool_size, top_k=payload.top_k,
+        orthogonal=payload.orthogonal, crisis_only=payload.crisis_only,
     )
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "GP 挖掘失败"))
