@@ -15,6 +15,7 @@ from fastapi import APIRouter
 from sqlalchemy import select, func
 
 from app.database import SessionLocal
+from app.services.data_health import health_report
 from app.models import (
     FactorDaily,
     KlineDaily,
@@ -114,6 +115,12 @@ def _paper_stats(db) -> dict:
         select(func.count()).select_from(PaperTask).where(PaperTask.enabled == True)  # noqa: E712
     ).scalar() or 0
     return {"tasks": total, "enabled": enabled}
+
+
+@router.get("/health-report")
+def data_health():
+    """数据健康度：采集/处理/应用三层评分 + 告警列表。"""
+    return health_report()
 
 
 @router.get("/status")

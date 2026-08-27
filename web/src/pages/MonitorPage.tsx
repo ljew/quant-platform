@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, MonitorStatus } from "../api/client";
+import { api, HealthReport, MonitorStatus } from "../api/client";
 import { Badge, Card } from "../components/ui";
 import { useTheme } from "../theme";
 import { PageHeader } from "../components/ui";
@@ -9,11 +9,13 @@ export default function MonitorPage() {
   const [data, setData] = useState<MonitorStatus | null>(null);
   const [error, setError] = useState("");
   const [lastRefresh, setLastRefresh] = useState("");
+  const [health, setHealth] = useState<HealthReport | null>(null);
   const { colors } = useTheme();
 
   const refresh = useCallback(async () => {
     try {
       const d = await api.monitor();
+      setHealth(await api.monitorHealth());
       setData(d);
       setLastRefresh(new Date().toLocaleTimeString());
       setError("");
@@ -42,6 +44,62 @@ export default function MonitorPage() {
   return (
     <div style={{ maxWidth: 1280, margin: "0 auto" }}>
       <PageHeader title="系统监控" desc="数据情况 · 服务状态 · 30 秒自动刷新" />
+      {/* —— 数据健康度 —— */}
+      {health && (
+        <Card colors={colors} pad={0} style={{ marginBottom: 16 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "160px 1fr 1.4fr", minHeight: 150 }}>
+            <div style={{ padding: 18, borderRight: `1px solid ${colors.border}`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+              <div style={{ fontSize: 12, color: colors.muted }}>整体健康度</div>
+              <ScoreRing score={health.overall_score} status={health.overall_status} colors={colors} />
+            </div>
+            <div style={{ padding: 18, borderRight: `1px solid ${colors.border}` }}>
+              <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>分层评分（采集 / 处理 / 应用）</div>
+              {Object.entries(health.layers).map(([k, ly]) => (
+                <div key={k} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 9 }}>
+                  <span style={{ width: 62, fontSize: 12.5 }}>{ly.label}</span>
+                  <div style={{ flex: 1, height: 8, borderRadius: 4, background: colors.tableStripe }}>
+                    <div style={{
+                      width: `${ly.score}%`, height: "100%", borderRadius: 4,
+                      background: ly.status === "healthy" ? colors.down : ly.status === "warn" ? "#e8a520" : colors.up,
+                      transition: "width .4s",
+                    }} />
+                  </div>
+                  <b className="num" style={{ width: 34, textAlign: "right", fontSize: 14 }}>{ly.score}</b>
+                </div>
+              ))}
+            </div>
+            <div style={{ padding: 14 }}>
+              <div style={{ fontSize: 12, color: colors.muted, marginBottom: 8 }}>⚠ 告警中心 ({health.alerts.length})</div>
+              <div style={{ maxHeight: 116, overflowY: "auto" }}>
+                {health.alerts.length === 0 ? (
+                  <div style={{ color: colors.down, fontSize: 13 }}>✓ 无告警</div>
+                ) : health.alerts.map((a, i) => (
+                  <div key={i} style={{ fontSize: 12, marginBottom: 5, display: "flex", gap: 7 }}>
+                    <Badge text={a.level === "error" ? "严重" : "警告"} color={a.level === "error" ? colors.up : "#e8a520"} soft />
+                    <span><b>{a.layer}</b> · {a.check}: {a.detail}（期望 {a.expect}）</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div style={{ borderTop: `1px solid ${colors.border}`, maxHeight: 220, overflowY: "auto" }}>
+            {Object.entries(health.layers).map(([k, ly]) => (
+              <div key={k}>
+                <div style={{ padding: "6px 16px", background: colors.tableStripe, fontWeight: 600, fontSize: 12 }}>{ly.label}</div>
+                {ly.checks.map((c) => (
+                  <div key={c.name} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 16px", fontSize: 12.5, borderBottom: `1px solid ${colors.border}` }}>
+                    <span style={{ color: c.status === "ok" ? colors.down : c.status === "error" ? colors.up : "#e8a520", width: 14 }}>{c.status === "ok" ? "●" : "◐"}</span>
+                    <span style={{ width: 190 }}>{c.name}</span>
+                    <span className="num" style={{ flex: 1, color: colors.muted }}>{c.value}</span>
+                    <span style={{ color: colors.muted }}>期望: {c.expect}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
       {/* 顶部信息条 */}
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
         <Chip colors={colors} ok label={`后端 ${data.server.version}`} />
@@ -241,3 +299,20 @@ const btnStyle = (c: { card: string; border: string; text: string }) => ({
   cursor: "pointer",
   fontSize: 13,
 });
+
+function ScoreRing({ score, status, colors }: { score: number; status: string; colors: { down: string; up: string; muted: string } }) {
+  const color = status === "healthy" ? colors.down : status === "warn" ? "#e8a520" : colors.up;
+  return (
+    <div style={{ position: "relative", width: 86, height: 86, marginTop: 8 }}>
+      <svg viewBox="0 0 36 36" style={{ width: "100%", height: "100%", transform: "rotate(-90deg)" }}>
+        <circle cx="18" cy="18" r="15.9" fill="none" stroke="rgba(128,128,128,.18)" strokeWidth="3.4" />
+        <circle cx="18" cy="18" r="15.9" fill="none" stroke={color} strokeWidth="3.4"
+          strokeDasharray={`${score},100`} strokeLinecap="round" />
+      </svg>
+      <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+        <span className="num" style={{ fontSize: 22, fontWeight: 700, color }}>{score}</span>
+        <span style={{ fontSize: 9.5, color: colors.muted }}>{status === "healthy" ? "健康" : status === "warn" ? "警告" : "异常"}</span>
+      </div>
+    </div>
+  );
+}

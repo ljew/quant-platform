@@ -113,7 +113,32 @@ export const api = {
     get<{ date: string; n_articles: number; n_finance: number; bull: number; bear: number; net_sentiment: number | null }[]>(`/factor/news/daily?limit=${limit}`),
   factorNewsTest: (extreme_pct: number, horizon: number) =>
     post<NewsEventReport>("/factor/news/event-test", { extreme_pct, horizon }),
+  // 数据健康度
+  monitorHealth: () => get<HealthReport>(`/monitor/health-report`),
 };
+
+export interface HealthCheck {
+  name: string;
+  status: "ok" | "warn" | "error";
+  value: string;
+  expect: string;
+}
+export interface HealthLayer {
+  label: string;
+  checks: HealthCheck[];
+  score: number;
+  status: "healthy" | "warn" | "error";
+}
+export interface HealthAlert {
+  level: string; layer: string; check: string; detail: string; expect: string;
+}
+export interface HealthReport {
+  overall_score: number;
+  overall_status: "healthy" | "warn" | "error";
+  layers: Record<string, HealthLayer>;
+  alerts: HealthAlert[];
+  generated_at: string;
+}
 
 export interface NewsEventReport {
   ok: boolean;
