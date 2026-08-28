@@ -1,6 +1,6 @@
 """数据管道调度器（设计 v1.0：定时数据拉取/更新）。
 
-每交易日 17:00 后调用 scripts/etl_daily.py（子进程隔离，崩溃不影响主服务）。
+每交易日 19:00 后执行 datahub 管道（部分失败自动降级 etl_daily）。
 由 main.startup 启动（env QUANT_DATA_SCHEDULE=1 启用，默认关——避免沙箱频繁
 在线拉取；生产服务器建议开启）。
 """
@@ -16,8 +16,8 @@ from datetime import datetime
 
 logger = logging.getLogger("data_scheduler")
 
-# 每个交易日 17:00 后执行一次 ETL（tushare 收盘数据就绪 + 因子计算）
-RUN_HOUR, RUN_MIN = 17, 0
+# 每个交易日 19:00 后执行一次数据管道（tushare 收盘数据就绪 + 因子计算）
+RUN_HOUR, RUN_MIN = 19, 0  # tushare 日线晚间就绪，19:00 保证当日数据可得
 _CHECK_INTERVAL = 60  # 秒
 
 # 运行状态（供监控页查询）

@@ -221,6 +221,17 @@ def _benchmark_closes(db: Session, sd: date, ed: date) -> list[float]:
 def compute_factor_cross_section(db: Session, syms: list[str], trade_date: date) -> int:
     """对核心池计算 trade_date 截面的 14 因子，写入 factor_daily（upsert）。"""
     from app.core.engine import indicators as ind
+    from app.models import NewsStockDaily
+    from app.datahub.ns_vars import news_lookup_factory
+
+    # 个股新闻情绪 lookup（当日或近 3 日均值；无数据返回 None）
+    _nhist: dict[str, dict] = {}
+    for _s, _d, _v in db.execute(
+        select(NewsStockDaily.symbol, NewsStockDaily.date, NewsStockDaily.net_sentiment)
+    ).all():
+        if _v is not None:
+            _nhist.setdefault(_s, {})[_d] = float(_v)
+    news_lookup = news_lookup_factory(_nhist)
 
     attrs_map = _attrs_for(db, syms)
     # 基准（中证800）对齐序列：与股票区间对齐
