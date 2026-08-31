@@ -507,3 +507,23 @@ class FactorMinedDaily(Base):
     date: Mapped[date] = mapped_column(Date)
     symbol: Mapped[str] = mapped_column(String(16))
     value: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class HealthRule(Base):
+    """数据健康度检查规则（可配置）。"""
+
+    __tablename__ = "health_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64))
+    layer: Mapped[str] = mapped_column(String(16))  # collect/process/apply
+    metric: Mapped[str] = mapped_column(String(32))  # 检查器类型
+    params: Mapped[str] = mapped_column(Text, default="{}")  # JSON 参数
+    comparator: Mapped[str] = mapped_column(String(4), default=">=")  # >=/<=/==/!=
+    threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
+    level: Mapped[str] = mapped_column(String(8), default="error")  # 未通过时的告警级别
+    weight: Mapped[float] = mapped_column(Float, default=1.0)
+    enabled: Mapped[int] = mapped_column(Integer, default=1)
+    last_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_status: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    last_checked: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

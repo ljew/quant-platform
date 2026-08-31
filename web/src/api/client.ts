@@ -17,6 +17,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const get = <T>(path: string) => request<T>(path);
 export const post = <T>(path: string, body: unknown) =>
   request<T>(path, { method: "POST", body: JSON.stringify(body) });
+export const put = <T>(path: string, body: unknown) =>
+  request<T>(path, { method: "PUT", body: JSON.stringify(body) });
+export const del = <T>(path: string) => request<T>(path, { method: "DELETE" });
 
 // —— 类型 ——
 export interface StrategyInfo {
@@ -117,6 +120,13 @@ export const api = {
   monitorHealth: () => get<HealthReport>(`/monitor/health-report`),
   monitorDataflow: () => get<DataflowReport>(`/monitor/dataflow`),
   monitorLineage: () => get<LineageReport>(`/monitor/lineage`),
+  healthRules: () => get<HealthRuleRow[]>(`/monitor/health/rules`),
+  healthRuleToggle: (id: number, enabled: boolean) =>
+    put(`/monitor/health/rules/${id}`, { enabled }),
+  healthRuleSave: (id: number, payload: Record<string, unknown>) =>
+    put(`/monitor/health/rules/${id}`, payload),
+  healthRuleAdd: (payload: Record<string, unknown>) => post<{ ok: boolean; id: number }>(`/monitor/health/rules`, payload),
+  healthRuleDelete: (id: number) => del(`/monitor/health/rules/${id}`),
   // 因子注册表
   factorRegistryRegister: (payload: Record<string, unknown>) =>
     post<{ ok: boolean; id: number; status: string; existed?: boolean }>("/factor/registry/register", payload),
@@ -326,4 +336,11 @@ export interface LineageReport {
   last_run: { run_id: number; status: string; started_at: string | null } | null;
   raw_dir: string;
   config_path: string;
+}
+
+export interface HealthRuleRow {
+  id: number; name: string; layer: string; metric: string; params: string;
+  comparator: string; threshold: number | null; level: string; weight: number;
+  enabled: boolean; last_value: string | null; last_status: string | null;
+  metric_doc: string;
 }

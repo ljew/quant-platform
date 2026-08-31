@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, HealthReport, LineageReport } from "../api/client";
+import { api, HealthRuleRow, HealthReport, LineageReport } from "../api/client";
 import { Badge, Card, KpiCard, PageHeader } from "../components/ui";
 import { useTheme, ThemeColors } from "../theme";
 
@@ -14,11 +14,16 @@ export default function DataPipelinePage() {
   const [health, setHealth] = useState<HealthReport | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [rules, setRules] = useState<HealthRuleRow[]>([]);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [editing, setEditing] = useState<number | null>(null);
+  const [editTh, setEditTh] = useState("");
 
   const refresh = useCallback(async () => {
     try {
       setLin(await api.monitorLineage());
       setHealth(await api.monitorHealth());
+      api.healthRules().then(setRules).catch(() => {});
     } catch (e) {
       setError((e as Error).message);
     }
@@ -193,6 +198,88 @@ export default function DataPipelinePage() {
           )}
         </Card>
       )}
+
+      {/* —— ⑥ 健康度规则管理 —— */}
+      <Card
+        title="⑥ 健康度检查规则（可配置）"
+        colors={colors}
+        style={{ marginTop: 14 }}
+        extra={
+          <button onClick={() => setRulesOpen(!rulesOpen)}
+            style={{ fontSize: 12, color: colors.accent, background: "none", border: 0, cursor: "pointer" }}>
+            {rulesOpen ? "收起" : "管理规则"}
+          </button>
+        }
+      >
+        {!rulesOpen ? (
+          <div style={{ fontSize: 12.5, color: colors.muted }}>
+            {rules.filter((r) => r.enabled).length} 条规则生效中 · 点击右上角管理（启停/改阈值/增删）
+          </div>
+        ) : (
+          <div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead><tr style={{ color: colors.muted, textAlign: "left" }}>
+                <th style={{ padding: "6px 8px" }}>名称</th><th>层</th><th>指标</th>
+                <th>条件</th><th>上次值</th><th>状态</th><th>操作</th>
+              </tr></thead>
+              <tbody>
+                {rules.map((r) => (
+                  <tr key={r.id} style={{ borderTop: `1px solid ${colors.border}` }}>
+                    <td style={{ padding: "6px 8px" }} title={r.metric_doc}>{r.name}</td>
+                    <td style={{ fontSize: 11.5, color: colors.muted }}>{r.layer}</td>
+                    <td style={{ fontSize: 11.5 }}><code>{r.metric}</code></td>
+                    <td className="num" style={{ fontSize: 12 }}>
+                      {editing === r.id ? (
+                        <input value={editTh} onChange={(e) => setEditTh(e.target.value)}
+                          style={{ width: 70, padding: "2px 6px", border: `1px solid ${colors.border}`, background: colors.card, color: colors.text }} />
+                      ) : (
+                        <>{r.comparator} {r.threshold ?? "—"}</>
+                      )}
+                    </td>
+                    <td className="num" style={{ fontSize: 11.5, color: colors.muted }}>{r.last_value ?? "—"}</td>
+                    <td>
+                      <span style={{ color: STATUS_COLOR(r.last_status === "ok" ? "OK" : "FAIL", colors) }}>
+                        {r.last_status === "ok" ? "✓" : r.last_status === "error" ? "✕" : "◐"}
+                      </span>{" "}
+                      {!r.enabled && <span style={{ fontSize: 11, color: colors.muted }}>(停用)</span>}
+                    </td>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      {editing === r.id ? (
+                        <>
+                          <button onClick={async () => {
+                            await api.healthRuleSave(r.id, { threshold: parseFloat(editTh) || 0 });
+                            setEditing(null); refresh();
+                          }} style={{ fontSize: 11.5, color: colors.down, background: "none", border: 0, cursor: "pointer" }}>保存</button>
+                          <button onClick={() => setEditing(null)}
+                            style={{ fontSize: 11.5, color: colors.muted, background: "none", border: 0, cursor: "pointer" }}>取消</button>
+                        </>
+                      ) : (
+                        <>
+                          <button onClick={() => { setEditing(r.id); setEditTh(String(r.threshold ?? 0)); }}
+                            style={{ fontSize: 11.5, color: colors.accent, background: "none", border: 0, cursor: "pointer" }}>改阈值</button>
+                          <button onClick={async () => {
+                            await api.healthRuleToggle(r.id, !r.enabled); refresh();
+                          }} style={{ fontSize: 11.5, color: colors.muted, background: "none", border: 0, cursor: "pointer" }}>
+                            {r.enabled ? "停用" : "启用"}
+                          </button>
+                          <button onClick={async () => {
+                            if (window.confirm(`删除规则「${r.name}」？`)) {
+                              await api.healthRuleDelete(r.id); refresh();
+                            }
+                          }} style={{ fontSize: 11.5, color: colors.up, background: "none", border: 0, cursor: "pointer" }}>删除</button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ marginTop: 8, fontSize: 11.5, color: colors.muted }}>
+              新增规则示例：POST /api/v1/monitor/health/rules {"{ name, layer, metric: freshness, params: {table: 'kline_daily'}, comparator: '<=', threshold: 5 }"}
+            </div>
+          </div>
+        )}
+      </Card>
     </div>
   );
 }

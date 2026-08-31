@@ -12,10 +12,12 @@ import time
 from datetime import date, datetime
 
 from fastapi import APIRouter
+from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 
 from app.database import SessionLocal
 from app.services.data_health import health_report
+from app.services.health_engine import run_rules, METRIC_DOCS, ensure_default_rules
 from app.models import (
     FactorDaily,
     KlineDaily,
@@ -119,8 +121,95 @@ def _paper_stats(db) -> dict:
 
 @router.get("/health-report")
 def data_health_endpoint():
-    """数据健康度报告。"""
-    return health_report()
+    """数据健康度报告（规则引擎驱动）。"""
+    return run_rules(SessionLocal())
+
+
+@router.get("/health/rules")
+def health_rules():
+    ensure_default_rules()
+    db = SessionLocal()
+    try:
+        from app.models import HealthRule
+
+        rows = db.execute(select(HealthRule).order_by(HealthRule.layer, HealthRule.id)).scalars().all()
+        return [{"id": r.id, "name": r.name, "layer": r.layer, "metric": r.metric,
+                 "params": r.params, "comparator": r.comparator, "threshold": r.threshold,
+                 "level": r.level, "weight": r.weight, "enabled": bool(r.enabled),
+                 "last_value": r.last_value, "last_status": r.last_status,
+                 "metric_doc": METRIC_DOCS.get(r.metric, "")} for r in rows]
+    finally:
+        db.close()
+
+
+class RulePayload(BaseModel):
+    name: str
+    layer: str = "process"
+    metric: str
+    params: str = "{}"
+    comparator: str = ">="
+    threshold: float | None = None
+    level: str = "warn"
+    weight: float = 1.0
+    enabled: bool = True
+
+
+@router.post("/health/rules")
+def health_rule_add(payload: RulePayload):
+    from app.models import HealthRule
+
+    db = SessionLocal()
+    try:
+        row = HealthRule(name=payload.name, layer=payload.layer, metric=payload.metric,
+                         params=payload.params, comparator=payload.comparator,
+                         threshold=payload.threshold, level=payload.level,
+                         weight=payload.weight, enabled=int(payload.enabled))
+        db.add(row)
+        db.commit()
+        return {"ok": True, "id": row.id}
+    finally:
+        db.close()
+
+
+@router.put("/health/rules/{rid}")
+def health_rule_update(rid: int, payload: dict):
+    from app.models import HealthRule
+
+    db = SessionLocal()
+    try:
+        row = db.get(HealthRule, rid)
+        if not row:
+            raise HTTPException(status_code=404, detail="规则不存在")
+        for k in ("name", "layer", "metric", "params", "comparator", "threshold",
+                  "level", "weight"):
+            if k in payload:
+                setattr(row, k, payload[k])
+        if "enabled" in payload:
+            row.enabled = int(bool(payload["enabled"]))
+        db.commit()
+        return {"ok": True}
+    finally:
+        db.close()
+
+
+@router.delete("/health/rules/{rid}")
+def health_rule_delete(rid: int):
+    from app.models import HealthRule
+
+    db = SessionLocal()
+    try:
+        row = db.get(HealthRule, rid)
+        if row:
+            db.delete(row)
+            db.commit()
+        return {"ok": True}
+    finally:
+        db.close()
+
+
+@router.post("/health/run")
+def health_run_now():
+    return run_rules(SessionLocal())
 
 
 import threading
