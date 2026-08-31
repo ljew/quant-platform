@@ -43,10 +43,13 @@ sources:
       db_path: /Users/happyljew/Desktop/kimiwork/Xiaoan_0811_bak/wechat-monitor/knowledge.db
       body_chars: 4000
 
-  # —— 预留：新数据源在此声明（step 需先在 runner.STEPS 注册）——
-  # akshare_news:
-  #   type: akshare_news
-  #   step: extract_akshare_news
-  #   layer: bronze
-  #   enabled: false
-  #   description: 东财新闻/公告（免费高频文本源）
+  eastmoney_news:
+    type: eastmoney_news
+    step: extract_eastmoney_news
+    layer: bronze
+    produces: text/eastmoney_news + 市场/个股情绪
+    enabled: true
+    description: 东财全市场新闻流（财联社/券商中国等，含当日）
+    params:
+      pages: 20
+      page_size: 100

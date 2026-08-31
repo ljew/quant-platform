@@ -6,6 +6,8 @@ from datetime import datetime
 
 import pandas as pd
 
+from sqlalchemy import select
+
 from app.datahub.registry import silver_path, _PROJECT_ROOT  # noqa: F401
 
 REPORT_DIR = os.path.join(_PROJECT_ROOT, "data", "silver", "_reports")
@@ -107,3 +109,60 @@ def clean_articles(frames: list[pd.DataFrame]) -> tuple[pd.DataFrame, dict]:
                         .strftime("%Y-%m-%d")),
     })
     return df, metrics
+
+
+# ============ 个股提及匹配（文本 → symbol） ============
+def match_stock_mentions(text: str, name_map_sorted: list[tuple[str, str]], max_hits: int = 5) -> list[str]:
+    """正文内匹配公司简称（长名优先），返回命中的 symbol 列表。"""
+    hits: list[str] = []
+    for name, sym in name_map_sorted:
+        if name in text:
+            if sym not in hits:
+                hits.append(sym)
+            if len(hits) >= max_hits:
+                break
+    return hits
+
+
+def load_name_map(db) -> list[tuple[str, str]]:
+    """股票简称映射（排除 ST / 泛词），长按名长度降序。"""
+    from app.models import Stock
+
+    black = {"银行", "证券", "保险", "地产", "医药", "能源", "电力", "科技", "传媒",
+             "教育", "交通", "建设", "发展", "控股", "集团", "国际", "中国", "国家",
+             "东方", "西部", "南方", "北方", "西藏", "新疆", "上海", "北京", "深圳",
+             "股份", "有限", "公司", "集团股", "A", "B"}
+    pairs = []
+    for sym, nm in db.execute(select(Stock.symbol, Stock.name)).all():
+        if not nm:
+            continue
+        clean = nm.replace(" ", "").replace("*", "")
+        if len(clean) < 2 or clean.startswith("ST") or clean in black:
+            continue
+        pairs.append((clean, sym))
+    return sorted(pairs, key=lambda kv: -len(kv[0]))
+
+
+def upsert_stock_sentiment(db, rows: dict, model) -> int:
+    """(symbol, date) -> [mentions, bull, bear] 幂等累加写入个股情绪表。"""
+    from datetime import datetime as _dt
+    from sqlalchemy import select as _sel
+
+    n = 0
+    for (sym, d_str), (mentions, bull, bear) in rows.items():
+        d = _dt.strptime(d_str, "%Y-%m-%d").date()
+        row = db.execute(_sel(model).where(model.symbol == sym, model.date == d)).scalar()
+        senti = (bull - bear) / max(bull + bear, 1)
+        if row is None:
+            db.add(model(symbol=sym, date=d, mentions=int(mentions),
+                         bull_score=int(bull), bear_score=int(bear),
+                         net_sentiment=round(senti, 5)))
+        else:
+            row.mentions = int(row.mentions or 0) + int(mentions)
+            row.bull_score = int(row.bull_score or 0) + int(bull)
+            row.bear_score = int(row.bear_score or 0) + int(bear)
+            row.net_sentiment = round((row.bull_score - row.bear_score)
+                                      / max(row.bull_score + row.bear_score, 1), 5)
+        n += 1
+    db.commit()
+    return n

@@ -131,6 +131,80 @@ def step_extract_wechat_articles(db) -> int:
     return len(df)
 
 
+def step_extract_eastmoney_news(db) -> int:
+    """东财全市场新闻流 → Bronze + 市场情绪 + 个股情绪。"""
+    src = get_source("eastmoney_news")
+    if not src:
+        return 0
+    from datetime import datetime as _dt
+
+    import pandas as pd
+    from app.datahub.extractors.eastmoney_news import EastmoneyNewsExtractor
+    from app.datahub.scorers.dict_v1 import DictScorerV1
+    from app.datahub.cleaners.core import (load_name_map, match_stock_mentions,
+                                           upsert_stock_sentiment)
+    from app.models import NewsMarketDaily, NewsStockDaily
+
+    params = src.get("params", {})
+    pages = int(params.get("pages", 8))
+    page_size = int(params.get("page_size", 100))
+    try:
+        df = EastmoneyNewsExtractor().fetch(pages=pages, page_size=page_size)
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"东财新闻抓取失败: {e}")
+    if df.empty:
+        return 0
+    write_bronze("text/eastmoney_news", df,
+                 batch=_dt.now().strftime("%Y%m%d%H%M%S"))
+
+    scorer = DictScorerV1()
+    texts = list((df["title"].fillna("") + "\n" + df["content_text"].fillna("")))
+    scored = scorer.score(texts)
+    dates = pd.to_datetime(df["publish_time"], unit="s").dt.strftime("%Y-%m-%d")
+    fin_mask = [int(any(k in t[:600] for k in scorer.fin_keywords)) for t in texts]
+
+    # —— 市场级情绪（累加到 news_market_daily）——
+    scored["date"] = dates.values
+    scored["fin"] = fin_mask
+    day = (scored[scored["fin"] > 0]
+           .groupby("date").agg(n=("fin", "sum"), bull=("bull", "sum"), bear=("bear", "sum")))
+    for d_str, r in day.iterrows():
+        d2 = _dt.strptime(d_str, "%Y-%m-%d").date()
+        row = db.execute(select(NewsMarketDaily).where(NewsMarketDaily.date == d2)).scalar()
+        bull, bear, n = int(r.bull), int(r.bear), int(r.n)
+        if row is None:
+            db.add(NewsMarketDaily(date=d2, n_articles=n, n_finance=n,
+                                   bull_score=bull, bear_score=bear,
+                                   net_sentiment=round((bull - bear) / max(bull + bear, 1), 5)))
+        else:
+            row.n_articles = int(row.n_articles or 0) + n
+            row.n_finance = int(row.n_finance or 0) + n
+            row.bull_score = int(row.bull_score or 0) + bull
+            row.bear_score = int(row.bear_score or 0) + bear
+            row.net_sentiment = round((row.bull_score - row.bear_score)
+                                      / max(row.bull_score + row.bear_score, 1), 5)
+    db.commit()
+
+    # —— 个股级情绪（公司简称匹配）——
+    name_map = load_name_map(db)
+    stock_rows: dict = {}
+    for i, t in enumerate(texts):
+        hits = match_stock_mentions(t, name_map)
+        if not hits:
+            continue
+        bull, bear = int(scored.iloc[i]["bull"]), int(scored.iloc[i]["bear"])
+        if bull + bear == 0:
+            continue
+        d_str = dates.iloc[i]
+        for sym in hits:
+            rec = stock_rows.setdefault((sym, d_str), [0, 0, 0])
+            rec[0] += 1
+            rec[1] += bull
+            rec[2] += bear
+    n_stock = upsert_stock_sentiment(db, stock_rows, NewsStockDaily) if stock_rows else 0
+    return len(df) + n_stock
+
+
 def step_score_sentiment(db) -> int:
     """Silver/Gold：合并最近 bronze 批次文章 → 词典 v1 打分 → news_market_daily 重算。"""
     from app.datahub.scorers.dict_v1 import DictScorerV1
@@ -339,6 +413,7 @@ STEPS = [
     ("extract_stock_kline", step_extract_stock_kline),
     ("extract_attributes", step_extract_attributes),
     ("clean_bars", step_clean_bars),
+    ("extract_eastmoney_news", step_extract_eastmoney_news),
     ("extract_wechat_articles", step_extract_wechat_articles),
     ("clean_text", step_clean_text),
     ("score_sentiment", step_score_sentiment),
