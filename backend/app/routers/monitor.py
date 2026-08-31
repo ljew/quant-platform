@@ -147,6 +147,14 @@ def pipeline_run_now():
     return {"ok": True}
 
 
+@router.get("/lineage")
+def lineage():
+    """数据血缘全景：源 → 步骤 → 层 → 运行时间线。"""
+    from app.services.lineage_svc import lineage_report
+
+    return lineage_report(SessionLocal())
+
+
 @router.get("/dataflow")
 def data_flow():
     """数据流全景（源头/Bronze/Silver/Gold）。"""

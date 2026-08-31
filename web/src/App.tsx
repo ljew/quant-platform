@@ -4,10 +4,11 @@ import BacktestPage from "./pages/BacktestPage";
 import PaperPage from "./pages/PaperPage";
 import OptimizePage from "./pages/OptimizePage";
 import MonitorPage from "./pages/MonitorPage";
+import DataPipelinePage from "./pages/DataPipelinePage";
 import FactorMinePage from "./pages/FactorMinePage";
 import { sidebarTheme, useTheme } from "./theme";
 
-type Tab = "market" | "backtest" | "paper" | "optimize" | "monitor" | "factor";
+type Tab = "market" | "backtest" | "paper" | "optimize" | "monitor" | "factor" | "pipeline";
 
 const NAV: { key: Tab; label: string; icon: string }[] = [
   { key: "market", label: "行情看板", icon: "▤" },
@@ -15,6 +16,7 @@ const NAV: { key: Tab; label: string; icon: string }[] = [
   { key: "optimize", label: "参数寻优", icon: "◎" },
   { key: "factor", label: "因子挖掘", icon: "∴" },
   { key: "paper", label: "模拟盘", icon: "◷" },
+  { key: "pipeline", label: "数据管道", icon: "⇉" },
   { key: "monitor", label: "系统监控", icon: "◈" },
 ];
 
@@ -108,6 +110,7 @@ export default function App() {
         {tab === "optimize" && <OptimizePage />}
         {tab === "factor" && <FactorMinePage />}
         {tab === "paper" && <PaperPage />}
+        {tab === "pipeline" && <DataPipelinePage />}
         {tab === "monitor" && <MonitorPage />}
       </main>
     </div>

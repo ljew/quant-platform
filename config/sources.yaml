@@ -1,11 +1,13 @@
 # 数据源配置（声明式）—— datahub 按此驱动抽取管道
-# type: tushare_bars / wechat_articles / ...
+# type: 提取器类型；step: 该源对应的管道步骤；layer: 产出落入的层
 # enabled: 关闭后 pipeline 跳过该源
-# params: 传递给对应 extractor 的参数
 
 sources:
   core_index_kline:
     type: index_kline_tushare
+    step: extract_index_kline
+    layer: bronze
+    produces: market/bars_daily（指数）
     enabled: true
     description: 8 核心指数日K（增量）
     params:
@@ -13,6 +15,9 @@ sources:
 
   stock_kline_core:
     type: stock_kline_tushare
+    step: extract_stock_kline
+    layer: bronze
+    produces: market/bars_daily（个股）+ kline_daily
     enabled: true
     description: 核心池个股前复权日K（增量）
     params:
@@ -21,13 +26,27 @@ sources:
 
   stock_attributes:
     type: attributes_tushare
+    step: extract_attributes
+    layer: gold
+    produces: stocks（截面属性）
     enabled: true
     description: 全市场截面属性（daily_basic）
 
   wechat_articles:
     type: wechat_articles_sqlite
+    step: extract_wechat_articles
+    layer: bronze
+    produces: text/wechat_articles + text/articles_cleaned
     enabled: true
     description: 公众号财经语料（文本管道输入）
     params:
       db_path: /Users/happyljew/Desktop/kimiwork/Xiaoan_0811_bak/wechat-monitor/knowledge.db
       body_chars: 4000
+
+  # —— 预留：新数据源在此声明（step 需先在 runner.STEPS 注册）——
+  # akshare_news:
+  #   type: akshare_news
+  #   step: extract_akshare_news
+  #   layer: bronze
+  #   enabled: false
+  #   description: 东财新闻/公告（免费高频文本源）

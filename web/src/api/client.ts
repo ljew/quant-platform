@@ -116,6 +116,7 @@ export const api = {
   // 数据健康度 + 数据流全景
   monitorHealth: () => get<HealthReport>(`/monitor/health-report`),
   monitorDataflow: () => get<DataflowReport>(`/monitor/dataflow`),
+  monitorLineage: () => get<LineageReport>(`/monitor/lineage`),
   // 因子注册表
   factorRegistryRegister: (payload: Record<string, unknown>) =>
     post<{ ok: boolean; id: number; status: string; existed?: boolean }>("/factor/registry/register", payload),
@@ -299,4 +300,30 @@ export interface DataflowReport {
   silver: { files: Record<string, { size_kb?: number; mtime: string | null }>; quality: Record<string, unknown> | null };
   gold: Record<string, number | string | null>;
   scorers: { version: string; desc: string; active: boolean }[];
+}
+
+export interface LineageReport {
+  sources: {
+    name: string; type: string; description: string; enabled: boolean;
+    params: Record<string, unknown>; step: string; layer: string; produces: string;
+    last_run: { status: string; rows: number; duration_sec: number; message: string } | null;
+  }[];
+  steps: { order: number; name: string; status: string; rows: number; duration_sec: number }[];
+  layers: {
+    bronze: Record<string, { files: number; size_mb: number; latest: string | null }>;
+    silver: { files: Record<string, { size_kb?: number; mtime: string | null }>; quality: Record<string, unknown> | null };
+    gold: {
+      tables: Record<string, number>;
+      latest: { kline: string | null; factor: string | null; news: string | null };
+      registry_enabled: number;
+    };
+  };
+  timeline: {
+    run_id: number; trigger: string; status: string; started_at: string | null;
+    finished_at: string | null; total_sec: number; error: string | null;
+    steps: { name: string; status: string; duration_sec: number; rows: number; message: string }[];
+  }[];
+  last_run: { run_id: number; status: string; started_at: string | null } | null;
+  raw_dir: string;
+  config_path: string;
 }
