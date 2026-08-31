@@ -157,9 +157,18 @@ def step_extract_eastmoney_news(db) -> int:
     write_bronze("text/eastmoney_news", df,
                  batch=_dt.now().strftime("%Y%m%d%H%M%S"))
 
+    from app.datahub.cleaners.core import load_processed, save_processed
+
+    processed = load_processed()
+    new_mask = df["article_id"].map(lambda x: x not in processed)
+    df = df[new_mask]
+    if df.empty:
+        return 0
     scorer = DictScorerV1()
     texts = list((df["title"].fillna("") + "\n" + df["content_text"].fillna("")))
     scored = scorer.score(texts)
+    processed |= set(df["article_id"])
+    save_processed(processed)
     dates = pd.to_datetime(df["publish_time"], unit="s").dt.strftime("%Y-%m-%d")
     fin_mask = [int(any(k in t[:600] for k in scorer.fin_keywords)) for t in texts]
 
@@ -197,6 +206,63 @@ def step_extract_eastmoney_news(db) -> int:
             continue
         d_str = dates.iloc[i]
         for sym in hits:
+            rec = stock_rows.setdefault((sym, d_str), [0, 0, 0])
+            rec[0] += 1
+            rec[1] += bull
+            rec[2] += bear
+    n_stock = upsert_stock_sentiment(db, stock_rows, NewsStockDaily) if stock_rows else 0
+    return len(df) + n_stock
+
+
+def step_extract_announcements(db) -> int:
+    """东财全市场公告 → Bronze + 个股情绪（codes 精确关联）。"""
+    src = get_source("eastmoney_announcements")
+    if not src:
+        return 0
+    from datetime import datetime as _dt
+
+    import pandas as pd
+    from app.datahub.extractors.eastmoney_announcements import EastmoneyAnnouncementExtractor
+    from app.datahub.scorers.dict_v1 import DictScorerV1
+    from app.datahub.cleaners.core import upsert_stock_sentiment
+    from app.models import NewsStockDaily
+
+    params = src.get("params", {})
+    try:
+        df = EastmoneyAnnouncementExtractor().fetch(
+            pages=int(params.get("pages", 5)), page_size=int(params.get("page_size", 100)))
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"公告抓取失败: {e}")
+    if df.empty:
+        return 0
+    write_bronze("text/announcements", df,
+                 batch=_dt.now().strftime("%Y%m%d%H%M%S"))
+
+    from app.datahub.cleaners.core import load_processed, save_processed
+
+    processed = load_processed()
+    new_mask = df["article_id"].map(lambda x: x not in processed)
+    df = df[new_mask]
+    if df.empty:
+        return 0
+    scorer = DictScorerV1()
+    texts = list(df["title"].fillna(""))
+    scored = scorer.score(texts)
+    dates = pd.to_datetime(df["publish_time"], unit="s").dt.strftime("%Y-%m-%d")
+
+    processed |= set(df["article_id"])
+    save_processed(processed)
+
+    stock_rows: dict = {}
+    for i, sym_str in enumerate(df["symbols"].fillna("").items()):
+        syms = [x for x in sym_str[1].split("|") if x]
+        if not syms:
+            continue
+        bull, bear = int(scored.iloc[i]["bull"]), int(scored.iloc[i]["bear"])
+        if bull + bear == 0:
+            continue
+        d_str = dates.iloc[i]
+        for sym in syms:
             rec = stock_rows.setdefault((sym, d_str), [0, 0, 0])
             rec[0] += 1
             rec[1] += bull
@@ -414,6 +480,7 @@ STEPS = [
     ("extract_attributes", step_extract_attributes),
     ("clean_bars", step_clean_bars),
     ("extract_eastmoney_news", step_extract_eastmoney_news),
+    ("extract_announcements", step_extract_announcements),
     ("extract_wechat_articles", step_extract_wechat_articles),
     ("clean_text", step_clean_text),
     ("score_sentiment", step_score_sentiment),

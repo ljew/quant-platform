@@ -32,6 +32,17 @@ sources:
     enabled: true
     description: 全市场截面属性（daily_basic）
 
+  eastmoney_announcements:
+    type: eastmoney_announcements
+    step: extract_announcements
+    layer: bronze
+    produces: text/announcements + 个股情绪（codes 精确关联）
+    enabled: true
+    description: 上市公司公告（全市场，事件性强）
+    params:
+      pages: 5
+      page_size: 100
+
   wechat_articles:
     type: wechat_articles_sqlite
     step: extract_wechat_articles

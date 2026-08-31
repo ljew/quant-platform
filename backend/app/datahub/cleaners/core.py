@@ -8,7 +8,7 @@ import pandas as pd
 
 from sqlalchemy import select
 
-from app.datahub.registry import silver_path, _PROJECT_ROOT  # noqa: F401
+from app.datahub.registry import SILVER_DIR, silver_path, _PROJECT_ROOT  # noqa: F401
 
 REPORT_DIR = os.path.join(_PROJECT_ROOT, "data", "silver", "_reports")
 
@@ -166,3 +166,26 @@ def upsert_stock_sentiment(db, rows: dict, model) -> int:
         n += 1
     db.commit()
     return n
+
+
+# ============ 文章去重状态（防重复计入情绪） ============
+PROCESSED_PATH = os.path.join(SILVER_DIR, "_reports", "processed_ids.json")
+
+
+def load_processed() -> set:
+    try:
+        import json
+        with open(PROCESSED_PATH, encoding="utf-8") as f:
+            return set(json.load(f))
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def save_processed(ids: set) -> None:
+    import json
+    os.makedirs(os.path.dirname(PROCESSED_PATH), exist_ok=True)
+    # 上限 20 万条，超出裁剪旧的
+    if len(ids) > 200000:
+        ids = set(sorted(ids)[-200000:])
+    with open(PROCESSED_PATH, "w", encoding="utf-8") as f:
+        json.dump(sorted(ids), f)
