@@ -80,7 +80,7 @@ def health_report(db=None) -> dict:
         else:
             collect_checks.append(_mk("数据管道最近运行", None, "从未运行", "有记录"))
 
-        bronze_dir = "/Users/happyljew/Desktop/kimiwork/Quant/quant-platform/data/raw"
+        from app.datahub.registry import RAW_DIR as bronze_dir
         n_bronze = 0
         for root, _d, files in __import__("os").walk(bronze_dir):
             n_bronze += len([f for f in files if f.endswith(".parquet")])
