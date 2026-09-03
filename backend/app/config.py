@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     # 单次批量拉取的标的上限（防止一次性过大）
     batch_size: int = 200
 
+    # —— 调度 ——
+    # 是否启用数据调度（每交易日 19:00 ETL 自动日更 + 断供自愈 + 指数成分月度快照）。
+    # 由 .env / 环境变量 QUANT_DATA_SCHEDULE 控制；Docker 已置 1，本地建议开启。
+    data_schedule: bool = False
+
     # —— CORS ——
     cors_origins: list[str] = ["*"]
 

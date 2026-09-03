@@ -9,7 +9,10 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.config import settings
 
-connect_args = {"check_same_thread": False} if settings.is_sqlite else {}
+# SQLite 是单写者模型：后端 API、数据调度器、模拟盘调度器、手动补数脚本共享同一个
+# 库文件，任何并发写入都会立刻抛 "database is locked"。设置 busy_timeout 让写操作
+# 排队等待（而不是直接失败），这是多进程共享 SQLite 的必要配置。
+connect_args = {"check_same_thread": False, "timeout": 30} if settings.is_sqlite else {}
 
 engine = create_engine(
     settings.database_url,
