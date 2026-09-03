@@ -5,20 +5,23 @@ pipeline_runs / pipeline_run_steps 供监控页展示。
 """
 from __future__ import annotations
 
+import logging
 import os
 import time
 import traceback
 from datetime import date, datetime, timedelta
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.datahub.registry import write_bronze
 from app.datahub.source_config import get_source
 from app.database import SessionLocal, init_db
-from app.models import (KlineDaily, NewsMarketDaily, NewsStockDaily, PipelineRun,
-                        PipelineStepLog, Stock, IndexKlineDaily, FactorRegistry,
-                        FactorMinedDaily)
+from app.models import (FactorDaily, KlineDaily, NewsMarketDaily, NewsStockDaily,
+                        PipelineRun, PipelineStepLog, Stock, IndexKlineDaily,
+                        FactorRegistry, FactorMinedDaily)
+
+logger = logging.getLogger(__name__)
 
 # ============ 步骤实现 ============
 
@@ -29,7 +32,14 @@ def step_extract_index_kline(db) -> int:
         return 0
     from app.services.etl import extract_index_incremental
 
-    return extract_index_incremental(db, date.today())
+    stats: dict = {"errors": []}
+    try:
+        n = extract_index_incremental(db, date.today(), stats=stats)
+    except Exception as e:  # noqa: BLE001
+        stats["errors"].append(f"{type(e).__name__}: {str(e)[:120]}")
+        n = 0
+    _STEP_STATS["extract_index_kline"] = stats
+    return n
 
 
 def _bronze_dir(dataset: str) -> str:
@@ -64,7 +74,13 @@ def step_extract_stock_kline(db) -> int:
     syms = _get_universe(db)
     lookback = int(params.get("lookback_days", 30))
     sd = date.today() - timedelta(days=lookback)
-    n = extract_kline_incremental(db, syms, sd, date.today())
+    stats: dict = {"errors": []}
+    try:
+        n = extract_kline_incremental(db, syms, sd, date.today(), stats=stats)
+    except Exception as e:  # noqa: BLE001
+        stats["errors"].append(f"{type(e).__name__}: {str(e)[:120]}")
+        n = 0
+    _STEP_STATS["extract_stock_kline"] = stats
     try:  # Bronze 快照落盘（失败不影响主流程）
         df = _latest_close_snapshot(db)
         if df is not None and len(df):
@@ -328,13 +344,43 @@ def step_sync_duckdb(db) -> int:
 
 
 def step_compute_factors(db) -> int:
-    """Gold：核心池最新截面因子计算（复用 ETL）。"""
+    """Gold：核心池截面因子计算（复用 ETL）。
+
+    补齐「K 线已就绪、但因子缺失」的**所有**交易日，而不是只算最新一天 ——
+    否则一旦断供数日，因子将永远追不上行情（每次跑只前进一天）。
+    覆盖不足的交易日（盘中半截数据）跳过，避免算出残缺截面。
+    """
     from app.services.etl import compute_factor_cross_section, _get_universe
 
     syms = _get_universe(db)
-    last = db.execute(select(KlineDaily.trade_date)
-                      .order_by(KlineDaily.trade_date.desc()).limit(1)).scalar()
-    return compute_factor_cross_section(db, syms, last or date.today())
+    since = date.today() - timedelta(days=45)
+
+    # K 线每日覆盖标的数
+    cover: dict[date, int] = {}
+    for d, c in db.execute(
+        select(KlineDaily.trade_date, func.count(func.distinct(KlineDaily.symbol)))
+        .where(KlineDaily.trade_date >= since)
+        .group_by(KlineDaily.trade_date)
+    ).all():
+        cover[d] = int(c or 0)
+    if not cover:
+        return 0
+    full = max(cover.values())
+    have = {d for d, in db.execute(
+        select(FactorDaily.trade_date).where(FactorDaily.trade_date >= since).distinct()
+    ).all()}
+    # 只有覆盖达 90% 的交易日才算（盘中当天只有几十只，不能拿来算截面）
+    todo = sorted(d for d, c in cover.items() if c >= full * 0.9 and d not in have)
+    if not todo:
+        return 0
+
+    total = 0
+    for d in todo:
+        try:
+            total += compute_factor_cross_section(db, syms, d) or 0
+        except Exception:  # noqa: BLE001
+            logger.warning("因子计算 %s 失败", d, exc_info=True)
+    return total
 
 
 # ============ 步骤注册与执行器 ============
@@ -499,6 +545,12 @@ def init_models():
         PipelineRun.__table__, PipelineStepLog.__table__])
 
 
+# 步骤执行过程中收集的细粒度统计（失败明细等）。
+# step 函数把结果写入 _STEP_STATS[name]，run_pipeline 读取后写入 PipelineStepLog.message，
+# 避免「接口限流导致全军覆没、管道却报 SUCCESS」的静默失败。
+_STEP_STATS: dict[str, dict] = {}
+
+
 def run_pipeline(trigger: str = "manual", only: list[str] | None = None,
                  stop_on_fail: bool = True) -> int:
     """执行管道；每步落 pipeline_run_steps，run 状态含耗时/行数/错误。返回 run_id。"""
@@ -521,10 +573,31 @@ def run_pipeline(trigger: str = "manual", only: list[str] | None = None,
             log = PipelineStepLog(run_id=run_id, name=name, status="OK")
             t0 = time.time()
             try:
-                rows = fn(db)
-                log.rows = int(rows or 0)
-                log.message = f"{name} 完成"
-                steps_ok += 1
+                _STEP_STATS.pop(name, None)
+                rows = int(fn(db) or 0)
+                log.rows = rows
+                # 步骤上报的细粒度统计（限流/失败明细）
+                st = _STEP_STATS.pop(name, None)
+                errs = (st or {}).get("errors") or []
+                if errs:
+                    uniq = sorted(set(errs))
+                    log.message = f"{rows} 行 · {len(errs)} 处失败：" + "；".join(uniq[:2])
+                    if rows == 0:
+                        # 什么都没干成 —— 不能算成功
+                        log.status = "FAIL"
+                        steps_fail += 1
+                        first_error = first_error or uniq[0]
+                    else:
+                        log.status = "WARN"
+                        steps_ok += 1
+                else:
+                    extra = ""
+                    if st and st.get("skipped_all_fresh"):
+                        extra = "（数据已最新，无需补）"
+                    elif st and st.get("need_dates"):
+                        extra = f"（补 {len(st['need_dates'])} 个交易日）"
+                    log.message = f"{name} 完成 {rows} 行{extra}"
+                    steps_ok += 1
             except Exception as e:  # noqa: BLE001
                 log.status = "FAIL"
                 log.message = f"{type(e).__name__}: {e} {traceback.format_exc()[-300:]}"
