@@ -250,9 +250,20 @@ def data_flow():
     from app.services.dataflow_svc import dataflow_report
 
     return dataflow_report(SessionLocal())
+
+
+@router.get("/data-health")
 def data_health():
     """数据健康度：采集/处理/应用三层评分 + 告警列表。"""
     return health_report()
+
+
+@router.get("/assets")
+def assets(force: bool = False):
+    """数据资产清单：每张表的行数 / 覆盖标的 / 起止日期 / 滞后交易日 / 新鲜度状态。"""
+    from app.services.assets_svc import assets_report
+
+    return assets_report(SessionLocal(), force=force)
 
 
 @router.get("/status")
