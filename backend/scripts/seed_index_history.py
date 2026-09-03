@@ -8,7 +8,10 @@
 
 本脚本的做法
 ------------
-1. 借助 tushare `index_weight` 拿到回测区间每个月的指数成分股成员资格快照；
+1. 用 `membership_store.get_membership` 拿到区间内每个月的指数成分快照
+   （**库优先**：`index_membership` 表已按月落库 2020-01 起；缺失月份自动走
+   csindex/sina 在线兜底。切勿改回直连 tushare `index_weight` —— 该接口需较高
+   积分，个人 token 已无权限，会静默返回空导致 union 为空、什么都补不了）；
 2. 取窗口内『曾经入选过的全部标的』并集（含已退出者）；
 3. 逐只补齐其日K线（DB 已有则跳过），写入 `kline_daily`。
 
@@ -32,13 +35,18 @@ import time
 from datetime import date, timedelta
 
 from app.database import SessionLocal, init_db
-from app.services import data_source, ingestion
+from app.services import data_source, ingestion, membership_store
 
 
 def backfill(index_code: str, start: date, end: date, adj: str = "qfq",
              sleep_s: float = 0.08, dry_run: bool = False) -> dict:
     print(f"\n=== 指数 {index_code}：{'[dry-run] ' if dry_run else ''}历史成员日K回填 ===")
-    membership = data_source.get_index_membership(index_code, start, end)
+    # PIT 快照：库优先 + 缺失月自动在线兜底（csindex/sina）
+    db = SessionLocal()
+    try:
+        membership = membership_store.get_membership(db, index_code, start, end)
+    finally:
+        db.close()
     union: set = set()
     for _ds, sset in membership:
         union |= sset

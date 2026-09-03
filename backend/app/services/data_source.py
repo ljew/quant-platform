@@ -12,12 +12,15 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 import shutil
 import subprocess
 from datetime import date, datetime, timedelta
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # ============ akshare 探测 ============
 _AKSHARE_AVAILABLE = None
@@ -541,56 +544,38 @@ _MEMBERSHIP_CACHE: dict = {}
 
 
 def get_index_membership(index_code: str, sd: date, ed: date) -> list[tuple[str, set]]:
-    """指数成分股的『时点(point-in-time)』成员资格。
+    """指数成分股的『时点(point-in-time)』成员资格（**已迁移**，勿再直连 tushare）。
 
     返回按交易日升序的快照列表 ``[(trade_date_str, {symbol,...}), ...]``。
     每个快照是截至该交易日指数实际包含的成分股集合——回测时应在每个调仓日
     取「≤ 该日期的最新快照」作为合法股票池，从而消除『用当前成分股回测整段
     历史』带来的前视/幸存者偏差。
 
-    数据来自 tushare ``index_weight``（按自然月拉取，取每月最后一个交易日的权重
-    快照）。免费 token 亦可回溯至 2019 年。
+    实现（2026-09 起）：委托 ``membership_store.get_membership`` —— **先读
+    index_membership 落库快照**（2020-01 起按月齐全），缺失月份才走 csindex/
+    sina 在线兜底。历史背景：本函数原直连 tushare ``index_weight`` 在线拉取，
+    但该接口需较高积分，个人 token 已无权限会静默返回空，故整体收敛到
+    membership_store（库优先 + 免费源兜底），彻底不再依赖 tushare 权限。
     """
     key = (index_code, sd.isoformat(), ed.isoformat())
     if key in _MEMBERSHIP_CACHE:
         return _MEMBERSHIP_CACHE[key]
-    pro = _require_tushare_pro()
-    ts_code = f"{index_code}.SH"
-    snaps: dict[str, set] = {}
+    from app.database import SessionLocal
+    from app.services.membership_store import get_membership as _gm
 
-    y, m = sd.year, sd.month
-    end_y, end_m = ed.year, ed.month
-    while True:
-        if m == 12:
-            ny, nm = y + 1, 1
-        else:
-            ny, nm = y, m + 1
-        month_end = date(ny, nm, 1) - timedelta(days=1)
-        ms = date(y, m, 1)
-        me = min(month_end, ed)
-        try:
-            df = pro.index_weight(
-                index_code=ts_code,
-                start_date=ms.strftime("%Y%m%d"),
-                end_date=me.strftime("%Y%m%d"),
-            )
-        except Exception:
-            df = None
-        if df is not None and not df.empty and "trade_date" in df.columns:
-            latest = str(df["trade_date"].max())
-            sub = df[df["trade_date"] == latest]
-            s: set = set()
-            for _, row in sub.iterrows():
-                code = str(row["con_code"]).split(".")[0]
-                sym, _ = normalize_symbol(code)
-                s.add(sym)
-            if s:
-                snaps[latest] = s
-        if (y, m) == (end_y, end_m):
-            break
-        y, m = ny, nm
-
-    ordered = sorted(snaps.items())
+    try:
+        with SessionLocal() as db:
+            ordered = sorted(_gm(db, index_code, sd, ed))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("指数 %s 成分快照获取异常（%s）", index_code, e)
+        ordered = []
+    if not ordered:
+        # 库内缺失 + 在线兜底均不可用（如历史月份无免费源）——必须响一声，不能静默
+        logger.warning(
+            "指数 %s 在 %s~%s 无任何成分快照（库内缺失且在线兜底不可用）；"
+            "可运行 `python scripts/seed_membership.py --index %s` 检查可拉取的月份",
+            index_code, sd, ed, index_code,
+        )
     _MEMBERSHIP_CACHE[key] = ordered
     return ordered
 
