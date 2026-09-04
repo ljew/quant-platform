@@ -4,7 +4,7 @@
 """
 from __future__ import annotations
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.config import settings
@@ -21,6 +21,26 @@ engine = create_engine(
     connect_args=connect_args,
     pool_pre_ping=True,
 )
+
+if settings.is_sqlite:
+
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, _connection_record):
+        """SQLite 多进程并发加固：WAL + busy_timeout。
+
+        血泪教训（2026-09-04）：journal_mode=delete 时写事务持 EXCLUSIVE 锁会阻塞
+        **所有读**。大回填（seed_index_history 写 385 万行等）期间前端查库请求
+        全部卡在 busy_timeout 排队上，SQLAlchemy 连接池被占满 → 后端"半死"：
+        非库接口(实时行情)正常、一切查库接口超时，只能重启恢复。WAL 让读写并发
+        （写不再阻塞读），从根上消除该问题；synchronous=NORMAL 是 WAL 推荐档。
+        注意：WAL 为库文件级持久设置，首连生效后所有进程（含直连 sqlite3 脚本）
+        均按 WAL 运行。
+        """
+        cur = dbapi_connection.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA synchronous=NORMAL")
+        cur.execute("PRAGMA busy_timeout=30000")
+        cur.close()
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
