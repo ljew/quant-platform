@@ -411,8 +411,66 @@ def _get_kline_westock(symbol: str, limit: int) -> list[dict]:
     return out
 
 
+# ============ 实时行情 ============
+_TX_QUOTE_URL = "https://qt.gtimg.cn/q="
+
+
+def _tx_spot_quotes(symbols: list[str]) -> list[dict]:
+    """腾讯实时行情兜底（qt.gtimg.cn）：个股与指数通用，沙箱网络可达，无频率限制。
+
+    返回与 symbols 同序的 {symbol,name,price,change_pct}；任一异常返回 []。
+    返回行 v_sh600519="1~贵州茅台~600519~现价~昨收~…~…~涨跌幅%"（~分隔，~88 字段）。
+    """
+    import requests
+
+    if not symbols:
+        return []
+    out: dict[str, dict] = {}
+    try:
+        for i in range(0, len(symbols), 50):  # 腾讯单次支持多代码，分批保险
+            batch = symbols[i:i + 50]
+            r = requests.get(_TX_QUOTE_URL + ",".join(batch), timeout=8)
+            r.encoding = "gbk"
+            for line in r.text.strip().split(";"):
+                line = line.strip()
+                if not line or "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                sym = key[2:]  # v_sh600519 -> sh600519
+                if not sym.startswith(("sh", "sz")):
+                    continue
+                f = val.strip().strip('"').split("~")
+                if len(f) < 33 or not f[1]:
+                    continue
+                try:
+                    price = float(f[3])
+                except ValueError:
+                    price = 0.0
+                chg: float | None = None
+                if f[32].strip():
+                    try:
+                        chg = float(f[32])
+                    except ValueError:
+                        pass
+                if chg is None and price > 0:  # 涨跌幅字段缺失 → 用昨收反算
+                    try:
+                        prev = float(f[4])
+                        if prev > 0:
+                            chg = (price - prev) / prev * 100
+                    except ValueError:
+                        pass
+                name = f[1].replace(" ", "")  # 腾讯名称可能含对齐空格（如"五 粮 液"）
+                out[sym] = {"symbol": sym, "name": name, "price": price,
+                            "change_pct": chg}
+    except Exception:  # noqa: BLE001
+        return []
+    return [out[s] for s in symbols if s in out]
+
+
 def get_spot_quotes(symbols: list[str] | None = None) -> list[dict]:
-    """实时行情快照。优先 akshare（东方财富），回退 westock CLI。"""
+    """实时行情快照。a) akshare 东财全市场（仅 A 股，指数会过滤为空不视为成功）
+    b) 腾讯实时兜底（个股/指数通用，沙箱可达）c) westock CLI 末位逐只兜底。"""
+    targets = symbols or ["sh600519", "sz300750", "sh601318", "sz000858", "sh600036"]
     if check_akshare():
         try:
             ak = _require_ak()
@@ -421,19 +479,25 @@ def get_spot_quotes(symbols: list[str] | None = None) -> list[dict]:
             if symbols:
                 wanted = {to_ak_code(s) for s in symbols}
                 rows = df[df["代码"].isin(wanted)]
-            return [
-                {
-                    "symbol": normalize_symbol(str(r["代码"]).zfill(6))[0],
-                    "name": r["名称"], "price": float(r["最新价"]),
-                    "change_pct": float(r["涨跌幅"]),
-                }
-                for _, r in rows.iterrows()
-            ]
+            if len(rows):
+                return [
+                    {
+                        "symbol": normalize_symbol(str(r["代码"]).zfill(6))[0],
+                        "name": r["名称"], "price": float(r["最新价"]),
+                        "change_pct": float(r["涨跌幅"]),
+                    }
+                    for _, r in rows.iterrows()
+                ]
         except Exception:
             pass
-    # westock 兜底：取个股实时截面
+    try:
+        qs = _tx_spot_quotes(targets)
+        if qs:
+            return qs
+    except Exception:  # noqa: BLE001
+        pass
+    # westock 末位兜底：取个股实时截面
     out = []
-    targets = symbols or ["sh600519", "sz300750", "sh601318", "sz000858", "sh600036"]
     for sym in targets:
         try:
             text = _run_westock(["quote", sym])
@@ -482,7 +546,16 @@ def get_realtime_prices(symbols: list[str]) -> list:
                             "price": price, "change_pct": float(r.get("change_percent", 0))}
         except Exception:
             continue
-    # 2) 仍缺失 → akshare 全市场快照（一次拉全量，整体缓存放回）
+    # 2) 腾讯批量兜底（个股/指数通用，快）
+    missing = [s for s in symbols if s not in out]
+    if missing:
+        try:
+            for q in _tx_spot_quotes(missing):
+                if q.get("price"):
+                    out[q["symbol"]] = q
+        except Exception:  # noqa: BLE001
+            pass
+    # 3) 仍缺失 → akshare 全市场快照（一次拉全量，整体缓存放回）
     missing = [s for s in symbols if s not in out]
     if missing and check_akshare():
         try:
