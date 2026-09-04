@@ -64,8 +64,8 @@ def _ts_code(index_code: str) -> str:
 def _fetch_tushare(index_code: str, ms: date, me: date) -> tuple[str, set] | None:
     """在线拉取某自然月的成分快照（tushare index_weight 最后一个交易日）。
 
-    注意：index_weight 属于高权限接口（需较高积分）。2026-09 实测个人账户已
-    无访问权限，因此本函数失败属正常，由后续兜底源接手。
+    注意：index_weight 属高权限接口（需较高积分）。账户积分不足时 tushare 会
+    报错/返回空，本函数返回 None 属正常，由后续兜底源接手（csindex/sina）。
     """
     from app.services import data_source
 

@@ -9,9 +9,10 @@
 本脚本的做法
 ------------
 1. 用 `membership_store.get_membership` 拿到区间内每个月的指数成分快照
-   （**库优先**：`index_membership` 表已按月落库 2020-01 起；缺失月份自动走
-   csindex/sina 在线兜底。切勿改回直连 tushare `index_weight` —— 该接口需较高
-   积分，个人 token 已无权限，会静默返回空导致 union 为空、什么都补不了）；
+   （**库优先**：`index_membership` 表已按月落库；缺失月份自动在线兜底
+   —— 2026-09 起 tushare 积分到位，`index_weight` 可回溯历史，兜底顺序为
+   tushare → csindex → sina。请勿在业务代码里直连 tushare `index_weight`：
+   统一走 membership_store 才能保证「落库缓存 + 结果可复现 + 缺月自动补」）；
 2. 取窗口内『曾经入选过的全部标的』并集（含已退出者）；
 3. 逐只补齐其日K线（DB 已有则跳过），写入 `kline_daily`。
 
