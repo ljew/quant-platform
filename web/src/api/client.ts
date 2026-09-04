@@ -40,6 +40,15 @@ export interface KlineBar {
   amount: number;
 }
 
+/** /market/stocks 返回的标的信息 */
+export interface StockItem {
+  symbol: string;
+  name: string;
+  market?: string;
+  industry?: string | null;
+  list_date?: string | null;
+}
+
 export interface BacktestResult {
   id: number;
   symbol: string;
@@ -72,6 +81,8 @@ export const api = {
   strategies: () => get<StrategyInfo[]>("/strategy/strategies"),
   kline: (symbol: string, start: string, end: string) =>
     get<KlineBar[]>(`/market/kline/${symbol}?start=${start}&end=${end}`),
+  stocks: (keyword: string, limit = 10) =>
+    get<StockItem[]>(`/market/stocks?keyword=${encodeURIComponent(keyword)}&limit=${limit}`),
   backtestSync: (payload: Record<string, unknown>) =>
     post<BacktestResult>("/strategy/backtest", payload),
   backtestAsync: (payload: Record<string, unknown>) =>
