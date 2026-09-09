@@ -3,6 +3,7 @@ import EChart from "../components/EChart";
 import { api, BacktestResult, StrategyInfo } from "../api/client";
 import { useTheme } from "../theme";
 import { Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
+import { signalLabel } from "../signalLabel";
 
 /** 策略回测（React 版：异步任务 + WebSocket 进度 + 动态参数表单 + 历史列表 + 成交标记）。 */
 export default function BacktestPage() {
@@ -107,7 +108,7 @@ export default function BacktestPage() {
     const buys = trades.filter((t) => t.side === "BUY" && dateIndex.has(t.trade_date));
     const sells = trades.filter((t) => t.side === "SELL" && dateIndex.has(t.trade_date));
     const pts = (list: typeof trades) =>
-      list.map((t) => [dateIndex.get(t.trade_date), curve[dateIndex.get(t.trade_date)!].equity, t.signal_type || ""]);
+      list.map((t) => [dateIndex.get(t.trade_date), curve[dateIndex.get(t.trade_date)!].equity, signalLabel(t.signal_type, "")]);
     return {
       tooltip: { trigger: "axis" },
       legend: { data: ["组合净值", "买入", "卖出"], top: 0 },

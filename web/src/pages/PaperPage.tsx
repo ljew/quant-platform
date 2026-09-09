@@ -3,6 +3,7 @@ import EChart from "../components/EChart";
 import { api, PaperDetail, PaperTask, StrategyInfo } from "../api/client";
 import { useTheme } from "../theme";
 import { PageHeader } from "../components/ui";
+import { signalLabel } from "../signalLabel";
 
 /** 模拟盘（任务列表 + 创建 + 详情：净值曲线/成交）。 */
 export default function PaperPage() {
@@ -217,7 +218,7 @@ function DetailPanel({ detail }: { detail: PaperDetail }) {
                   <td style={{ color: t.side === "BUY" ? colors.up : colors.down }}>{t.side === "BUY" ? "买入" : "卖出"}</td>
                   <td>{t.price}</td>
                   <td>{t.shares}</td>
-                  <td>{t.signal_type || "—"}</td>
+                  <td>{signalLabel(t.signal_type)}</td>
                 </tr>
               ))}
             </tbody>

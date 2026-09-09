@@ -16,6 +16,7 @@ from app.core.strategies.momentum import MomentumStrategy
 from app.core.strategies.rsi_reversal import RSIReversalStrategy
 from app.core.strategies.bollinger import BollingerStrategy
 from app.core.strategies.turtle import TurtleStrategy
+from app.core.strategies.turtle_classic import TurtleClassicStrategy
 from app.core.strategies.ma_alignment import MAAlignmentStrategy
 from app.core.strategies.macd_boll import MacdBollStrategy
 from app.core.strategies.csi800_enhanced import Csi800EnhancedStrategy
@@ -97,6 +98,24 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
         "param_schema": [
             _int("entry", "入场通道(日)", 20, 5, 120, 1),
             _int("exit", "离场通道(日)", 10, 3, 60, 1),
+        ],
+    },
+    "turtle_classic": {
+        "key": "turtle_classic",
+        "name": "经典海龟交易法(ATR仓位)",
+        "description": "完整海龟四要素：唐奇安通道突破入场 + ATR(N)波动率定仓位 + 金字塔加仓(最多4单元) + 2N硬止损 / 10日通道离场。与简化版『唐奇安通道突破(海龟)』的区别：不一次性满仓，而是按波动率做风险等权——N 大(波动高)则仓位小、N 小则仓位大，并在趋势延续时每 0.5N 加一个单元。震荡市靠 2N 止损控制回撤，趋势市逐步加满。",
+        "cls": TurtleClassicStrategy,
+        "default_params": {"entry": 20, "exit": 10, "atr_period": 20, "risk_pct": 0.01,
+                           "max_units": 4, "add_step": 0.5, "stop_n": 2.0, "use_exit_channel": 1},
+        "param_schema": [
+            _int("entry", "入场通道(日)", 20, 5, 120, 1),
+            _int("exit", "离场通道(日)", 10, 3, 60, 1),
+            _int("atr_period", "N(ATR周期,日)", 20, 5, 60, 1),
+            _float("risk_pct", "单单元风险占比", 0.01, 0.002, 0.05, 0.001),
+            _int("max_units", "最大单元数", 4, 1, 6),
+            _float("add_step", "加仓间隔(N倍)", 0.5, 0.25, 2.0, 0.25),
+            _float("stop_n", "止损幅度(N倍)", 2.0, 1.0, 4.0, 0.5),
+            _int("use_exit_channel", "启用通道离场(1/0)", 1, 0, 1),
         ],
     },
     "ma_alignment": {
