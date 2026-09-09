@@ -212,18 +212,31 @@ def _recent_coverage(db, days: int = 12) -> dict:
         return {"days": pts, "median": 0, "peak": 0, "partial_count": 0}
     counts = sorted(p["symbols"] for p in pts)
     median = counts[len(counts) // 2]
-    # 基准用「近期最高覆盖」而非中位数：若断供多日，残缺样本会占多数并拉低中位数，
-    # 导致残缺日被误判为正常（例如连续 5 天只抓到 80 只时中位数也是 80）。
     peak = counts[-1]
+    # 基准 = 「日常批次的常态覆盖数」，不能直接用峰值：
+    #   历史回填批次会一次性写入含退市/换血股的全量成分（如 2821 只），而日常增量
+    #   只更新当前核心池（如 1803 只）—— 用峰值当基准会把结构性的正常差异误判成
+    #   「6 个交易日数据残缺」，页面天天红、一键修复也永远修不好。
+    # 也不能用中位数：断供多日时残缺样本占多数，会把中位数拉低导致漏报。
+    # 取「出现频次最高的覆盖数」为常态值，并用 peak*0.5 兜底（防长期断供时众数本身
+    # 就是残缺值）：
+    #   正常：mode=1803, peak=2821 → 基准 1803（1803 的日子不再误报）
+    #   少数几天断供：mode=1803 → 那几天的 80 只判残缺
+    #   长期断供：mode=80, peak=1803 → 基准 901，80 只仍判残缺
+    from collections import Counter
+
+    mode = Counter(counts).most_common(1)[0][0]
+    base_n = max(mode, int(peak * 0.5))
     # 今天盘中/收盘前的数据尚未发布，不算残缺，否则页面天天误报。
     pending_date = date.today().isoformat() if _today_is_pending() else None
     for p in pts:
         p["pending"] = p["date"] == pending_date
-        p["partial"] = (not p["pending"]) and peak > 0 and p["symbols"] < peak * 0.8
+        p["partial"] = (not p["pending"]) and base_n > 0 and p["symbols"] < base_n * 0.8
     return {
         "days": pts,
         "median": median,
         "peak": peak,
+        "normal": base_n,
         "partial_count": sum(1 for p in pts if p["partial"]),
         "pending_date": pending_date,
     }

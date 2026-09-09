@@ -41,6 +41,12 @@ const STEP_DESC: Record<string, string> = {
   sync_duckdb: "同步 SQLite → DuckDB 分析库（回测/研究读取）",
 };
 
+interface RepairState {
+  running: boolean; done: number; total: number; current: string | null;
+  ok: boolean | null; finished_at: string | null;
+  actions: { label: string; status?: string; message?: string; run_id?: number }[];
+}
+
 export default function DataPipelinePage() {
   const { colors } = useTheme();
   const [lin, setLin] = useState<LineageReport | null>(null);
@@ -55,6 +61,8 @@ export default function DataPipelinePage() {
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
     "行情": true, "因子": true, "文本": true, "元数据": false,
   });
+  const [repair, setRepair] = useState<RepairState | null>(null);
+  const [repairBusy, setRepairBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -79,11 +87,47 @@ export default function DataPipelinePage() {
     return () => clearInterval(t);
   }, [refresh]);
 
+  // 一键修复：只重跑「异常数据集」对应的管道步骤（增量补数，幂等）
+  const startRepair = useCallback(async (items: string[]) => {
+    setRepairBusy(true);
+    try {
+      const r = await fetch("/api/v1/monitor/reprocess", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items, include_warn: true }),
+      }).then((x) => x.json());
+      if (!r.ok) { window.alert(r.error || "无法启动修复"); return; }
+      setRepair({ running: true, done: 0, total: r.total || 1, current: null, ok: null, finished_at: null, actions: [] });
+    } catch (e) {
+      window.alert("修复请求失败: " + (e as Error).message);
+    } finally {
+      setRepairBusy(false);
+    }
+  }, []);
+
+  // 修复进行中：每 3s 拉进度；结束后强制刷新资产清单（绕过 120s 缓存）
+  useEffect(() => {
+    if (!repair?.running) return;
+    const t = setInterval(async () => {
+      const st = await fetch("/api/v1/monitor/reprocess/status").then((x) => x.json()).catch(() => null);
+      if (!st) return;
+      setRepair(st as RepairState);
+      if (!st.running) {
+        setTimeout(() => {
+          fetch("/api/v1/monitor/assets?force=1").then((x) => x.json()).then(setAssets).catch(() => {});
+        }, 1500);
+      }
+    }, 3000);
+    return () => clearInterval(t);
+  }, [repair?.running]);
+
   if (!lin) {
     return <div style={{ padding: 24, color: colors.muted }}>加载数据管道视图…{error}</div>;
   }
 
   const sum = assets?.summary;
+  // 异常项数：warn/stale/empty 数据集 + 覆盖残缺的交易日
+  const nBad = sum ? (sum.n_stale || 0) + (sum.n_warn || 0) + (sum.n_empty || 0) + (sum.n_partial_days || 0) : 0;
 
   return (
     <div style={{ maxWidth: 1320, margin: "0 auto" }}>
@@ -155,7 +199,48 @@ export default function DataPipelinePage() {
                 最滞后：{sum.worst.label}（{fmtDate(sum.worst.latest)}，滞后 {sum.worst.lag} 个交易日）
               </span>
             )}
+            <button
+              onClick={() => startRepair([])}
+              disabled={repair?.running || repairBusy || nBad === 0}
+              title={nBad === 0
+                ? "当前没有异常数据集，无需修复"
+                : `重跑 ${nBad} 项异常数据对应的管道步骤（增量补数，幂等，不会重复写入）`}
+              style={{
+                padding: "5px 12px", borderRadius: 7, border: `1px solid ${colors.accent}`,
+                background: `${colors.accent}18`, color: colors.accent, fontSize: 12.5,
+                cursor: repair?.running ? "wait" : nBad === 0 ? "not-allowed" : "pointer",
+                opacity: repair?.running || nBad === 0 ? 0.55 : 1,
+              }}
+            >
+              {repair?.running ? `修复中 ${repair.done}/${repair.total}` : nBad > 0 ? `🔧 一键修复（${nBad} 项）` : "🔧 一键修复"}
+            </button>
           </div>
+
+          {/* 修复进度：当前动作 + 各步结果 */}
+          {repair && (repair.running || repair.finished_at) && (
+            <div style={{ marginTop: 9, padding: "8px 10px", borderRadius: 7, background: colors.tableStripe, fontSize: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
+                <b style={{ color: repair.ok === false ? colors.up : repair.ok ? colors.down : colors.accent }}>
+                  {repair.running ? "修复进行中" : repair.ok ? "修复完成" : "修复完成（有失败项）"}
+                </b>
+                <span style={{ color: colors.muted }}>{repair.done}/{repair.total} · {repair.current || "—"}</span>
+                {!repair.running && repair.finished_at && (
+                  <span style={{ color: colors.muted }}>{repair.finished_at.slice(11, 19)}</span>
+                )}
+              </div>
+              {repair.actions.length > 0 && (
+                <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 3 }}>
+                  {repair.actions.map((a, i) => (
+                    <div key={i} style={{ fontSize: 11.5, color: a.status === "FAIL" ? colors.up : a.status === "OK" ? colors.down : colors.muted }}>
+                      {a.status === "OK" ? "✅" : a.status === "FAIL" ? "❌" : a.status === "RUNNING" ? "⏳" : "·"} {a.label}
+                      {a.run_id ? ` （管道 #${a.run_id}）` : ""}
+                      {a.message ? ` — ${a.message.slice(0, 110)}` : ""}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* 近 12 日覆盖度：一眼看出哪天只抓到一部分股票 */}
           {assets?.coverage?.days?.length ? (
@@ -208,7 +293,7 @@ export default function DataPipelinePage() {
                     </thead>
                     <tbody>
                       {g.items.map((it) => (
-                        <AssetRow key={it.key} it={it} colors={colors} />
+                        <AssetRow key={it.key} it={it} colors={colors} onRepair={(k) => startRepair([k])} />
                       ))}
                     </tbody>
                   </table>
@@ -563,7 +648,7 @@ function CoverageStrip({ cov, colors }: { cov: CoverageBlock; colors: ThemeColor
 }
 
 /* ============ 资产清单单行 ============ */
-function AssetRow({ it, colors }: { it: AssetItem; colors: ThemeColors }) {
+function AssetRow({ it, colors, onRepair }: { it: AssetItem; colors: ThemeColors; onRepair?: (key: string) => void }) {
   const tone = statusColor(it.status, colors);
   const meta = STATUS_META[it.status] || STATUS_META.warn;
   // 新鲜度条：以 max_lag*3 为满格基准
@@ -607,6 +692,19 @@ function AssetRow({ it, colors }: { it: AssetItem; colors: ThemeColors }) {
           {it.lag_calendar_days !== null ? `自然日 ${it.lag_calendar_days} 天 · ` : ""}
           {meta.text}
         </div>
+        {it.status !== "ok" && onRepair && (
+          <button
+            onClick={() => onRepair(it.key)}
+            style={{
+              marginTop: 5, padding: "2px 9px", fontSize: 11, borderRadius: 5,
+              border: `1px solid ${colors.accent}`, background: "transparent",
+              color: colors.accent, cursor: "pointer",
+            }}
+            title="只重跑该数据集对应的管道步骤"
+          >
+            修复
+          </button>
+        )}
       </td>
     </tr>
   );
