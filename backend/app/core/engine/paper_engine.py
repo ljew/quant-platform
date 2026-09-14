@@ -50,11 +50,15 @@ def _load_single(db, task: PaperTask) -> dict:
     if len(bars) < 30:
         raise ValueError(f"{sym} 历史日K不足({len(bars)}根)，无法预热指标")
 
-    # 用实时价覆盖最后一根 bar（非交易时段实时价可能取不到，则保留最近收盘）
-    q = get_realtime_prices([sym])[0]
-    if q and q.get("price", 0) > 0:
-        bars[-1] = {**bars[-1], "open": q["price"], "high": q["price"],
-                    "low": q["price"], "close": q["price"]}
+    # ⚠️ 盘中未收盘的 bar 不参与信号计算：调度器每 30s 跑一次，若用实时价/未收盘 bar 算信号，
+    # 收盘后正式数据到位会导致信号漂移，同一笔仓位被重复买卖（2026-09-11 task#3 重复卖出事故）。
+    # 做法：未收盘时把当日 bar 摘出来，只用它做估值；信号与成交一律基于「已收盘」的最后一根 bar。
+    today_iso = end.isoformat()
+    now = datetime.now()
+    market_closed = (now.hour * 60 + now.minute) >= 15 * 60 + 5  # 15:05 后视为当日收盘
+    pending_bar = None
+    if bars and bars[-1]["date"] >= today_iso and not market_closed:
+        pending_bar = bars.pop()
 
     engine = BacktestEngine(
         bars, initial_cash=task.initial_cash, commission=task.commission,
@@ -62,18 +66,32 @@ def _load_single(db, task: PaperTask) -> dict:
     )
     engine.run(meta["cls"], params)
 
-    last_date = bars[-1]["date"]
+    last_date = bars[-1]["date"]  # 已收盘的最后一根 bar 日期（成交截止日）
     new_trades = _incremental_trades(engine.trades, task.last_bar_date, last_date, task.start_date)
     positions = (
         {sym: {"shares": round(engine.shares, 2), "cost": round(engine.avg_cost, 4)}}
         if engine.shares > 0 else {}
     )
+    # 实时价仅用于估值展示（不产生成交）：优先取实时报价，其次用未收盘 bar 的价
+    live_price = 0.0
+    q = get_realtime_prices([sym])[0]
+    if q and q.get("price", 0) > 0:
+        live_price = float(q["price"])
+    elif pending_bar:
+        live_price = float(pending_bar.get("close") or 0)
+    equity = engine.equity_curve[-1].equity
+    if live_price > 0 and engine.shares > 0:
+        equity = round(engine.cash + engine.shares * live_price, 2)
+
     account_start = task.start_date or task.account_start or last_date
     curve = [{"date": e.date, "equity": e.equity}
              for e in engine.equity_curve if e.date >= account_start]
+    # 盘中把「当前实时估值」作为曲线最后一点，前端能看到实时净值
+    if pending_bar and live_price > 0:
+        curve = curve + [{"date": pending_bar["date"], "equity": equity}]
     return {
         "symbol": sym, "last_bar_date": last_date, "account_start": account_start,
-        "equity": engine.equity_curve[-1].equity, "cash": engine.cash,
+        "equity": equity, "cash": engine.cash,
         "positions": positions, "new_trades": new_trades, "curve": curve,
     }
 
@@ -204,28 +222,54 @@ def run_paper_task(db, task: PaperTask) -> dict:
         else:
             r = _load_single(db, task)
 
-        # 1) 写入增量成交
+        # 1) 写入增量成交（幂等：同 任务/日期/标的/方向/数量 已存在则跳过，防重复成交）
         for t in r["new_trades"]:
+            t_sym = getattr(t, "symbol", r.get("symbol", ""))
+            dup = db.execute(
+                select(PaperTrade.id).where(
+                    PaperTrade.task_id == task.id,
+                    PaperTrade.date == t.date,
+                    PaperTrade.symbol == t_sym,
+                    PaperTrade.side == t.side,
+                    PaperTrade.shares == round(t.shares, 2),
+                )
+            ).first()
+            if dup:
+                continue
             db.add(PaperTrade(
                 task_id=task.id, date=t.date,
-                symbol=getattr(t, "symbol", r.get("symbol", "")),
+                symbol=t_sym,
                 side=t.side, price=round(t.price, 4), shares=round(t.shares, 2),
                 cash_after=round(t.cash_after, 2), commission=round(t.commission, 2),
                 pnl=round(getattr(t, "pnl", 0.0), 2),
                 signal_type=getattr(t, "signal_type", ""),
                 signal_reason=getattr(t, "signal_reason", ""),
             ))
-        # 2) 写入净值快照
+        # 2) 写入净值快照（同一交易日 upsert：盘中每 30s 跑一次，不能每轮塞一条快照）
         equity = r["equity"]
         mkt_val = equity - r["cash"]
         pnl = equity - task.initial_cash
         pnl_pct = pnl / task.initial_cash if task.initial_cash else 0.0
-        db.add(PaperSnapshot(
-            task_id=task.id, date=r["last_bar_date"], equity=round(equity, 2),
-            cash=round(r["cash"], 2), market_value=round(mkt_val, 2),
-            pnl=round(pnl, 2), pnl_pct=round(pnl_pct, 6),
-            positions_json=json.dumps(r.get("positions", {}), ensure_ascii=False),
-        ))
+        snap = db.execute(
+            select(PaperSnapshot).where(
+                PaperSnapshot.task_id == task.id,
+                PaperSnapshot.date == r["last_bar_date"],
+            )
+        ).scalars().first()
+        if snap:
+            snap.equity = round(equity, 2)
+            snap.cash = round(r["cash"], 2)
+            snap.market_value = round(mkt_val, 2)
+            snap.pnl = round(pnl, 2)
+            snap.pnl_pct = round(pnl_pct, 6)
+            snap.positions_json = json.dumps(r.get("positions", {}), ensure_ascii=False)
+        else:
+            db.add(PaperSnapshot(
+                task_id=task.id, date=r["last_bar_date"], equity=round(equity, 2),
+                cash=round(r["cash"], 2), market_value=round(mkt_val, 2),
+                pnl=round(pnl, 2), pnl_pct=round(pnl_pct, 6),
+                positions_json=json.dumps(r.get("positions", {}), ensure_ascii=False),
+            ))
         # 3) 更新任务状态
         task.last_bar_date = r["last_bar_date"]
         task.last_run_at = datetime.utcnow()

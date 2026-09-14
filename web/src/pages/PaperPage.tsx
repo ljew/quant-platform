@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import EChart from "../components/EChart";
 import { api, PaperDetail, PaperTask, StrategyInfo } from "../api/client";
 import { useTheme } from "../theme";
@@ -191,6 +191,29 @@ function DetailPanel({ detail }: { detail: PaperDetail }) {
   };
   const trades = detail.trades || [];
   const limits = detail.risk_limits;
+  // 持仓按「纯数字代码」归并：后端偶尔混用 sh600519 / 600519 / 600519.SH，
+  // 直接渲染会出现同一只股票显示两行的「重复持仓」。
+  const positions = (() => {
+    const norm = (s: string) => s.replace(/^(sh|sz|bj)/i, "").replace(/\.(SH|SS|SZ|BJ)$/i, "");
+    const merged = new Map<string, { code: string; shares: number; cost: number }>();
+    for (const [sym, raw] of Object.entries(detail.positions || {})) {
+      const p = (raw || {}) as { shares?: number; cost?: number };
+      const shares = Number(p.shares || 0);
+      const cost = Number(p.cost || 0);
+      const key = norm(sym);
+      const prev = merged.get(key);
+      if (!prev) {
+        merged.set(key, { code: sym, shares, cost });
+      } else {
+        const total = prev.shares + shares;
+        prev.cost = total > 0 ? (prev.cost * prev.shares + cost * shares) / total : prev.cost;
+        prev.shares = total;
+      }
+    }
+    return [...merged.values()].filter((p) => p.shares > 0);
+  })();
+  const tbl: CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: 12.5, whiteSpace: "nowrap" };
+  const scrollX: CSSProperties = { overflowX: "auto" };
   return (
     <div style={{ marginTop: 20, background: colors.card, borderRadius: 10, padding: 16, border: `1px solid ${colors.border}` }}>
       <div style={{ fontWeight: 700, marginBottom: 12 }}>模拟盘 #{detail.id} 详情</div>
@@ -203,26 +226,50 @@ function DetailPanel({ detail }: { detail: PaperDetail }) {
         )}
       </div>
       {curve.length > 0 && <EChart option={option as never} height={340} />}
-      {trades.length > 0 && (
-        <div style={{ marginTop: 14 }}>
-          <h4 style={{ margin: "0 0 8px", fontSize: 14 }}>最近成交</h4>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+      <div style={{ marginTop: 14 }}>
+        <h4 style={{ margin: "0 0 8px", fontSize: 14 }}>当前持仓（{positions.length} 只）</h4>
+        <div style={scrollX}>
+          <table style={tbl}>
             <thead><tr style={{ color: colors.muted, textAlign: "left" }}>
-              <th style={{ padding: "5px 8px" }}>日期</th><th>标的</th><th>方向</th><th>价格</th><th>数量</th><th>信号</th>
+              <th style={{ padding: "5px 8px" }}>标的</th><th>股数</th><th>成本价</th><th>成本市值</th>
             </tr></thead>
             <tbody>
-              {trades.slice(-15).reverse().map((t, i) => (
-                <tr key={i} style={{ borderTop: `1px solid ${colors.border}` }}>
-                  <td style={{ padding: "5px 8px" }}>{(t as { date?: string }).date ? (t as { date?: string }).date : t.trade_date}</td>
-                  <td>{t.symbol}</td>
-                  <td style={{ color: t.side === "BUY" ? colors.up : colors.down }}>{t.side === "BUY" ? "买入" : "卖出"}</td>
-                  <td>{t.price}</td>
-                  <td>{t.shares}</td>
-                  <td>{signalLabel(t.signal_type)}</td>
+              {positions.length ? positions.map((p) => (
+                <tr key={p.code} style={{ borderTop: `1px solid ${colors.border}` }}>
+                  <td style={{ padding: "5px 8px" }}>{p.code}</td>
+                  <td>{Math.round(p.shares).toLocaleString()}</td>
+                  <td>{p.cost.toFixed(2)}</td>
+                  <td>{Math.round(p.shares * p.cost).toLocaleString()}</td>
                 </tr>
-              ))}
+              )) : (
+                <tr><td colSpan={4} style={{ padding: "5px 8px", color: colors.muted }}>空仓</td></tr>
+              )}
             </tbody>
           </table>
+        </div>
+      </div>
+      {trades.length > 0 && (
+        <div style={{ marginTop: 14 }}>
+          <h4 style={{ margin: "0 0 8px", fontSize: 14 }}>最近成交（共 {trades.length} 笔）</h4>
+          <div style={scrollX}>
+            <table style={tbl}>
+              <thead><tr style={{ color: colors.muted, textAlign: "left" }}>
+                <th style={{ padding: "5px 8px" }}>日期</th><th>标的</th><th>方向</th><th>价格</th><th>数量</th><th>信号</th>
+              </tr></thead>
+              <tbody>
+                {trades.slice(-15).reverse().map((t, i) => (
+                  <tr key={i} style={{ borderTop: `1px solid ${colors.border}` }}>
+                    <td style={{ padding: "5px 8px" }}>{(t as { date?: string }).date ? (t as { date?: string }).date : t.trade_date}</td>
+                    <td>{t.symbol}</td>
+                    <td style={{ color: t.side === "BUY" ? colors.up : colors.down }}>{t.side === "BUY" ? "买入" : "卖出"}</td>
+                    <td>{t.price}</td>
+                    <td>{t.shares}</td>
+                    <td>{signalLabel(t.signal_type)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
       {detail.error_msg && <div style={{ color: colors.up, marginTop: 8 }}>{detail.error_msg}</div>}
