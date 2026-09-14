@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import EChart from "../components/EChart";
-import { api, KlineBar } from "../api/client";
+import { api, KlineBar, StockItem } from "../api/client";
 import { useTheme } from "../theme";
 import { Card, PageHeader } from "../components/ui";
 
@@ -36,6 +36,44 @@ export default function MarketPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const { colors } = useTheme();
+
+  // —— 股票搜索（代码 / 简称 / 名称，防抖 250ms）——
+  const [kw, setKw] = useState("");
+  const [hits, setHits] = useState<StockItem[]>([]);
+  const [searching, setSearching] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  const pick = useCallback((sym: string) => {
+    setSymbol(sym);
+    setKw("");
+    setHits([]);
+  }, []);
+
+  useEffect(() => {
+    const q = kw.trim();
+    if (!q) { setHits([]); return; }
+    const t = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const r = await api.stocks(q, 8);
+        setHits(r);
+      } catch {
+        setHits([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [kw]);
+
+  // 点击外部关闭下拉
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setHits([]);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
 
   const load = useCallback(async (sym: string) => {
     setLoading(true);
@@ -119,7 +157,54 @@ export default function MarketPage() {
     <div style={{ maxWidth: 1280, margin: "0 auto" }}>
       <PageHeader title="行情看板" desc="K线 + 成交量 + MACD 三图联动 · 缩放与十字光标跨图同步"
         actions={
-          <div style={{ display: "flex", gap: 6, background: colors.card, borderRadius: 999, padding: 4, border: `1px solid ${colors.border}` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            {/* 股票搜索：代码 / 简称 / 名称 */}
+            <div ref={boxRef} style={{ position: "relative" }}>
+              <input
+                value={kw}
+                onChange={(e) => setKw(e.target.value)}
+                placeholder="搜股票：代码 / 简称 / 名称"
+                spellCheck={false}
+                style={{
+                  width: 230, padding: "7px 12px", borderRadius: 999, border: `1px solid ${colors.border}`,
+                  background: colors.card, color: colors.text, fontSize: 13, outline: "none",
+                }}
+              />
+              {kw.trim() !== "" && (
+                <div
+                  style={{
+                    position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, zIndex: 30,
+                    background: colors.card, border: `1px solid ${colors.border}`, borderRadius: 12,
+                    boxShadow: "0 8px 24px rgba(0,0,0,.12)", overflow: "hidden", maxHeight: 320, overflowY: "auto",
+                  }}
+                >
+                  {searching && hits.length === 0 && (
+                    <div style={{ padding: "10px 14px", fontSize: 12.5, color: colors.muted }}>搜索中…</div>
+                  )}
+                  {!searching && hits.length === 0 && (
+                    <div style={{ padding: "10px 14px", fontSize: 12.5, color: colors.muted }}>无匹配（试试 600519 / 茅台 / 招行）</div>
+                  )}
+                  {hits.map((h) => (
+                    <button
+                      key={h.symbol}
+                      onClick={() => pick(h.symbol)}
+                      style={{
+                        display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%",
+                        padding: "8px 14px", border: 0, borderBottom: `1px solid ${colors.border}`, cursor: "pointer",
+                        background: "transparent", color: colors.text, fontSize: 13, textAlign: "left",
+                      }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = colors.accent; e.currentTarget.style.color = "#fff"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = colors.text; }}
+                    >
+                      <span style={{ fontWeight: 600 }}>{h.name}</span>
+                      <span style={{ color: colors.muted, fontSize: 12 }}>{h.symbol.replace(/^(sh|sz|bj)/, "")}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {/* 快捷切换 */}
+            <div style={{ display: "flex", gap: 6, background: colors.card, borderRadius: 999, padding: 4, border: `1px solid ${colors.border}` }}>
             {SYMBOLS.map((s) => (
               <button
                 key={s}
@@ -140,6 +225,7 @@ export default function MarketPage() {
                 {s}
               </button>
             ))}
+            </div>
           </div>
         }
       />

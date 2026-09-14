@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.config import settings
+from app.config import settings, BASE_DIR
 from app.database import init_db
 from app.routers import data, market, strategy, paper, hedge, live, monitor, factor
 from app.schemas import HealthResponse
@@ -38,9 +38,10 @@ def on_startup():
     init_db()
     from app.core.engine.paper_scheduler import start_paper_scheduler
     start_paper_scheduler()
-    # 数据管道调度（QUANT_DATA_SCHEDULE=1 启用：每交易日 15:30 自动日更）
+    # 数据管道调度（settings.data_schedule ← .env/环境 QUANT_DATA_SCHEDULE=1：
+    # 每交易日 19:00 ETL 自动日更 + 断供自愈 + 指数成分(PIT)月度快照自动刷新）
     from app.core.data_scheduler import start_data_scheduler
-    start_data_scheduler()
+    start_data_scheduler(settings.data_schedule)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["meta"])
@@ -54,7 +55,11 @@ def health():
     )
 
 
-# —— 前端原型页面托管（Phase 1 用，生产替换为 Vite 构建产物）——
-_frontend = settings.frontend_dir
-if os.path.isdir(_frontend) and os.path.exists(os.path.join(_frontend, "index.html")):
-    app.mount("/", StaticFiles(directory=_frontend, html=True), name="frontend")
+# —— 前端静态页面托管 ——
+# 默认 Vite React 完整平台（web/dist，QUANT·DESK 左侧导航）；
+# 构建产物缺失时退回 Phase1 原生 HTML 原型目录（frontend/）。
+_front_dir = settings.frontend_dir
+if not (os.path.isdir(_front_dir) and os.path.exists(os.path.join(_front_dir, "index.html"))):
+    _front_dir = str(BASE_DIR / "frontend")
+if os.path.isdir(_front_dir) and os.path.exists(os.path.join(_front_dir, "index.html")):
+    app.mount("/", StaticFiles(directory=_front_dir, html=True), name="frontend")

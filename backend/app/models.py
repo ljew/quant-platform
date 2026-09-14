@@ -509,6 +509,25 @@ class FactorMinedDaily(Base):
     value: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
+class AdjFactorDaily(Base):
+    """复权因子缓存表。
+
+    tushare adj_factor 接口限速极严（1 次/小时），无法逐股调用。
+    按 trade_date 批量拉取后缓存在此表，历史因子不再变化，一次入库永久复用。
+    """
+
+    __tablename__ = "adj_factor_daily"
+    __table_args__ = (
+        UniqueConstraint("symbol", "trade_date", name="uq_adj"),
+        Index("ix_adj_date", "trade_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(16))       # 平台格式 sh600000
+    trade_date: Mapped[date] = mapped_column(Date)
+    adj_factor: Mapped[float] = mapped_column(Float)
+
+
 class HealthRule(Base):
     """数据健康度检查规则（可配置）。"""
 

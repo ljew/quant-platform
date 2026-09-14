@@ -40,6 +40,15 @@ export interface KlineBar {
   amount: number;
 }
 
+/** /market/stocks 返回的标的信息 */
+export interface StockItem {
+  symbol: string;
+  name: string;
+  market?: string;
+  industry?: string | null;
+  list_date?: string | null;
+}
+
 export interface BacktestResult {
   id: number;
   symbol: string;
@@ -72,6 +81,8 @@ export const api = {
   strategies: () => get<StrategyInfo[]>("/strategy/strategies"),
   kline: (symbol: string, start: string, end: string) =>
     get<KlineBar[]>(`/market/kline/${symbol}?start=${start}&end=${end}`),
+  stocks: (keyword: string, limit = 10) =>
+    get<StockItem[]>(`/market/stocks?keyword=${encodeURIComponent(keyword)}&limit=${limit}`),
   backtestSync: (payload: Record<string, unknown>) =>
     post<BacktestResult>("/strategy/backtest", payload),
   backtestAsync: (payload: Record<string, unknown>) =>
@@ -120,6 +131,7 @@ export const api = {
   monitorHealth: () => get<HealthReport>(`/monitor/health-report`),
   monitorDataflow: () => get<DataflowReport>(`/monitor/dataflow`),
   monitorLineage: () => get<LineageReport>(`/monitor/lineage`),
+  monitorAssets: (force = false) => get<AssetsReport>(`/monitor/assets?force=${force}`),
   healthRules: () => get<HealthRuleRow[]>(`/monitor/health/rules`),
   healthRuleToggle: (id: number, enabled: boolean) =>
     put(`/monitor/health/rules/${id}`, { enabled }),
@@ -336,6 +348,41 @@ export interface LineageReport {
   last_run: { run_id: number; status: string; started_at: string | null } | null;
   raw_dir: string;
   config_path: string;
+}
+
+/** 数据资产清单中的一个数据集 */
+export interface AssetItem {
+  key: string; group: string; label: string; rows: number; symbols: number | null;
+  start: string | null; latest: string | null;
+  lag_trading_days: number | null; lag_calendar_days: number | null;
+  max_lag: number; note: string;
+  status: "ok" | "warn" | "stale" | "empty";
+}
+export interface AssetGroup {
+  key: string; label: string; desc: string; items: AssetItem[]; rows: number; bad: number;
+}
+export interface CoveragePoint { date: string; symbols: number; partial: boolean; pending?: boolean; }
+export interface CoverageBlock {
+  days: CoveragePoint[]; median: number; peak: number;
+  partial_count: number; pending_date: string | null;
+}
+
+export interface AssetsReport {
+  generated_at: string; today: string; coverage: CoverageBlock;
+  summary: {
+    latest_trade_date: string | null; latest_news_date: string | null;
+    lag_trading_days: number | null; lag_calendar_days: number | null;
+    news_lag_trading_days: number | null;
+    total_rows: number; symbols: number | null;
+    n_stale: number; n_warn: number; n_empty: number; n_total: number;
+    n_partial_days: number;
+    verdict: string; verdict_level: "ok" | "warn" | "stale";
+    worst: { label: string; latest: string | null; lag: number | null } | null;
+    // 盘中/收盘前，当日数据尚未发布，既不判过期也不算残缺
+    pending_today: boolean; expected_latest: string | null;
+  };
+  groups: AssetGroup[];
+  by_source: Record<string, AssetItem>;
 }
 
 export interface HealthRuleRow {

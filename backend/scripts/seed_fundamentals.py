@@ -34,14 +34,37 @@ COL_MAP = {
 CODE_COL = "股票代码"
 REPORT_COL = "报告期"
 
-# 自动模式按此顺序挑选最近一个有数据的报告期
-DEFAULT_DATES = [
-    "20251231", "20250930", "20250630",
-    "20241231", "20240630", "20231231", "20230630",
-]
+# 各报告期的法定披露截止日（月, 日）；年报次年 4 月底才披露完
+_PERIOD_DEADLINE = {"0331": (4, 30), "0630": (8, 31), "0930": (10, 31), "1231": (4, 30)}
+_PERIOD_OF_QUARTER = {1: "0331", 2: "0630", 3: "0930", 4: "1231"}
 
-# 历史快照模式：默认拉取近 5 个年报（用于 PEAD 时序因子）
-HISTORY_YEARS = [2021, 2022, 2023, 2024, 2025]
+
+def _published_periods(n: int = 12, today: _date | None = None) -> list[str]:
+    """按当前日期倒推最近 n 个「已过披露截止日」的报告期，最新在前。
+
+    曾经把候选报告期写死成常量列表（DEFAULT_DATES），结果 2026 一季报/中报
+    披露完毕后脚本仍在用 2025 年报 —— 基本面因子默默用了一年多前的旧数据。
+    因此改为按日历动态推算：只返回已到披露截止日的报告期。
+    """
+    today = today or _date.today()
+    out: list[str] = []
+    y, q = today.year, (today.month - 1) // 3 + 1
+    for _ in range(n + 8):
+        period = _PERIOD_OF_QUARTER[q]
+        mm, dd = _PERIOD_DEADLINE[period]
+        deadline_year = y + 1 if period == "1231" else y   # 年报次年披露
+        if _date(deadline_year, mm, dd) <= today:
+            out.append(f"{y}{period}")
+            if len(out) >= n:
+                break
+        q -= 1
+        if q == 0:
+            q, y = 4, y - 1
+    return out
+
+
+# 历史快照模式：默认回填的期数（季报口径，约 3 年）
+HISTORY_PERIODS = 12
 
 
 def _clean(v):
@@ -151,10 +174,20 @@ def fetch_history_report(date: str):
     return rows
 
 
-def seed_history(dates, dry_run: bool = False):
-    """多报告期入库到 fundamentals_history（PEAD 时序因子用）。"""
+def seed_history(dates, dry_run: bool = False, only_known: bool = True):
+    """多报告期入库到 fundamentals_history（PEAD 时序因子用）。
+
+    only_known=True 时只保留 stocks 表中存在的标的 —— akshare 业绩报表会返回
+    B 股/退市股等约 11500 个代码，而实际可研究标的只有 5539 只，全量写入会让
+    fundamentals_history 的「覆盖标的」虚高一倍，失真且无用途。
+    """
     db = SessionLocal()
+    known = None
+    if only_known:
+        known = {s for s, in db.execute(select(Stock.symbol)).all()}
+        print(f"仅保留 stocks 表内标的（{len(known)} 只）")
     total = 0
+    skipped = 0
     try:
         for d in dates:
             print(f"拉取历史报告期 {d} ...")
@@ -169,6 +202,9 @@ def seed_history(dates, dry_run: bool = False):
             # 同 (symbol, report_date) 去重，保留最后一条
             seen: dict = {}
             for sym, vals, rd in rows:
+                if known is not None and sym not in known:
+                    skipped += 1
+                    continue
                 seen[(sym, rd)] = vals
             for (sym, rd), vals in seen.items():
                 if dry_run:
@@ -194,7 +230,8 @@ def seed_history(dates, dry_run: bool = False):
                 print(f"  {d} 已并入（累计 {total} 条）")
     finally:
         db.close()
-    print(f"历史快照入库完成，累计 {total} 条记录。")
+    print(f"历史快照入库完成，累计 {total} 条记录"
+          + (f"（已过滤 {skipped} 条非 stocks 表标的）" if skipped else "") + "。")
 
 
 def main():
@@ -202,18 +239,23 @@ def main():
     ap.add_argument("--date", default=None, help="指定报告期 YYYYMMDD，缺省自动挑选")
     ap.add_argument("--dry-run", action="store_true", help="仅预览，不写库")
     ap.add_argument("--history", action="store_true",
-                    help="种子模式：拉取多年报写入 fundamentals_history（PEAD 时序因子）")
-    ap.add_argument("--years", default=",".join(str(y) for y in HISTORY_YEARS),
-                    help="--history 模式下的年份列表，逗号分隔，如 2021,2022,2023,2024,2025")
+                    help="种子模式：按季报口径回填多个报告期写入 fundamentals_history（PEAD 时序因子）")
+    ap.add_argument("--periods", type=int, default=HISTORY_PERIODS,
+                    help="--history 模式下回填的报告期数量（季报口径，默认 12 ≈ 3 年）")
+    ap.add_argument("--all-symbols", action="store_true",
+                    help="--history 模式下不按 stocks 表过滤（保留 B 股/退市股等全部代码）")
     args = ap.parse_args()
 
     if args.history:
-        years = [int(y) for y in args.years.split(",") if y.strip()]
-        dates = [f"{y}1231" for y in years]
-        seed_history(dates, dry_run=args.dry_run)
+        dates = _published_periods(args.periods)
+        if not dates:
+            print("没有已到披露截止日的报告期，退出。", file=sys.stderr)
+            sys.exit(1)
+        print(f"待回填报告期（{len(dates)} 期，最新在前）: {', '.join(dates)}")
+        seed_history(dates, dry_run=args.dry_run, only_known=not args.all_symbols)
         return
 
-    dates = [args.date] if args.date else DEFAULT_DATES
+    dates = [args.date] if args.date else _published_periods(4)
     rows = None
     used_date = None
     for d in dates:

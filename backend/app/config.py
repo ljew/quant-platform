@@ -52,11 +52,19 @@ class Settings(BaseSettings):
     # 单次批量拉取的标的上限（防止一次性过大）
     batch_size: int = 200
 
+    # —— 调度 ——
+    # 是否启用数据调度（每交易日 19:00 ETL 自动日更 + 断供自愈 + 指数成分月度快照）。
+    # 由 .env / 环境变量 QUANT_DATA_SCHEDULE 控制；Docker 已置 1，本地建议开启。
+    data_schedule: bool = False
+
     # —— CORS ——
     cors_origins: list[str] = ["*"]
 
-    # —— 前端静态目录（由 backend 直接托管 Phase1 原型页面）——
-    frontend_dir: str = str(BASE_DIR / "frontend")
+    # —— 前端静态目录 ——
+    # 默认托管 Vite React 完整平台构建产物 web/dist（左侧导航 QUANT·DESK 七页）。
+    # 构建产物缺失时 main.py 自动退回 Phase1 原生原型 frontend/（单页行情看板）。
+    # 可用环境变量 QUANT_FRONTEND_DIR 显式覆盖。
+    frontend_dir: str = str(BASE_DIR / "web" / "dist")
 
     @property
     def is_sqlite(self) -> bool:

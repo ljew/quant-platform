@@ -12,12 +12,15 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 import shutil
 import subprocess
 from datetime import date, datetime, timedelta
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # ============ akshare 探测 ============
 _AKSHARE_AVAILABLE = None
@@ -408,8 +411,66 @@ def _get_kline_westock(symbol: str, limit: int) -> list[dict]:
     return out
 
 
+# ============ 实时行情 ============
+_TX_QUOTE_URL = "https://qt.gtimg.cn/q="
+
+
+def _tx_spot_quotes(symbols: list[str]) -> list[dict]:
+    """腾讯实时行情兜底（qt.gtimg.cn）：个股与指数通用，沙箱网络可达，无频率限制。
+
+    返回与 symbols 同序的 {symbol,name,price,change_pct}；任一异常返回 []。
+    返回行 v_sh600519="1~贵州茅台~600519~现价~昨收~…~…~涨跌幅%"（~分隔，~88 字段）。
+    """
+    import requests
+
+    if not symbols:
+        return []
+    out: dict[str, dict] = {}
+    try:
+        for i in range(0, len(symbols), 50):  # 腾讯单次支持多代码，分批保险
+            batch = symbols[i:i + 50]
+            r = requests.get(_TX_QUOTE_URL + ",".join(batch), timeout=8)
+            r.encoding = "gbk"
+            for line in r.text.strip().split(";"):
+                line = line.strip()
+                if not line or "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                sym = key[2:]  # v_sh600519 -> sh600519
+                if not sym.startswith(("sh", "sz")):
+                    continue
+                f = val.strip().strip('"').split("~")
+                if len(f) < 33 or not f[1]:
+                    continue
+                try:
+                    price = float(f[3])
+                except ValueError:
+                    price = 0.0
+                chg: float | None = None
+                if f[32].strip():
+                    try:
+                        chg = float(f[32])
+                    except ValueError:
+                        pass
+                if chg is None and price > 0:  # 涨跌幅字段缺失 → 用昨收反算
+                    try:
+                        prev = float(f[4])
+                        if prev > 0:
+                            chg = (price - prev) / prev * 100
+                    except ValueError:
+                        pass
+                name = f[1].replace(" ", "")  # 腾讯名称可能含对齐空格（如"五 粮 液"）
+                out[sym] = {"symbol": sym, "name": name, "price": price,
+                            "change_pct": chg}
+    except Exception:  # noqa: BLE001
+        return []
+    return [out[s] for s in symbols if s in out]
+
+
 def get_spot_quotes(symbols: list[str] | None = None) -> list[dict]:
-    """实时行情快照。优先 akshare（东方财富），回退 westock CLI。"""
+    """实时行情快照。a) akshare 东财全市场（仅 A 股，指数会过滤为空不视为成功）
+    b) 腾讯实时兜底（个股/指数通用，沙箱可达）c) westock CLI 末位逐只兜底。"""
+    targets = symbols or ["sh600519", "sz300750", "sh601318", "sz000858", "sh600036"]
     if check_akshare():
         try:
             ak = _require_ak()
@@ -418,19 +479,25 @@ def get_spot_quotes(symbols: list[str] | None = None) -> list[dict]:
             if symbols:
                 wanted = {to_ak_code(s) for s in symbols}
                 rows = df[df["代码"].isin(wanted)]
-            return [
-                {
-                    "symbol": normalize_symbol(str(r["代码"]).zfill(6))[0],
-                    "name": r["名称"], "price": float(r["最新价"]),
-                    "change_pct": float(r["涨跌幅"]),
-                }
-                for _, r in rows.iterrows()
-            ]
+            if len(rows):
+                return [
+                    {
+                        "symbol": normalize_symbol(str(r["代码"]).zfill(6))[0],
+                        "name": r["名称"], "price": float(r["最新价"]),
+                        "change_pct": float(r["涨跌幅"]),
+                    }
+                    for _, r in rows.iterrows()
+                ]
         except Exception:
             pass
-    # westock 兜底：取个股实时截面
+    try:
+        qs = _tx_spot_quotes(targets)
+        if qs:
+            return qs
+    except Exception:  # noqa: BLE001
+        pass
+    # westock 末位兜底：取个股实时截面
     out = []
-    targets = symbols or ["sh600519", "sz300750", "sh601318", "sz000858", "sh600036"]
     for sym in targets:
         try:
             text = _run_westock(["quote", sym])
@@ -479,7 +546,16 @@ def get_realtime_prices(symbols: list[str]) -> list:
                             "price": price, "change_pct": float(r.get("change_percent", 0))}
         except Exception:
             continue
-    # 2) 仍缺失 → akshare 全市场快照（一次拉全量，整体缓存放回）
+    # 2) 腾讯批量兜底（个股/指数通用，快）
+    missing = [s for s in symbols if s not in out]
+    if missing:
+        try:
+            for q in _tx_spot_quotes(missing):
+                if q.get("price"):
+                    out[q["symbol"]] = q
+        except Exception:  # noqa: BLE001
+            pass
+    # 3) 仍缺失 → akshare 全市场快照（一次拉全量，整体缓存放回）
     missing = [s for s in symbols if s not in out]
     if missing and check_akshare():
         try:
@@ -541,56 +617,38 @@ _MEMBERSHIP_CACHE: dict = {}
 
 
 def get_index_membership(index_code: str, sd: date, ed: date) -> list[tuple[str, set]]:
-    """指数成分股的『时点(point-in-time)』成员资格。
+    """指数成分股的『时点(point-in-time)』成员资格（**已迁移**，勿再直连 tushare）。
 
     返回按交易日升序的快照列表 ``[(trade_date_str, {symbol,...}), ...]``。
     每个快照是截至该交易日指数实际包含的成分股集合——回测时应在每个调仓日
     取「≤ 该日期的最新快照」作为合法股票池，从而消除『用当前成分股回测整段
     历史』带来的前视/幸存者偏差。
 
-    数据来自 tushare ``index_weight``（按自然月拉取，取每月最后一个交易日的权重
-    快照）。免费 token 亦可回溯至 2019 年。
+    实现（2026-09 起）：委托 ``membership_store.get_membership`` —— **先读
+    index_membership 落库快照**（2020-01 起按月齐全），缺失月份才走 csindex/
+    sina 在线兜底。历史背景：本函数原直连 tushare ``index_weight`` 在线拉取，
+    但该接口需较高积分，个人 token 已无权限会静默返回空，故整体收敛到
+    membership_store（库优先 + 免费源兜底），彻底不再依赖 tushare 权限。
     """
     key = (index_code, sd.isoformat(), ed.isoformat())
     if key in _MEMBERSHIP_CACHE:
         return _MEMBERSHIP_CACHE[key]
-    pro = _require_tushare_pro()
-    ts_code = f"{index_code}.SH"
-    snaps: dict[str, set] = {}
+    from app.database import SessionLocal
+    from app.services.membership_store import get_membership as _gm
 
-    y, m = sd.year, sd.month
-    end_y, end_m = ed.year, ed.month
-    while True:
-        if m == 12:
-            ny, nm = y + 1, 1
-        else:
-            ny, nm = y, m + 1
-        month_end = date(ny, nm, 1) - timedelta(days=1)
-        ms = date(y, m, 1)
-        me = min(month_end, ed)
-        try:
-            df = pro.index_weight(
-                index_code=ts_code,
-                start_date=ms.strftime("%Y%m%d"),
-                end_date=me.strftime("%Y%m%d"),
-            )
-        except Exception:
-            df = None
-        if df is not None and not df.empty and "trade_date" in df.columns:
-            latest = str(df["trade_date"].max())
-            sub = df[df["trade_date"] == latest]
-            s: set = set()
-            for _, row in sub.iterrows():
-                code = str(row["con_code"]).split(".")[0]
-                sym, _ = normalize_symbol(code)
-                s.add(sym)
-            if s:
-                snaps[latest] = s
-        if (y, m) == (end_y, end_m):
-            break
-        y, m = ny, nm
-
-    ordered = sorted(snaps.items())
+    try:
+        with SessionLocal() as db:
+            ordered = sorted(_gm(db, index_code, sd, ed))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("指数 %s 成分快照获取异常（%s）", index_code, e)
+        ordered = []
+    if not ordered:
+        # 库内缺失 + 在线兜底均不可用（如历史月份无免费源）——必须响一声，不能静默
+        logger.warning(
+            "指数 %s 在 %s~%s 无任何成分快照（库内缺失且在线兜底不可用）；"
+            "可运行 `python scripts/seed_membership.py --index %s` 检查可拉取的月份",
+            index_code, sd, ed, index_code,
+        )
     _MEMBERSHIP_CACHE[key] = ordered
     return ordered
 

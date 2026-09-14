@@ -7,7 +7,12 @@
 """
 from __future__ import annotations
 
+import logging
 import os
+import re
+import subprocess
+import sys
+import threading
 import time
 from datetime import date, datetime
 
@@ -16,6 +21,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 
 from app.database import SessionLocal
+from app.services.assets_svc import assets_report
 from app.services.data_health import health_report
 from app.services.health_engine import run_rules, METRIC_DOCS, ensure_default_rules
 from app.models import (
@@ -29,6 +35,8 @@ from app.models import (
 from app.config import settings
 
 router = APIRouter(prefix="/monitor", tags=["monitor"])
+
+logger = logging.getLogger(__name__)
 
 _START_TIME = time.time()
 _DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "data")
@@ -236,6 +244,201 @@ def pipeline_run_now():
     return {"ok": True}
 
 
+# ——— 一键修复：把「资产清单里的异常项」翻译成可执行的修复动作 ———
+
+# 数据集 → 需要重跑的管道步骤（执行时按 STEPS 原始顺序排序，保证依赖）
+_DATASET_STEPS: dict[str, list[str]] = {
+    # 日K 补齐后因子与 DuckDB 也要跟着补，否则页面仍显示因子滞后
+    "kline_daily": ["extract_stock_kline", "clean_bars", "compute_factors", "sync_duckdb"],
+    "index_kline_daily": ["extract_index_kline", "sync_duckdb"],
+    "factor_daily": ["compute_factors", "sync_duckdb"],
+    "factor_mined_daily": ["compute_mined_factors", "sync_duckdb"],
+    "news_market_daily": ["extract_eastmoney_news", "clean_text", "score_sentiment"],
+    "news_stock_daily": ["extract_announcements", "extract_wechat_articles", "clean_text", "score_sentiment"],
+    "stocks": ["extract_attributes"],
+    "__bronze_text__": ["extract_eastmoney_news", "extract_announcements",
+                        "extract_wechat_articles", "clean_text"],
+    "__silver__": ["clean_text", "score_sentiment"],
+}
+
+# 没有对应管道步骤的数据集 → 走独立脚本（均为幂等补缺脚本）
+_CORE_INDEXES = "000906,000300,000905,000852,000016,399006"
+_BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_REPAIR_TIMEOUT = 1800
+
+_repair_state: dict = {
+    "running": False, "job_id": None, "actions": [], "done": 0, "total": 0,
+    "current": None, "started_at": None, "finished_at": None, "ok": None, "targets": [],
+}
+
+
+class ReprocessRequest(BaseModel):
+    items: list[str] = Field(default_factory=list,
+                             description="要修复的数据集 key；留空=自动修复全部异常项")
+    include_warn: bool = True
+
+
+def _bad_datasets(include_warn: bool = True) -> tuple[dict, dict]:
+    """返回 (全部数据集, 异常数据集)。
+
+    异常 = status ∈ {stale, empty}（+ warn 可选）。另外「日K 某天只抓到一部分」
+    的残缺日不一定表现为滞后，这里单独纳入 kline_daily。
+    """
+    rep = assets_report(SessionLocal(), force=True)
+    flat = {i["key"]: i for g in rep["groups"] for i in g["items"]}
+    bad = {}
+    for k, v in flat.items():
+        if v["status"] in ("stale", "empty") or (include_warn and v["status"] == "warn"):
+            bad[k] = v
+    if rep.get("coverage", {}).get("partial_count") and "kline_daily" in flat:
+        bad["kline_daily"] = flat["kline_daily"]
+    return flat, bad
+
+
+def _plan_repair(items: list[str], include_warn: bool) -> list[dict]:
+    """把异常数据集翻译为修复动作列表（管道步骤 / 独立脚本）。"""
+    _flat, bad = _bad_datasets(include_warn)
+    if items:
+        wanted = set(items)
+        bad = {k: v for k, v in bad.items() if k in wanted}
+
+    steps: list[str] = []
+    for k in bad:
+        for s in _DATASET_STEPS.get(k, []):
+            if s not in steps:
+                steps.append(s)
+    # 按管道原始顺序排序，避免依赖倒置（如先算因子再补 K 线）
+    try:
+        from app.datahub.runner import STEPS
+
+        order = [n for n, _ in STEPS]
+        steps.sort(key=lambda s: order.index(s) if s in order else 999)
+    except Exception:  # noqa: BLE001
+        pass
+
+    actions: list[dict] = []
+    if steps:
+        actions.append({
+            "kind": "pipeline",
+            "label": "重跑管道步骤 " + " → ".join(steps),
+            "steps": steps,
+            "datasets": [k for k in bad if _DATASET_STEPS.get(k)],
+        })
+    if "index_membership" in bad:
+        actions.append({
+            "kind": "script",
+            "label": "补指数成分快照（PIT）",
+            "cmd": [sys.executable, "scripts/seed_membership.py",
+                    "--index", _CORE_INDEXES,
+                    "--start", f"{date.today().year - 6}-01-01",
+                    "--end", date.today().isoformat()],
+        })
+    if "fundamentals_history" in bad:
+        actions.append({
+            "kind": "script",
+            "label": "补财报历史（仅已披露报告期）",
+            "cmd": [sys.executable, "scripts/seed_fundamentals.py", "--history"],
+        })
+    return actions
+
+
+def _exec_repair(actions: list[dict]) -> None:
+    """串行执行修复动作（每个动作独立子进程 + 超时，卡死不影响 API）。"""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = _BACKEND_DIR
+    for act in actions:
+        act["status"] = "RUNNING"
+        act["started_at"] = datetime.now().isoformat(timespec="seconds")
+        _repair_state["current"] = act["label"]
+        try:
+            if act["kind"] == "pipeline":
+                code = (
+                    "from app.datahub.runner import run_pipeline;"
+                    "import sys;"
+                    "rid = run_pipeline('repair', only=%r, stop_on_fail=False);"
+                    "print('PIPELINE_RID', rid, flush=True)"
+                ) % (act["steps"],)
+                cmd = [sys.executable, "-c", code]
+            else:
+                cmd = act["cmd"]
+            proc = subprocess.run(cmd, env=env, cwd=_BACKEND_DIR, capture_output=True,
+                                  text=True, timeout=_REPAIR_TIMEOUT)
+            out = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+            m = re.search(r"PIPELINE_RID\s+(\d+)", out)
+            if m:
+                act["run_id"] = int(m.group(1))
+            if proc.returncode == 0:
+                act["status"] = "OK"
+                act["message"] = (f"管道 run_id={act['run_id']}" if act.get("run_id")
+                                  else out[-200:] or "完成")
+            else:
+                act["status"] = "FAIL"
+                act["message"] = f"rc={proc.returncode}: {out[-300:]}"
+        except subprocess.TimeoutExpired:
+            act["status"] = "FAIL"
+            act["message"] = f"超过 {_REPAIR_TIMEOUT}s 未完成，子进程已终止"
+        except Exception as e:  # noqa: BLE001
+            act["status"] = "FAIL"
+            act["message"] = f"{type(e).__name__}: {str(e)[:200]}"
+        finally:
+            act["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            _repair_state["done"] += 1
+    _repair_state["running"] = False
+    _repair_state["current"] = None
+    _repair_state["finished_at"] = datetime.now().isoformat(timespec="seconds")
+    _repair_state["ok"] = all(a.get("status") == "OK" for a in actions)
+    logger.info("一键修复完成 ok=%s，共 %s 个动作", _repair_state["ok"], len(actions))
+
+
+@router.post("/reprocess")
+def reprocess(req: ReprocessRequest):
+    """一键修复资产清单中的异常数据集（warn/stale/empty）。
+
+    后台线程 + 子进程隔离：单个步骤卡死有超时兜底，不会拖垮 API 进程。
+    修复动作 = 重跑对应管道步骤（幂等，ETL 自己识别缺口/残缺日重补），
+    指数成分与财报走独立补数脚本。
+    """
+    if _repair_state["running"]:
+        return {"ok": False, "error": "已有修复任务在运行中"}
+    if _running_pipeline["locked"]:
+        return {"ok": False, "error": "数据管道正在运行，请稍后再试"}
+    actions = _plan_repair(req.items, req.include_warn)
+    if not actions:
+        return {"ok": False, "error": "没有需要修复的数据集（全部正常，或该数据集无对应修复动作）"}
+    now = datetime.now().isoformat(timespec="seconds")
+    _repair_state.update(running=True, job_id=now, actions=actions, done=0,
+                         total=len(actions), current=None, started_at=now,
+                         finished_at=None, ok=None,
+                         targets=sorted({k for a in actions for k in a.get("datasets", [])}
+                                        | {k for a in actions
+                                           for k in (["index_membership"] if "membership" in a["label"]
+                                                     else ["fundamentals_history"] if "财报" in a["label"]
+                                                     else [])}))
+    threading.Thread(target=_exec_repair, args=(actions,), daemon=True).start()
+    return {"ok": True, "job_id": now, "total": len(actions),
+            "actions": [{"label": a["label"], "kind": a["kind"]} for a in actions]}
+
+
+@router.get("/reprocess/status")
+def reprocess_status():
+    """查询一键修复任务进度（前端轮询）。"""
+    return {
+        "running": _repair_state["running"],
+        "job_id": _repair_state["job_id"],
+        "done": _repair_state["done"],
+        "total": _repair_state["total"],
+        "current": _repair_state["current"],
+        "ok": _repair_state["ok"],
+        "started_at": _repair_state["started_at"],
+        "finished_at": _repair_state["finished_at"],
+        "actions": [
+            {"label": a["label"], "kind": a["kind"], "status": a.get("status"),
+             "message": a.get("message"), "run_id": a.get("run_id")}
+            for a in _repair_state["actions"]
+        ],
+    }
+
+
 @router.get("/lineage")
 def lineage():
     """数据血缘全景：源 → 步骤 → 层 → 运行时间线。"""
@@ -250,9 +453,20 @@ def data_flow():
     from app.services.dataflow_svc import dataflow_report
 
     return dataflow_report(SessionLocal())
+
+
+@router.get("/data-health")
 def data_health():
     """数据健康度：采集/处理/应用三层评分 + 告警列表。"""
     return health_report()
+
+
+@router.get("/assets")
+def assets(force: bool = False):
+    """数据资产清单：每张表的行数 / 覆盖标的 / 起止日期 / 滞后交易日 / 新鲜度状态。"""
+    from app.services.assets_svc import assets_report
+
+    return assets_report(SessionLocal(), force=force)
 
 
 @router.get("/status")
@@ -310,6 +524,11 @@ def monitor_status():
                 "tasks": {"running": running, "recent": tasks},
                 "paper": _paper_stats(db),
                 "pipeline": _pipeline_stats(db),
+                "repair": {
+                    "running": _repair_state["running"], "done": _repair_state["done"],
+                    "total": _repair_state["total"], "current": _repair_state["current"],
+                    "ok": _repair_state["ok"], "finished_at": _repair_state["finished_at"],
+                },
             },
             "disk": {
                 "data_dir_mb": _dir_size_mb(_DATA_DIR),

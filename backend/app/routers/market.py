@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func
+from sqlalchemy import or_, select, func
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -15,21 +15,40 @@ from app.services import data_source, ingestion
 
 router = APIRouter(prefix="/market", tags=["market"])
 
+# 常见简称 → 6 位代码。仅收录“简称不是全名连续子串”的词条（如 招商银行→招行），
+# 子串能被子句 name LIKE 命中的（茅台/宁德/平安…）无需入表。可继续扩充。
+STOCK_ABBREV: dict[str, str] = {
+    "招行": "600036", "浦发": "600000", "兴业": "601166", "民生": "600016",
+    "光大": "601818", "工行": "601398", "建行": "601939", "农行": "601288",
+    "中行": "601988", "交行": "601328", "邮储": "601658", "国君": "601211",
+    "招证": "600999", "中石油": "601857", "中石化": "600028", "中海油": "600938",
+    "海油": "600938", "长电": "600900", "江铜": "600362", "南航": "600029",
+    "东航": "600115", "byd": "002594",
+}
+
 
 @router.get("/stocks", response_model=list[StockItem])
 def list_stocks(
     market: str | None = Query(None, description="sh/sz/hk/us 过滤"),
-    keyword: str | None = Query(None, description="代码或名称模糊搜索"),
+    keyword: str | None = Query(None, description="代码 / 简称 / 名称模糊搜索"),
     limit: int = Query(200, le=2000),
     db: Session = Depends(get_db),
 ):
     stmt = select(Stock)
     if market:
         stmt = stmt.where(Stock.market == market)
+    conds = []
     if keyword:
-        stmt = stmt.where(
-            Stock.symbol.contains(keyword) | Stock.name.contains(keyword)
-        )
+        kw = keyword.strip()
+        if kw:
+            # 1) 代码 / 全名子串
+            conds.append(Stock.symbol.contains(kw) | Stock.name.contains(kw))
+            # 2) 简称映射：如 “招行”→“招商银行”(600036)
+            hit = STOCK_ABBREV.get(kw.lower().replace(" ", ""))
+            if hit:
+                conds.append(Stock.symbol.contains(hit))
+    if conds:
+        stmt = stmt.where(or_(*conds))
     stmt = stmt.limit(limit)
     return db.execute(stmt).scalars().all()
 
