@@ -150,12 +150,15 @@ def _execute_backtest_task(payload: dict, _task_id: str = "") -> int:
 
 
 # ——— 单标的回测 ———
-def _run_single(db, req, meta, params):
-    bars = _load_bars(db, req.symbol, req.start, req.end, req.adj)
+def _run_single(db, req, meta, params, start=None, end=None):
+    """跑一次单标的回测。start/end 用于样本内/外分段（留空则用请求区间）。"""
+    _s = start or req.start
+    _e = end or req.end
+    bars = _load_bars(db, req.symbol, _s, _e, req.adj)
     if not bars:
         raise HTTPException(
             status_code=404,
-            detail=f"未获取到 {req.symbol} 的行情数据（{req.start}~{req.end}）",
+            detail=f"未获取到 {req.symbol} 的行情数据（{_s}~{_e}）",
         )
     engine = BacktestEngine(
         bars, initial_cash=req.initial_cash,
@@ -522,6 +525,10 @@ def get_backtest(bt_id: int, db: Session = Depends(get_db)):
     return _to_result(r, _strategy_name(r.strategy_key), r.multi_asset)
 
 
+# 单网格搜索的最大参数组合数。超出直接拒绝，避免同步回测把进程堵死。
+_MAX_OPTIMIZE_COMBOS = 400
+
+
 @router.post("/optimize", response_model=list[OptimizeTrial])
 def optimize_strategy(req: OptimizeRequest, db: Session = Depends(get_db)):
     """网格搜索参数寻优：遍历 param_ranges 中所有参数组合，按 rank_by 排序返回。"""
@@ -536,41 +543,128 @@ def optimize_strategy(req: OptimizeRequest, db: Session = Depends(get_db)):
     keys = list(req.param_ranges.keys())
     if not keys:
         raise HTTPException(status_code=400, detail="param_ranges 至少需要一个参数维度")
-    combos = list(itertools.product(*req.param_ranges.values()))
+    unknown = [k for k in keys if k not in meta["default_params"]]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未知参数 {unknown}；{req.strategy} 可用参数：{sorted(meta['default_params'])}",
+        )
+    # 组合数保护：网格是笛卡尔积，维度一多就爆炸，同步跑会把整个接口堵死
+    axes = [list(req.param_ranges[k]) for k in keys]
+    n_combo = 1
+    for a in axes:
+        n_combo *= len(a)
+    if n_combo > _MAX_OPTIMIZE_COMBOS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"参数组合数 {n_combo} 超过上限 {_MAX_OPTIMIZE_COMBOS}，请缩小网格（减少维度或减少取值）",
+        )
+    combos = list(itertools.product(*axes))
 
-    results = []
+    # —— 样本内 / 样本外切分：按**交易日数量**从区间末尾切出验证段 ——
+    oos_ratio = 0.3 if req.oos_ratio is None else float(req.oos_ratio)
+    oos_ratio = min(max(oos_ratio, 0.0), 0.6)
+    bars_all = _load_bars(db, req.symbol, req.start, req.end, req.adj)
+    if not bars_all:
+        raise HTTPException(
+            status_code=404,
+            detail=f"未获取到 {req.symbol} 的行情数据（{req.start}~{req.end}）",
+        )
+    split_date = None
+    if oos_ratio > 0 and len(bars_all) >= 60:
+        split_i = max(int(len(bars_all) * (1 - oos_ratio)), 30)  # 样本内至少留 30 根 bar
+        if len(bars_all) - split_i >= 20:  # 验证段太短则不分
+            split_date = bars_all[split_i]["date"]
+
+    results: dict[tuple, OptimizeTrial] = {}
     for combo in combos:
         params = dict(zip(keys, combo))
         fixed = dict(meta["default_params"])
         fixed.update(params)
         try:
-            result = _run_single(db, req, meta, fixed)
-        except Exception:
-            continue  # 某组参数可能无合格数据，跳过
-        results.append(
-            OptimizeTrial(
-                params=params,
-                total_return=result.total_return,
-                annual_return=result.annual_return,
-                max_drawdown=result.max_drawdown,
-                sharpe=result.sharpe,
-                win_rate=result.win_rate,
-                trade_count=result.trade_count,
-                final_equity=result.final_equity,
+            result = _run_single(
+                db, req, meta, fixed,
+                start=req.start, end=(split_date or req.end),
             )
+        except Exception:  # noqa: BLE001
+            continue  # 某组参数可能无合格数据，跳过
+
+        trial = OptimizeTrial(
+            params=params,
+            total_return=result.total_return,
+            annual_return=result.annual_return,
+            max_drawdown=result.max_drawdown,
+            sharpe=result.sharpe,
+            win_rate=result.win_rate,
+            trade_count=result.trade_count,
+            final_equity=result.final_equity,
+        )
+        if split_date:
+            trial.oos_start = split_date
+            try:
+                oos = _run_single(db, req, meta, fixed, start=split_date, end=req.end)
+                trial.oos_total_return = oos.total_return
+                trial.oos_annual_return = oos.annual_return
+                trial.oos_max_drawdown = oos.max_drawdown
+                trial.oos_sharpe = oos.sharpe
+                trial.oos_win_rate = oos.win_rate
+                trial.oos_trade_count = oos.trade_count
+            except Exception:  # noqa: BLE001
+                pass  # 验证段跑不通就留 None，前端显示 —
+        results[combo] = trial
+
+    if not results:
+        raise HTTPException(status_code=400, detail="所有参数组合均未产生有效回测结果，请检查区间与数据来源")
+
+    # —— 稳健性：与该组参数在网格中的「邻居」比较 ——
+    # 最优参数若是一座孤峰（周围一圈都差），多半是运气而非有效；高原才敢上实盘。
+    for combo, trial in results.items():
+        vals = [results[n].sharpe for n in _grid_neighbors(combo, axes) if n in results]
+        if not vals:
+            continue
+        trial.neighbor_count = len(vals)
+        trial.neighbor_sharpe = sum(vals) / len(vals)
+        # 归一化偏离度：自身夏普与邻域均值的差距，越小越好；0.5 为平滑常数
+        trial.robustness = max(
+            0.0, 1.0 - abs(trial.sharpe - trial.neighbor_sharpe) / (abs(trial.sharpe) + 0.5)
         )
 
     # 排序
     rank_by = getattr(req, "rank_by", "sharpe") or "sharpe"
     if rank_by == "total_return":
-        reverse = True
-        results.sort(key=lambda x: x.total_return, reverse=True)
+        out = sorted(results.values(), key=lambda x: x.total_return, reverse=True)
     elif rank_by == "max_drawdown":
-        results.sort(key=lambda x: x.max_drawdown)  # 绝对值越小越好
+        out = sorted(results.values(), key=lambda x: x.max_drawdown)  # 绝对值越小越好
+    elif rank_by == "oos_sharpe":
+        out = sorted(results.values(),  # 无 OOS 结果的排最后
+                     key=lambda x: (x.oos_sharpe is not None, x.oos_sharpe or 0.0), reverse=True)
+    elif rank_by == "robustness":
+        out = sorted(results.values(),
+                     key=lambda x: (x.robustness is not None, x.robustness or 0.0), reverse=True)
     else:
-        results.sort(key=lambda x: x.sharpe, reverse=True)
+        out = sorted(results.values(), key=lambda x: x.sharpe, reverse=True)
 
-    return results
+    return out
+
+
+def _grid_neighbors(combo: tuple, axes: list[list]) -> list[tuple]:
+    """网格中某组合的相邻点：每个参数维度上取相邻取值。
+
+    网格是离散的，「相邻」即等同于把其中一个参数稍微改一档，
+    用来判断最优点是孤峰还是高原。
+    """
+    out = []
+    for d, v in enumerate(combo):
+        try:
+            i = list(axes[d]).index(v)
+        except ValueError:
+            continue
+        for j in (i - 1, i + 1):
+            if 0 <= j < len(axes[d]):
+                cand = list(combo)
+                cand[d] = axes[d][j]
+                out.append(tuple(cand))
+    return out
 
 
 # ——— 内部工具 ———

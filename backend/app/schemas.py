@@ -183,11 +183,16 @@ class OptimizeRequest(BaseModel):
     commission: float = 0.0003
     slippage: float = 0.0
     adj: str = "qfq"
-    rank_by: str = "sharpe"  # sharpe / total_return / max_drawdown
+    rank_by: str = "sharpe"  # sharpe / total_return / max_drawdown / oos_sharpe / robustness
+    oos_ratio: float = 0.3
+    """样本外验证段占比（0~0.6）。按**交易日数量**从区间末尾切出一段做验证。
+    0 表示不切分（等价于纯样本内网格搜索）。
+    网格搜索挑出的最优参数几乎必然对样本内过拟合，没有 OOS 等于白跑，故默认 0.3。"""
 
 
 class OptimizeTrial(BaseModel):
     params: dict
+    # 样本内（IS）：start ~ split_date
     total_return: float
     annual_return: float
     max_drawdown: float
@@ -197,3 +202,15 @@ class OptimizeTrial(BaseModel):
     final_equity: float
     trades: list[TradePoint] = []
     equity_curve: list[EquityPointModel] = []
+    # 样本外（OOS）：split_date ~ end。未启用切分时为 None
+    oos_start: str | None = None
+    oos_total_return: float | None = None
+    oos_annual_return: float | None = None
+    oos_max_drawdown: float | None = None
+    oos_sharpe: float | None = None
+    oos_win_rate: float | None = None
+    oos_trade_count: int | None = None
+    # 稳健性：该组参数在网格中的「邻居」平均表现，偏离越小说明越不是孤峰（运气）
+    neighbor_count: int = 0
+    neighbor_sharpe: float | None = None
+    robustness: float | None = None

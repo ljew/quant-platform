@@ -266,6 +266,7 @@ export interface MonitorStatus {
 // —— 参数寻优类型 ——
 export interface OptimizeTrial {
   params: Record<string, number>;
+  // 样本内（IS）
   total_return: number;
   annual_return: number;
   max_drawdown: number;
@@ -273,6 +274,18 @@ export interface OptimizeTrial {
   win_rate: number;
   trade_count: number;
   final_equity: number;
+  // 样本外（OOS），未启用切分时为 null
+  oos_start: string | null;
+  oos_total_return: number | null;
+  oos_annual_return: number | null;
+  oos_max_drawdown: number | null;
+  oos_sharpe: number | null;
+  oos_win_rate: number | null;
+  oos_trade_count: number | null;
+  // 稳健性（与相邻参数组合比较）
+  neighbor_count: number;
+  neighbor_sharpe: number | null;
+  robustness: number | null;
 }
 
 // —— 模拟盘类型 ——
