@@ -7,15 +7,16 @@
   get_index_stocks(PIT)         →   ctx.universe()（引擎注入的时点成分快照）
   get_fundamentals(批量)         →   ctx.financial(sym)（financials_raw，按 ann_date 做 PIT）
   get_price(260日 close/volume) →   ctx.history(sym, n) / ctx.history_high(sym, n)
-  get_industry(申万一级)         →   ctx.attribute(sym, 'industry')（东财细分行业）
+  get_industry(申万一级)         →   ctx.attribute(sym, 'industry_l1')（东财细分映射到申万一级）
   pos.avg_cost / init_time      →   ctx.cost(sym) / 策略自维护持仓天数
   order_target_value_safe       →   ctx.order_target_percent(sym, pct, signal_type, reason)
 
 与原版**不可避免**的三处差异（已尽量缩小，都会在验证报告里标注）：
   1. 成交价：原版在 14:45/14:55 盘中价成交，平台是日频 bar → 统一用**当日收盘价**。
-  2. 行业口径：原版用申万一级（31 个），平台是东财细分行业（约 100+ 个），
-     因此「单一行业 ≤ max_industry_num 只」这条约束在平台侧几乎不触发（更宽松）；
-     「剔除金融」改为按东财行业名 {银行, 证券, 保险, 多元金融} 匹配。
+  2. 行业口径：原版用申万一级（31 个），平台 stocks.industry 是东财细分（111 个）。
+     已用 app/core/datahub/industry_map.py 把细分映射到申万一级，默认走申万口径
+     （参数 industry_level=1），设 0 可切回细分口径做 A/B 对照。
+     「剔除金融」按申万一级 {银行, 非银金融} 判断（industry_l1 缺失时回退细分行业名）。
   3. ST 过滤：平台无历史 ST 标记，只有当前名称 → 参数 exclude_st 关闭时不做该过滤，
      开启时用当前名称匹配（存在轻微前视，默认关闭）。
 
@@ -27,6 +28,8 @@ from __future__ import annotations
 import logging
 import statistics
 from datetime import date as _date
+
+from app.core.datahub.industry_map import FINANCIAL_SW_L1, to_sw_l1
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +61,8 @@ class JKFactorStrategy(PortfolioStrategy):
         self.stock_num = int(p.get("stock_num", 30))
         self.max_stock_weight = float(p.get("max_stock_weight", 0.10))
         self.max_industry_num = int(p.get("max_industry_num", 10))
+        # 行业口径：1=申万一级（对齐原版，默认），0=东财细分（用于对照口径差异)
+        self.industry_level = int(p.get("industry_level", 1))
         self.w_fundamental = float(p.get("w_fundamental", 0.5))
         self.w_lowvol = float(p.get("w_lowvol", 0.5))
         self.w_price_volume = float(p.get("w_price_volume", 0.0))
@@ -162,6 +167,16 @@ class JKFactorStrategy(PortfolioStrategy):
         self._peak.pop(sym, None)
         self._hold_days.pop(sym, None)
 
+    def _ind_of(self, ctx, sym: str) -> str:
+        """取行业名。industry_level=1 用申万一级（映射为 NA/其他时回退细分行业名）。"""
+        if self.industry_level == 1:
+            v = ctx.attribute(sym, "industry_l1")
+            if v and v not in ("NA", "其他"):
+                return v
+            v2 = ctx.attribute(sym, "industry") or ""
+            return to_sw_l1(v2) if v2 else "NA"
+        return ctx.attribute(sym, "industry") or "NA"
+
     def _check_stop_loss(self, ctx, date: str) -> None:
         """固定止损（相对成本价）+ 阶梯移动止损（峰值取建仓以来最高价）。"""
         worst = 0.0
@@ -216,8 +231,7 @@ class JKFactorStrategy(PortfolioStrategy):
             if not self.allow_star_market and "688" in sym:
                 continue
             if self.exclude_financial:
-                ind = ctx.attribute(sym, "industry") or ""
-                if ind in FINANCIAL_INDUSTRIES:
+                if self._ind_of(ctx, sym) in FINANCIAL_SW_L1:
                     continue
             if self.exclude_st:
                 name = str(ctx.attribute(sym, "name") or "")
@@ -343,7 +357,7 @@ class JKFactorStrategy(PortfolioStrategy):
         scored.sort(key=lambda x: x[1], reverse=True)
 
         def _ind(sym: str) -> str:
-            return ctx.attribute(sym, "industry") or "NA"
+            return self._ind_of(ctx, sym)
 
         picked, icnt = [], {}
         for s, _sc, mom in scored:

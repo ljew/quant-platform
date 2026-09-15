@@ -29,7 +29,7 @@ import uuid
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import DATA_DIR, settings
@@ -48,6 +48,7 @@ from app.schemas import (
 from app.services import data_source, duckdb_store, ingestion, membership_store
 from app.core.engine.backtest_engine import BacktestEngine
 from app.core.engine.portfolio_backtest import PortfolioBacktestEngine
+from app.core.datahub.industry_map import to_sw_l1
 from app.core.strategies.registry import get_strategy, list_strategies
 from app.core import task_queue
 
@@ -197,9 +198,8 @@ def _kline_min_date(db) -> date | None:
     """
     if "d" not in _KLINE_MIN:
         try:
-            v = db.execute(
-                select(KlineDaily.trade_date).order_by(KlineDaily.trade_date).limit(1)
-            ).scalar()
+            # 用 min 聚合而不是 order_by+limit：后者在无索引的 893 万行表上会全表排序（分钟级）
+            v = db.execute(select(func.min(KlineDaily.trade_date))).scalar()
         except Exception:  # noqa: BLE001
             v = None
         _KLINE_MIN["d"] = v
@@ -298,6 +298,9 @@ def _run_portfolio(db, req, meta, params, progress_cb=None):
             "name": r.name,
             "list_date": r.list_date,
             "industry": r.industry,
+            # 申万一级：细分行业(110个)太碎会让「单行业≤N只」约束永远不触发，
+            # 按申万口径做行业中性与分散约束时用这个字段。
+            "industry_l1": to_sw_l1(r.industry),
             "market_cap": r.market_cap,
             "pe_ttm": r.pe_ttm,
             "pb": r.pb,

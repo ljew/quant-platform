@@ -228,6 +228,7 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             "bullish_position": 1.0, "neutral_position": 0.9, "bearish_position": 0.0,
             "reb_thresh": 0.02, "allow_star_market": 0,
             "exclude_financial": 1, "exclude_st": 0, "min_list_days": 250,
+            "industry_level": 1,
             "max_position_pct": 0.0, "max_gross_exposure": 0.0,
             # 内部参数：动量/波动需要 260 日回看，引擎预热天数要够
             "warmup_days": 270,
@@ -251,6 +252,7 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             _float("bearish_position", "看空仓位", 0.0, 0.0, 1.0, 0.05),
             _float("reb_thresh", "调仓偏离阈值", 0.02, 0.0, 0.2, 0.005),
             _int("allow_star_market", "允许科创板(1开/0关)", 0, 0, 1),
+            _int("industry_level", "行业口径(1申万一级/0东财细分)", 1, 0, 1),
             _int("exclude_financial", "剔除金融股(1开/0关)", 1, 0, 1),
             _int("min_list_days", "最少上市天数", 250, 0, 1000, 10),
         ],
@@ -274,6 +276,7 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             "bullish_position": 1.0, "neutral_position": 0.9, "bearish_position": 0.0,
             "reb_thresh": 0.02, "allow_star_market": 1,
             "exclude_financial": 1, "exclude_st": 0, "min_list_days": 250,
+            "industry_level": 1,
             "max_position_pct": 0.0, "max_gross_exposure": 0.0,
             # 内部参数：动量/波动需要 260 日回看，引擎预热天数要够
             "warmup_days": 270,
@@ -297,6 +300,7 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             _float("bearish_position", "看空仓位", 0.0, 0.0, 1.0, 0.05),
             _float("reb_thresh", "调仓偏离阈值", 0.02, 0.0, 0.2, 0.005),
             _int("allow_star_market", "允许科创板(1开/0关)", 1, 0, 1),
+            _int("industry_level", "行业口径(1申万一级/0东财细分)", 1, 0, 1),
             _int("exclude_financial", "剔除金融股(1开/0关)", 1, 0, 1),
             _int("min_list_days", "最少上市天数", 250, 0, 1000, 10),
         ],

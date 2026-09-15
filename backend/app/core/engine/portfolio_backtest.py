@@ -295,8 +295,15 @@ class PortfolioBacktestEngine:
 
         # 基准对齐
         self.bench_map = {b["date"]: float(b["close"]) for b in benchmark}
-        self.bench_first = benchmark[0]["close"] if benchmark else None
-        self.bench_hist: list[float] = []  # 与 dates 对齐的基准净值（每日更新）
+        # ⚠️ 基准起算日必须与策略一致 —— 锚到 warmup 之后的首个交易日，不能用取数窗口首日。
+        #    取数窗口为了给长回看因子预热会往前提很多（可能提前一年以上），
+        #    若拿 window 首日做基准，基准会白吃预热期的涨幅，而策略那段时间是空仓的，
+        #    表现为「基准虚高、超额巨负」。（jk001 曾因此基准算出 +32.5%，实际 -5.2%）
+        _s = self.dates[min(self.warmup, max(len(self.dates) - 1, 0))] if self.dates else None
+        self.bench_first = (self.bench_map.get(_s) if _s else None) or (
+            benchmark[0]["close"] if benchmark else None
+        )
+        self.bench_hist: list[float] = []  # 与 dates 对齐的基准价格（每日更新）
 
     # ——— 行情访问 ———
     def _price_today(self, symbol: str):
@@ -522,10 +529,15 @@ class PortfolioBacktestEngine:
                     logger.warning(f"on_bar {d} failed: {e}")
                 self._flush_pending_orders(ctx)
 
-            eq = self._equity_today()
-            self.equity_curve.append(
-                PEquityPoint(date=d, equity=round(eq, 2), benchmark=round(bench_equity, 2))
-            )
+            if i >= self.warmup:
+                # ⚠️ 净值曲线只记录策略真正开始运行之后的日子。
+                #    把预热期（策略必为空仓、而基准在涨）算进来的话：
+                #      ① 基准收益虚高（白吃预热期涨幅）→ 超额被系统性低估
+                #      ② 前面一段"收益恒为 0"拉低年化与夏普
+                eq = self._equity_today()
+                self.equity_curve.append(
+                    PEquityPoint(date=d, equity=round(eq, 2), benchmark=round(bench_equity, 2))
+                )
 
         return self._build_result(strategy_class, params)
 
