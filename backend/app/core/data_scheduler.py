@@ -25,6 +25,13 @@ _DATA_READY_HOUR = 16
 # 超时即杀子进程、调度线程永不阻塞（否则 16:00 卡死会连带 19:00 定时瘫痪）。
 _PIPELINE_TIMEOUT = 1500
 
+# —— 策略验证（移植/JK 系列一条流水线）——
+# 每天数据管道跑完后自动复跑一遍策略验证，与聚宽实测数字带容差对照，
+# 结果写入 data/reports/strategy_verify_<key>.html|json，指标漂移第一时间可见。
+VERIFY_HOUR, VERIFY_MIN = 20, 30
+_VERIFY_TIMEOUT = 1800
+_VERIFY_STRATEGIES = os.getenv("QUANT_VERIFY_STRATEGIES", "jk001,jk002")
+
 # 运行状态（供监控页查询）
 _status = {
     "enabled": False,
@@ -35,6 +42,15 @@ _status = {
     "runs_total": 0,
     "catch_up": False,        # 最近一次是否由「断供自愈」触发（而非 19:00 定时）
     "next_run": f"每交易日 {RUN_HOUR:02d}:{RUN_MIN:02d}，或检测到数据滞后时立即补跑",
+    "verify": {               # 策略验证子任务
+        "enabled": True,
+        "strategies": _VERIFY_STRATEGIES,
+        "run_hour": f"{VERIFY_HOUR:02d}:{VERIFY_MIN:02d}",
+        "last_run_at": None,
+        "last_success": None,
+        "last_error": None,
+        "reports": [],
+    },
 }
 
 
@@ -272,6 +288,33 @@ def _refresh_membership_if_due(now: datetime) -> bool:
     return True
 
 
+def _run_verify(strategies: str) -> tuple[bool, str]:
+    """自动策略验证（子进程隔离 + 硬超时）。
+
+    必须在子进程里跑：回测是一次几十秒～几分钟的全市场计算，放在调度线程内
+    会让整个调度循环停摆；且失败不影响日更结果，独立记录。
+    """
+    backend = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    env = dict(os.environ)
+    env["PYTHONPATH"] = backend
+    cmd = [sys.executable, "scripts/verify_strategy.py",
+           "--strategy", strategies, "--quick"]
+    try:
+        proc = subprocess.run(cmd, env=env, cwd=backend, capture_output=True,
+                              text=True, timeout=_VERIFY_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        msg = f"验证超时（>{_VERIFY_TIMEOUT}s）已终止"
+        logger.warning(msg)
+        return False, msg
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)[:200]
+    if proc.returncode != 0:
+        msg = (proc.stderr or proc.stdout or "")[-300:]
+        logger.warning("策略验证失败 rc=%s: %s", proc.returncode, msg)
+        return False, msg
+    return True, (proc.stdout or "")[-300:]
+
+
 def _loop(enabled: bool) -> None:
     last_run_date = ""
     while True:
@@ -294,6 +337,24 @@ def _loop(enabled: bool) -> None:
                         _refresh_membership_if_due(now)
                     except Exception as e:  # noqa: BLE001
                         logger.warning("成分快照巡检异常: %s", e)
+
+                    # 策略自动验证：数据更新之后、每晚一次（20:30 后）
+                    v = _status["verify"]
+                    if (now.hour, now.minute) >= (VERIFY_HOUR, VERIFY_MIN) \
+                            and v.get("last_run_date") != _today_str():
+                        v["last_run_date"] = _today_str()
+                        v["last_run_at"] = now.isoformat(timespec="seconds")
+                        ok, msg = _run_verify(_VERIFY_STRATEGIES)
+                        if ok:
+                            v["last_success"] = now.isoformat(timespec="seconds")
+                            v["last_error"] = None
+                            v["reports"] = [
+                                f"data/reports/strategy_verify_{k.strip()}.html"
+                                for k in _VERIFY_STRATEGIES.split(",") if k.strip()
+                            ]
+                            logger.info("策略验证完成：%s", _VERIFY_STRATEGIES)
+                        else:
+                            v["last_error"] = msg
                     last_run_date = _today_str()
         except Exception as e:  # noqa: BLE001
             logger.error("数据调度循环异常: %s", e)

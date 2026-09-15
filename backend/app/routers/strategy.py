@@ -225,15 +225,29 @@ def _run_portfolio(db, req, meta, params, progress_cb=None):
     #    消除『用当前成分股回测整段历史』带来的前视/幸存者偏差。
     #    优先读本地 index_membership 缓存（在线源波动不影响回测可复现性），
     #    缺失月份才在线拉取并回填。
-    try:
-        membership = membership_store.get_membership(db, index_code, sd, ed)
-    except Exception as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"获取指数 {index_code} 时点成分股失败：{e}。",
-        )
-    if not membership:
-        raise HTTPException(status_code=404, detail="时点成分股快照为空")
+    pool_mode = str(params.get("pool_mode") or meta.get("pool_mode") or "index")
+    if pool_mode == "all":
+        # 全 A 池：直接用平台已覆盖的全部标的，不依赖指数成分快照。
+        # 为什么需要：中证全指 000985 的历史 PIT 成分取不到（tushare index_weight
+        # 受账户权限限制只能拉最近几天；新浪指数行情源 000985 停在 2016 年），
+        # 而 jk002 的目的恰恰是检验 alpha 在「扩到大盘股之外」是否还在。
+        all_syms = [r[0] for r in db.execute(select(KlineDaily.symbol).distinct()).all()]
+        if not all_syms:
+            raise HTTPException(status_code=404, detail="全A池为空：kline_daily 里没有个股数据")
+        # ⚠️ 快照日必须是字符串：引擎内部日期一律 "YYYY-MM-DD"，
+        #    这里若给 date 对象，_members_on 比较时会抛 TypeError，
+        #    异常被回测循环的 try/except 吞掉 → 表现为「0 成交、收益恒 0」的假空仓。
+        membership = [(sd.isoformat(), set(all_syms))]
+    else:
+        try:
+            membership = membership_store.get_membership(db, index_code, sd, ed)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"获取指数 {index_code} 时点成分股失败：{e}。",
+            )
+        if not membership:
+            raise HTTPException(status_code=404, detail="时点成分股快照为空")
 
     # 回测窗口内曾入选指数的全部标的并集（含已退出者），用于一次性拉取日K
     union_syms: list[str] = []
@@ -369,11 +383,22 @@ def _run_portfolio(db, req, meta, params, progress_cb=None):
         risk_limits=risk_limits or None,
         fundamentals=fundamentals or None,
         financials_raw=financials_raw or None,
+        start_date=sd,
     )
     try:
-        return engine.run(meta["cls"], params)
+        result = engine.run(meta["cls"], params)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"组合回测执行失败: {e}")
+
+    # 假空仓保护：调仓持续抛异常 → 策略永远不建仓，收益恒 0 却看不出是 bug。
+    # 典型触发：membership 快照日类型不对（date vs str）导致 _members_on 比较失败。
+    if getattr(engine, "rebalance_errors", 0) and (result.trade_count or 0) == 0:
+        raise HTTPException(
+            status_code=500,
+            detail=(f"策略调仓连续失败 {engine.rebalance_errors} 次，回测结果无效（0 成交）。"
+                    f"首次错误：{engine.rebalance_first_error}"),
+        )
+    return result
 
 
 # ——— 数据加载 ———

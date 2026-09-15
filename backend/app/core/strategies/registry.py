@@ -260,12 +260,12 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
     "jk002": {
         "key": "jk002",
         "name": "jk002 · 自由现金流+低波动(中证全指)",
-        "description": "jk001 的扩池版本：股票池换成中证全指（含科创板，allow_star_market=1），其余选股/止损/仓位逻辑与 jk001 完全一致，用于检验 alpha 在大盘股池之外是否仍然存在。注意：中证全指成分需先跑 scripts/seed_membership.py --index 000985 补齐 PIT 成分与日K。",
+        "description": "jk001 的扩池版本：股票池扩到「平台全A」（pool_mode=all，含科创板 allow_star_market=1），基准用国证A指 sz399317（近似全市场），其余选股/止损/仓位逻辑与 jk001 完全一致，用于检验 alpha 在大盘股池之外是否仍然存在。注意：中证全指 000985 的历史 PIT 成分与行情都取不到（tushare index_weight 受权限限制、新浪指数源 000985 停在 2016 年），故池子用平台全A近似、基准换国证A指。",
         "cls": JKFactorStrategy,
         "multi_asset": True,
         "index_code": "000985",
-        "index_symbol": "sh000985",
-        "index_name": "中证全指",
+        "index_symbol": "sz399317",
+        "index_name": "国证A指",
         "default_params": {
             "rebalance_period": 21, "stock_num": 30, "max_stock_weight": 0.10,
             "max_industry_num": 10, "w_fundamental": 0.5, "w_lowvol": 0.5,
@@ -276,7 +276,7 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             "bullish_position": 1.0, "neutral_position": 0.9, "bearish_position": 0.0,
             "reb_thresh": 0.02, "allow_star_market": 1,
             "exclude_financial": 1, "exclude_st": 0, "min_list_days": 250,
-            "industry_level": 1,
+            "industry_level": 1, "pool_mode": "all",
             "max_position_pct": 0.0, "max_gross_exposure": 0.0,
             # 内部参数：动量/波动需要 260 日回看，引擎预热天数要够
             "warmup_days": 270,

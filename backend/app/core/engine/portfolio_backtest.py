@@ -223,6 +223,7 @@ class PortfolioBacktestEngine:
         risk_limits: dict | None = None,
         fundamentals: dict | None = None,
         financials_raw: dict | None = None,
+        start_date=None,
     ):
         self.data = data
         self.benchmark = benchmark
@@ -230,7 +231,31 @@ class PortfolioBacktestEngine:
         self.commission = float(commission)
         self.slippage = float(slippage)
         self.rebalance_period = int(rebalance_period)
+        # ⚠️ 预热边界必须锚到「用户请求的起始日」，而不是一个固定天数。
+        #    取数窗口为了给长回看因子备足历史会往前提（可能提前一年以上），
+        #    若 warmup 用固定天数，策略会在 req.start 之前就跑起来 / 或白白跳过一段。
+        #    这里把 warmup 定成「dates 中第一个 >= start_date 的位置」，两者兼顾。
+        self.warmup = int(warmup)  # 占位，稍后按 start_date 校正
+        # 交易日历：所有股票 + 基准的交易日并集，升序
+        dset = set()
+        for sym, bars in data.items():
+            for b in bars:
+                dset.add(b["date"])
+        for b in benchmark:
+            dset.add(b["date"])
+        self.dates = sorted(dset)
+
         self.warmup = int(warmup)
+        if start_date is not None and self.dates and warmup is not None:
+            sd0 = str(start_date)[:10]
+            lo, hi = 0, len(self.dates)
+            while lo < hi:                       # 二分找第一个 >= sd0 的位置
+                mid = (lo + hi) // 2
+                if str(self.dates[mid])[:10] < sd0:
+                    lo = mid + 1
+                else:
+                    hi = mid
+            self.warmup = max(self.warmup, min(lo, len(self.dates) - 1))
         # 实盘化参数
         self.min_commission = float(min_commission)
         self.lot_size = int(lot_size)
@@ -262,15 +287,6 @@ class PortfolioBacktestEngine:
         # 调仓下单缓冲（rebalance 期间只记录目标仓位，flush 时统一做风险约束再撮合）
         self._pending_orders: list[dict] = []
         self._clamp_events: list[dict] = []      # 风险约束触发的截断记录（审计用）
-
-        # 交易日历：所有股票 + 基准的交易日并集，升序
-        dset = set()
-        for sym, bars in data.items():
-            for b in bars:
-                dset.add(b["date"])
-        for b in benchmark:
-            dset.add(b["date"])
-        self.dates = sorted(dset)
         self.universe = list(data.keys())
 
         # 每只股票：date->close 映射 & 真实交易日收盘价历史（ffill 定价用 last_close）
@@ -304,6 +320,8 @@ class PortfolioBacktestEngine:
             benchmark[0]["close"] if benchmark else None
         )
         self.bench_hist: list[float] = []  # 与 dates 对齐的基准价格（每日更新）
+        self.rebalance_errors = 0            # 调仓失败次数（>0 说明回测结果不可信）
+        self.rebalance_first_error: str | None = None
 
     # ——— 行情访问 ———
     def _price_today(self, symbol: str):
@@ -507,6 +525,12 @@ class PortfolioBacktestEngine:
                 try:
                     strat.rebalance(ctx, d)
                 except Exception as e:  # noqa: BLE001
+                    # ⚠️ 不能只记日志：调仓持续抛异常会让策略「永远空仓」，
+                    #    表现为收益恒 0、0 成交，却看不出是 bug 还是真的没信号。
+                    #    这里累计次数并保留首条错误，调用方可据此判定回测无效。
+                    self.rebalance_errors += 1
+                    if self.rebalance_first_error is None:
+                        self.rebalance_first_error = f"{d}: {type(e).__name__}: {e}"
                     logger.warning(f"rebalance {d} failed: {e}")
                 # 2b) 统一做风险约束(apply_limits)后再撮合成交（views 与 positions 分离）
                 self._flush_pending_orders(ctx)

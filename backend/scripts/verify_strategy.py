@@ -27,6 +27,9 @@ from pathlib import Path
 
 sys.path.insert(0, ".")
 
+from sqlalchemy import func, select  # noqa: E402
+from app.models import IndexKlineDaily, IndexMembership  # noqa: E402
+
 from app.database import SessionLocal, init_db  # noqa: E402
 from app.core.strategies.registry import STRATEGY_REGISTRY  # noqa: E402
 from app.routers.strategy import _run_portfolio  # noqa: E402
@@ -44,9 +47,8 @@ REFERENCE = {
             "start": "2019-01-02", "end": "2024-12-13",
             "ref": {"total_return": 1.1483, "sharpe": 0.836, "max_drawdown": -0.2284,
                     "benchmark": 0.3245},
-            "note": "平台日K从 2019-01-02 起，策略还需 260 日预热 → 实际从 2020 年初才建仓，"
-                    "本段不可直接比较（缺 2019 年数据）。",
-            "comparable": False,
+            "note": "2026-09 已补 2017-06 起的个股日K与复权因子，预热期数据完整 → 本段可比。",
+            "comparable": True,
         },
         {
             "name": "样本外 2025-01-02~2026-09-11",
@@ -55,6 +57,25 @@ REFERENCE = {
                     "benchmark": 0.1805},
             "note": "原版最重要的一段：年化 α +4.10%（t=0.58，不显著），跑输沪深300 0.65pp。",
             "comparable": True,
+        },
+    ],
+    "jk002": [
+        {
+            "name": "全区间 2019-01-02~2024-12-13",
+            "start": "2019-01-02", "end": "2024-12-13",
+            "ref": None,
+            "note": "jk002 是平台新增的扩池版本：池子=平台全A（pool_mode=all，含科创板），"
+                    "基准=国证A指 sz399317（近似全市场）。聚宽侧无对应实盘，仅做平台内部留档。"
+                    "注：中证全指 000985 的历史 PIT 成分与行情均取不到（tushare index_weight 受权限"
+                    "限制、新浪指数源停在 2016 年），故改用全A池 + 国证A指近似。",
+            "comparable": False,
+        },
+        {
+            "name": "样本外 2025-01-02~2026-09-11",
+            "start": "2025-01-02", "end": "2026-09-11",
+            "ref": None,
+            "note": "同上，平台内部留档。",
+            "comparable": False,
         },
     ],
 }
@@ -67,7 +88,8 @@ def _run_one(db, key: str, start: str, end: str, params: dict | None = None):
     meta = STRATEGY_REGISTRY[key]
     p = dict(meta["default_params"])
     p.update(params or {})
-    req = BacktestRequest(symbol="sh000300", start=start, end=end, strategy=key,
+    req = BacktestRequest(symbol=meta.get("index_symbol", "sh000300"),
+                          start=start, end=end, strategy=key,
                           params=p, initial_cash=1_000_000, commission=0.0003,
                           slippage=0.002, adj="qfq")
     return _run_portfolio(db, req, meta, p)
@@ -132,11 +154,48 @@ th{{background:#f4f6fa;color:#7a8299;font-weight:600}}
 </body></html>"""
 
 
+def _data_ready(db, key: str) -> tuple[bool, str]:
+    """前置检查：该策略依赖的指数成分快照与指数日K是否就绪。
+
+    没有这一步，定时任务会每天在一个「数据还没准备好的」策略上失败并刷满错误日志；
+    明确跳过并说明原因，缺什么一目了然（例如 jk002 的中证全指需要单独 seed）。
+    """
+    meta = STRATEGY_REGISTRY[key]
+    idx_code = meta.get("index_code")
+    idx_symbol = meta.get("index_symbol")
+    # pool_mode=all（如 jk002）不依赖指数 PIT 成分快照，只要求指数日K（做基准）在库
+    if str(meta.get("default_params", {}).get("pool_mode") or "index") == "all":
+        n_k = db.execute(
+            select(func.count()).select_from(IndexKlineDaily)
+            .where(IndexKlineDaily.symbol == idx_symbol)
+        ).scalar() or 0
+        if not n_k:
+            return False, (f"缺基准指数 {idx_symbol} 的日K"
+                           f"（需先跑 scripts/seed_index_kline.py --symbol {idx_symbol}）")
+        return True, f"全A池（不依赖成分快照）/ 基准K线 {n_k} 根"
+    n_mem = db.execute(
+        select(func.count()).select_from(IndexMembership)
+        .where(IndexMembership.index_code == idx_code)
+    ).scalar() or 0
+    n_k = db.execute(
+        select(func.count()).select_from(IndexKlineDaily)
+        .where(IndexKlineDaily.symbol == idx_symbol)
+    ).scalar() or 0
+    if not n_mem:
+        return False, f"缺指数 {idx_code} 的 PIT 成分快照（需先跑 scripts/seed_membership.py --index {idx_code}）"
+    if not n_k:
+        return False, f"缺指数 {idx_symbol} 的日K（需先跑 scripts/seed_index_kline.py --symbol {idx_symbol}）"
+    return True, f"成分 {n_mem} 条 / 指数K线 {n_k} 根"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--strategy", default="jk001", help="策略 key，逗号分隔多个")
     ap.add_argument("--start", default="", help="自定义区间起点（覆盖内置分段）")
     ap.add_argument("--end", default="", help="自定义区间终点")
+    ap.add_argument("--quick", action="store_true",
+                    help="只跑每个策略的最后一段（近段），供每晚定时任务使用。"
+                         "全A池策略（jk002）跑 6 年要 20 分钟以上，每晚全量跑不现实")
     args = ap.parse_args()
 
     init_db()
@@ -147,6 +206,18 @@ def main() -> int:
         if key not in STRATEGY_REGISTRY:
             print(f"[skip] 未注册策略 {key}")
             continue
+        ok, why = _data_ready(db, key)
+        if not ok:
+            print(f"[{key}] 数据未就绪，跳过：{why}")
+            rows = [{"name": "数据前置检查", "got": {}, "ref": None,
+                     "verdict": "跳过", "detail": why}]
+            (OUT_DIR / f"strategy_verify_{key}.json").write_text(
+                json.dumps({"strategy": key, "date": date.today().isoformat(),
+                            "rows": rows}, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8")
+            (OUT_DIR / f"strategy_verify_{key}.html").write_text(
+                _html(key, rows), encoding="utf-8")
+            continue
         if args.start and args.end:
             segs = [{"name": f"{args.start}~{args.end}", "start": args.start,
                      "end": args.end, "ref": None, "comparable": False}]
@@ -154,6 +225,8 @@ def main() -> int:
             segs = REFERENCE.get(key, [{"name": "默认区间", "start": "2021-01-01",
                                         "end": date.today().isoformat(),
                                         "ref": None, "comparable": False}])
+            if args.quick:
+                segs = segs[-1:]
         rows = []
         for seg in segs:
             try:

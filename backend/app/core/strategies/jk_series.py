@@ -76,6 +76,8 @@ class JKFactorStrategy(PortfolioStrategy):
         self.exclude_financial = int(p.get("exclude_financial", 1)) == 1
         self.exclude_st = int(p.get("exclude_st", 0)) == 1
         self.min_list_days = int(p.get("min_list_days", 250))
+        # 池子来源策略内部不关心（装配层已经把 universe 准备好了），此处仅记录偏好
+        self.pool_mode = str(p.get("pool_mode", "index"))
         # —— 止损 ——
         self.stop_loss_pct = float(p.get("stop_loss_pct", 0.15))
         self.enable_ladder_stop = int(p.get("enable_ladder_stop", 1)) == 1
