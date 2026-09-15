@@ -132,15 +132,15 @@ class JKFactorStrategy(PortfolioStrategy):
         else:
             self._check_stop_loss(ctx, date)
             self._trim_to_target(ctx, date)
+        if date[8:] <= "03":      # 每月头几天打一条，便于确认日频钩子在跑
+            pos = ctx.positions()
+            logger.warning("[jk] on_bar %s 持仓%d 成本=%s", date, len(pos),
+                           {s: round(ctx.cost(s), 2) for s in list(pos)[:2]})
 
     def _clear_all(self, ctx, signal: str, reason: str) -> None:
         for s in list(ctx.positions().keys()):
             ctx.order_target_percent(s, 0.0, signal, reason)
             self._forget(s)
-        if date[8:] <= "03":      # 每月头几天打一条，便于确认日频钩子在跑
-            pos = ctx.positions()
-            logger.warning("[jk] on_bar %s 持仓%d 成本=%s", date, len(pos),
-                           {s: round(ctx.cost(s), 2) for s in list(pos)[:2]})
 
     def _week_key(self, date: str):
         try:
