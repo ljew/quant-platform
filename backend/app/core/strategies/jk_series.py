@@ -78,6 +78,10 @@ class JKFactorStrategy(PortfolioStrategy):
         self.min_list_days = int(p.get("min_list_days", 250))
         # 池子来源策略内部不关心（装配层已经把 universe 准备好了），此处仅记录偏好
         self.pool_mode = str(p.get("pool_mode", "index"))
+        # 动量准入取值口径：'m121'=只用 12-1（原版代码行为）/ 'avg'=12-1 与 6-1 各半
+        self.momentum_filter_mode = str(p.get("momentum_filter_mode", "m121"))
+        # 财务 PIT：1=按公告日（严格，默认）/ 0=按报告期（含前视，仅用于对照实验）
+        self.financial_pit = int(p.get("financial_pit", 1))
         # —— 止损 ——
         self.stop_loss_pct = float(p.get("stop_loss_pct", 0.15))
         self.enable_ladder_stop = int(p.get("enable_ladder_stop", 1)) == 1
@@ -252,13 +256,21 @@ class JKFactorStrategy(PortfolioStrategy):
         return out
 
     def _pit_financial(self, ctx, sym: str, date: str):
-        """取公告日 <= 今日的最新一期财务（杜绝前视）。"""
+        """取最新一期财务。
+
+        financial_pit=1（默认）：按 **公告日** ann_date <= date 取，严格杜绝前视。
+        financial_pit=0：按 **报告期** end_date <= date 取，忽略是否已公告。
+            仅用于对照实验 —— 聚宽 get_fundamentals(date=) 的口径长期存疑，
+            若原版实际是「报告期可见」而非「公告日可见」，则原版回测含前视，
+            其 +114.83% 会系统性虚高。用这个开关可以量化该影响。
+        """
         rows = ctx.financial(sym) or []
-        best, best_ad = None, ""
+        best, best_key = None, ""
+        key = "ann_date" if self.financial_pit else "end_date"
         for r in rows:
-            ad = str(r.get("ann_date") or "")[:10]
-            if ad and ad <= date and ad >= best_ad:
-                best, best_ad = r, ad
+            k = str(r.get(key) or "")[:10]
+            if k and k <= date and k >= best_key:
+                best, best_key = r, k
         return best
 
     def _screen_fundamentals(self, ctx, pool: list[str], date: str):
@@ -355,7 +367,13 @@ class JKFactorStrategy(PortfolioStrategy):
                 continue
             sc = (wf * fz.get(s, 0.0) + wv * vz.get(s, 0.0)
                   + wp * pz.get(s, 0.0) + wm * mz.get(s, 0.0))
-            scored.append((s, sc, 0.5 * m121.get(s, 0.0) + 0.5 * m61.get(s, 0.0)))
+            # ⚠️ 动量准入口径对齐原版：聚宽 jk001_live_v1.py 的 docstring 写的是
+            #    「12-1 与 6-1 各半」，但代码里 append 的第三个元素只有 m121。
+            #    平台原先按 docstring 实现成平均值，与原版偏离 —— 默认改回 m121，
+            #    用 momentum_filter_mode='avg' 可切回做对照。
+            mom_filter = (0.5 * m121.get(s, 0.0) + 0.5 * m61.get(s, 0.0)
+                          if self.momentum_filter_mode == "avg" else m121.get(s, 0.0))
+            scored.append((s, sc, mom_filter))
         scored.sort(key=lambda x: x[1], reverse=True)
 
         def _ind(sym: str) -> str:

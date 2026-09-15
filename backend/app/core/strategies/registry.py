@@ -33,6 +33,12 @@ def _float(key, label, default, mn, mx, step):
     return {"key": key, "label": label, "type": "float", "default": default, "min": mn, "max": mx, "step": step}
 
 
+def _opt(key, label, default, options, desc=""):
+    """枚举型参数（用于口径切换类的对照实验）。"""
+    return {"key": key, "label": label, "type": "str", "default": default,
+            "options": options, "desc": desc}
+
+
 STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
     "dual_ma": {
         "key": "dual_ma",
@@ -253,6 +259,9 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             _float("reb_thresh", "调仓偏离阈值", 0.02, 0.0, 0.2, 0.005),
             _int("allow_star_market", "允许科创板(1开/0关)", 0, 0, 1),
             _int("industry_level", "行业口径(1申万一级/0东财细分)", 1, 0, 1),
+            _opt("momentum_filter_mode", "动量准入口径", "m121", ["m121", "avg"],
+                 "m121=只用12-1动量（与聚宽原版代码一致）；avg=12-1与6-1各半（按原版docstring）"),
+            _int("financial_pit", "财务PIT(1公告日/0报告期)", 1, 0, 1),
             _int("exclude_financial", "剔除金融股(1开/0关)", 1, 0, 1),
             _int("min_list_days", "最少上市天数", 250, 0, 1000, 10),
         ],
@@ -301,6 +310,9 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             _float("reb_thresh", "调仓偏离阈值", 0.02, 0.0, 0.2, 0.005),
             _int("allow_star_market", "允许科创板(1开/0关)", 1, 0, 1),
             _int("industry_level", "行业口径(1申万一级/0东财细分)", 1, 0, 1),
+            _opt("momentum_filter_mode", "动量准入口径", "m121", ["m121", "avg"],
+                 "m121=只用12-1动量（与聚宽原版代码一致）；avg=12-1与6-1各半（按原版docstring）"),
+            _int("financial_pit", "财务PIT(1公告日/0报告期)", 1, 0, 1),
             _int("exclude_financial", "剔除金融股(1开/0关)", 1, 0, 1),
             _int("min_list_days", "最少上市天数", 250, 0, 1000, 10),
         ],

@@ -45,9 +45,17 @@ REFERENCE = {
         {
             "name": "样本内 2019-01-02~2024-12-13",
             "start": "2019-01-02", "end": "2024-12-13",
-            "ref": {"total_return": 1.1483, "sharpe": 0.836, "max_drawdown": -0.2284,
-                    "benchmark": 0.3245},
-            "note": "2026-09 已补 2017-06 起的个股日K与复权因子，预热期数据完整 → 本段可比。",
+            "ref": {"total_return": 0.5729, "sharpe": 0.5956, "max_drawdown": -0.1893,
+                    "benchmark": 0.3227},
+            # ⚠️ 旧参考值 +114.83%/-22.84%/夏普0.836 是错的（来源不明）。
+            #    2026-09-15 找到聚宽回测存档 jq2019/metrics.json（同区间 1449 交易日），
+            #    实测为 +57.29% / 夏普 0.596 / 回撤 -18.93% / 基准 +32.27%，以此为准。
+            # ⚠️ 聚宽该段「平均仓位仅 51.6%」（中性参数明明是 0.9）—— 回撤小是半仓的
+            #    副产品，不是策略设计的风控；平台忠实满仓 89%，故回撤天然更大。
+            "slippage": 0.0,          # 聚宽回测无滑点，对比需同口径
+            "note": "基准已对齐（+32.27% vs 平台 +32.45%）。差异主因：① 平台满仓 89% vs "
+                    "聚宽实际 51.6%；② 平台默认 0.2% 滑点，6 年吃掉约 24pp（本段已按"
+                    "聚宽口径置 0）。同口径下平台 +78% vs 聚宽 +57%，回撤 -42.8% vs -18.9%。",
             "comparable": True,
         },
         {
@@ -55,8 +63,11 @@ REFERENCE = {
             "start": "2025-01-02", "end": "2026-09-11",
             "ref": {"total_return": 0.1740, "sharpe": 0.674, "max_drawdown": -0.1103,
                     "benchmark": 0.1805},
-            "note": "原版最重要的一段：年化 α +4.10%（t=0.58，不显著），跑输沪深300 0.65pp。",
-            "comparable": True,
+            "note": "⚠️ 该参考值与已被证伪的样本内 +114.83% 同源，可靠性存疑，"
+                    "暂按『仅作方向性参考』处理（comparable=False）。"
+                    "待老刘提供 2025-2026 的聚宽实盘/回测存档后再校正。"
+                    "基准 +18.05% 已确认与聚宽一致，可作为数据侧的校验锚点。",
+            "comparable": False,
         },
     ],
     "jk002": [
@@ -84,14 +95,16 @@ REFERENCE = {
 TOLERANCE = {"total_return": 0.15, "sharpe": 0.25, "max_drawdown": 0.08, "benchmark": 0.05}
 
 
-def _run_one(db, key: str, start: str, end: str, params: dict | None = None):
+def _run_one(db, key: str, start: str, end: str, params: dict | None = None,
+              seg: dict | None = None):
     meta = STRATEGY_REGISTRY[key]
     p = dict(meta["default_params"])
     p.update(params or {})
     req = BacktestRequest(symbol=meta.get("index_symbol", "sh000300"),
                           start=start, end=end, strategy=key,
                           params=p, initial_cash=1_000_000, commission=0.0003,
-                          slippage=0.002, adj="qfq")
+                          slippage=seg.get("slippage", 0.002) if seg else 0.002,
+                          adj="qfq")
     return _run_portfolio(db, req, meta, p)
 
 
@@ -230,7 +243,7 @@ def main() -> int:
         rows = []
         for seg in segs:
             try:
-                r = _run_one(db, key, seg["start"], seg["end"])
+                r = _run_one(db, key, seg["start"], seg["end"], seg=seg)
                 got = {"total_return": r.total_return, "sharpe": r.sharpe,
                        "max_drawdown": r.max_drawdown,
                        "benchmark": r.benchmark_total_return,
