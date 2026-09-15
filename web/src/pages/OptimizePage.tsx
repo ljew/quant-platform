@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, OptimizeTrial, StrategyInfo } from "../api/client";
+import { api, BacktestResult, OptimizeTrial, StrategyInfo } from "../api/client";
 import { useTheme } from "../theme";
 import type { ThemeColors } from "../theme";
 import { Btn, Card, PageHeader } from "../components/ui";
@@ -40,9 +40,29 @@ export default function OptimizePage() {
   const [prog, setProg] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
   const [asyncMode, setAsyncMode] = useState(false);
   const polling = useRef(false);
+  // 一键落地：全区间回测 / 建模拟盘
+  const [verify, setVerify] = useState<BacktestResult | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const [buyHold, setBuyHold] = useState<number | null>(null);
+  const [paperOpen, setPaperOpen] = useState(false);
+  const [paperName, setPaperName] = useState("");
+  const [paperCash, setPaperCash] = useState(1000000);
+  const [paperAuto, setPaperAuto] = useState(true);
+  const [paperBusy, setPaperBusy] = useState(false);
+  const [toast, setToast] = useState("");
   const { colors } = useTheme();
 
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(""), 6000);
+  };
+  /** 跨页跳转（App.tsx 监听 quant-nav 事件切 tab）。 */
+  const go = (t: string) => window.dispatchEvent(new CustomEvent("quant-nav", { detail: { tab: t } }));
+
   useEffect(() => () => { polling.current = false; }, []);  // 离开页面停止轮询
+
+  // 换了选中的参数组 / 重跑寻优后，之前的全区间回测结果就不再对应了，清掉避免误导
+  useEffect(() => { setVerify(null); setPaperOpen(false); }, [sel, trials]);
 
   useEffect(() => {
     api.strategies().then((s) => {
@@ -158,6 +178,101 @@ export default function OptimizePage() {
   const best = trials.length ? trials[Math.min(sel, trials.length - 1)] : null;
   const paramKeys = trials.length ? Object.keys(trials[0].params) : [];
   const hasOos = !!trials.length && trials[0].oos_start != null;
+
+  /** 用当前选中的参数，在完整区间（IS+OOS 合并）再跑一次回测，作为最终确认。 */
+  const verifyBest = useCallback(async () => {
+    if (!best) return;
+    setVerifying(true);
+    setError("");
+    try {
+      const r = await api.backtestSync({
+        symbol, start, end, strategy: key,
+        params: best.params, initial_cash: 1000000,
+      });
+      setVerify(r);
+      // 单标的回测后端不给基准，这里拿标的自身的「买入持有」做对照
+      try {
+        const ks = await api.kline(symbol, start, end);
+        setBuyHold(ks.length > 1 ? ks[ks.length - 1].close / ks[0].close - 1 : null);
+      } catch {
+        setBuyHold(null);
+      }
+      showToast("已跑完全区间回测，并写入回测历史");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setVerifying(false);
+    }
+  }, [best, symbol, start, end, key]);
+
+  /** 用当前选中的参数建一个模拟盘任务（默认立即启用并跑一次）。 */
+  const createPaper = useCallback(async () => {
+    if (!best) return;
+    setPaperBusy(true);
+    setError("");
+    try {
+      const created = await api.paperCreate({
+        name: paperName,
+        strategy_key: key,
+        kind: "single",
+        symbols: symbol,
+        params_json: JSON.stringify(best.params),
+        initial_cash: paperCash,
+        start_date: start,
+        enabled: paperAuto,
+      });
+      setPaperOpen(false);
+      showToast(`模拟盘「${paperName}」已创建${paperAuto ? "，已触发首次运行" : ""}`);
+      // 首次运行可能要几十秒，不 await，避免按钮一直转圈
+      if (paperAuto && created?.id) {
+        api.paperRun(created.id).catch(() => { /* 跑失败不影响任务已建，调度器也会再拉起 */ });
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setPaperBusy(false);
+    }
+  }, [best, key, symbol, start, paperName, paperCash, paperAuto]);
+
+  /** 全区间回测的净值曲线；竖线标注样本外起点，方便对照 IS/OOS 两段表现。 */
+  const verifyOption = useMemo(() => {
+    if (!verify?.equity_curve?.length) return null;
+    const d = verify.equity_curve;
+    return {
+      tooltip: {
+        trigger: "axis" as const,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        formatter: (ps: any) => {
+          const p = Array.isArray(ps) ? ps[0] : ps;
+          return `${p.axisValue}<br/>权益 <b>${Number(p.data).toFixed(0)}</b>`;
+        },
+      },
+      grid: { left: 62, right: 16, top: 14, bottom: 34 },
+      xAxis: {
+        type: "category" as const, data: d.map((p) => p.date),
+        axisLabel: { color: colors.muted, fontSize: 10 },
+      },
+      yAxis: {
+        type: "value" as const, scale: true,
+        axisLabel: { color: colors.muted, fontSize: 10 },
+        splitLine: { lineStyle: { color: colors.border } },
+      },
+      series: [{
+        name: "权益", type: "line" as const, showSymbol: false,
+        data: d.map((p) => p.equity),
+        lineStyle: { color: colors.accent, width: 1.6 },
+        areaStyle: { color: "rgba(128,128,128,0.12)" },
+        markLine: best?.oos_start
+          ? {
+            silent: true, symbol: "none",
+            data: [{ xAxis: best.oos_start }],
+            lineStyle: { color: colors.muted, type: "dashed" as const },
+            label: { formatter: "OOS 起点", color: colors.muted, fontSize: 10 },
+          }
+          : undefined,
+      }],
+    };
+  }, [verify, best, colors]);
 
   // —— 稳健性热力图：穿过选中参数组合的一个 XY 切面 ——
   const heatOption = useMemo(() => {
@@ -290,6 +405,12 @@ export default function OptimizePage() {
         </div>
       )}
       {error && <div style={{ color: colors.down, margin: "8px 0" }}>{error}</div>}
+      {toast && (
+        <div style={{ display: "flex", gap: 10, alignItems: "center", color: colors.up, margin: "8px 0", fontSize: 13 }}>
+          <span>✓ {toast}</span>
+          {toast.includes("模拟盘") && <Btn onClick={() => go("paper")}>去模拟盘</Btn>}
+        </div>
+      )}
 
       {/* 结论 */}
       {best && (
@@ -318,6 +439,101 @@ export default function OptimizePage() {
           </div>
           <Verdict best={best} colors={colors} />
           {hasOos && <div style={{ color: colors.muted, fontSize: 12, marginTop: 6 }}>验证段起点：{best.oos_start}</div>}
+
+          {/* —— 一键落地：拿这组参数去回测 / 建模拟盘 —— */}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 12 }}>
+            <Btn onClick={verifyBest} disabled={verifying}>
+              {verifying ? "回测中…" : "用此参数跑全区间回测"}
+            </Btn>
+            <Btn onClick={() => {
+              const tag = paramKeys.map((k) => best.params[k]).join("_");
+              const ts = new Date().toTimeString().slice(0, 8).replace(/:/g, "");
+              setPaperName(`寻优-${key}-${symbol}-${tag}-${ts}`);
+              setPaperOpen((o) => !o);
+            }}>
+              {paperOpen ? "收起建模拟盘" : "用此参数建模拟盘"}
+            </Btn>
+            <span style={{ color: colors.muted, fontSize: 12 }}>
+              全区间 = 样本内 + 样本外合并重跑一遍，看这组参数在完整区间到底行不行。
+            </span>
+          </div>
+
+          {paperOpen && (
+            <div style={{
+              marginTop: 10, padding: 12, borderRadius: 8,
+              background: "rgba(128,128,128,0.06)", border: `1px solid ${colors.border}`,
+            }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10 }}>
+                <label style={{ fontSize: 12 }}>
+                  任务名称
+                  <input value={paperName} onChange={(e) => setPaperName(e.target.value)} style={inputStyle(colors)} />
+                </label>
+                <label style={{ fontSize: 12 }}>
+                  初始资金（元）
+                  <input type="number" value={paperCash} onChange={(e) => setPaperCash(Number(e.target.value))}
+                    style={inputStyle(colors)} />
+                </label>
+              </div>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10, flexWrap: "wrap" }}>
+                <label style={{ fontSize: 12.5, display: "flex", gap: 6, alignItems: "center" }}>
+                  <input type="checkbox" checked={paperAuto} onChange={(e) => setPaperAuto(e.target.checked)} />
+                  创建后立即启用并跑一次
+                </label>
+                <Btn onClick={createPaper} disabled={paperBusy || !paperName.trim()}>
+                  {paperBusy ? "创建中…" : "确认创建"}
+                </Btn>
+                <span style={{ color: colors.muted, fontSize: 12 }}>
+                  参数将写入任务：{paramKeys.map((k) => `${k}=${best.params[k]}`).join(" · ")}
+                </span>
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* 全区间回测结果 */}
+      {verify && (
+        <Card title="全区间回测（用上面这组参数）" colors={colors}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 12, fontSize: 13 }}>
+            <div>
+              <div style={{ color: colors.muted }}>总收益</div>
+              <div style={{ fontWeight: 600, color: verify.total_return >= 0 ? colors.up : colors.down }}>
+                {(verify.total_return * 100).toFixed(2)}%
+              </div>
+            </div>
+            <div>
+              <div style={{ color: colors.muted }}>夏普</div>
+              <div style={{ fontWeight: 600 }}>{verify.sharpe.toFixed(3)}</div>
+            </div>
+            <div>
+              <div style={{ color: colors.muted }}>最大回撤</div>
+              <div style={{ fontWeight: 600, color: colors.down }}>{(verify.max_drawdown * 100).toFixed(1)}%</div>
+            </div>
+            <div>
+              <div style={{ color: colors.muted }}>交易数</div>
+              <div style={{ fontWeight: 600 }}>{verify.trade_count ?? "—"}</div>
+            </div>
+            {buyHold != null && (
+              <div>
+                <div style={{ color: colors.muted }}>标的买入持有</div>
+                <div style={{ fontWeight: 600, color: buyHold >= 0 ? colors.up : colors.down }}>
+                  {(buyHold * 100).toFixed(2)}%
+                </div>
+              </div>
+            )}
+            {buyHold != null && (
+              <div>
+                <div style={{ color: colors.muted }}>相对买入持有</div>
+                <div style={{ fontWeight: 600, color: verify.total_return - buyHold >= 0 ? colors.up : colors.down }}>
+                  {verify.total_return - buyHold >= 0 ? "+" : ""}{((verify.total_return - buyHold) * 100).toFixed(2)}%
+                </div>
+              </div>
+            )}
+          </div>
+          {verifyOption && <div style={{ marginTop: 10 }}><EChart option={verifyOption} height={280} /></div>}
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <Btn onClick={() => go("backtest")}>去回测页看明细</Btn>
+          </div>
         </Card>
       )}
 

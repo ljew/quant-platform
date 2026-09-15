@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import MarketPage from "./pages/MarketPage";
 import BacktestPage from "./pages/BacktestPage";
 import PaperPage from "./pages/PaperPage";
@@ -20,11 +20,24 @@ const NAV: { key: Tab; label: string; icon: string }[] = [
   { key: "monitor", label: "系统监控", icon: "◈" },
 ];
 
+/** 跨页跳转：任意页面 dispatch(new CustomEvent("quant-nav", { detail: { tab } })) 即可切换。 */
+function useCrossPageNav(setTab: (t: Tab) => void) {
+  useEffect(() => {
+    const onNav = (e: Event) => {
+      const t = (e as CustomEvent<{ tab?: Tab }>).detail?.tab;
+      if (t && NAV.some((n) => n.key === t)) setTab(t);
+    };
+    window.addEventListener("quant-nav", onNav as EventListener);
+    return () => window.removeEventListener("quant-nav", onNav as EventListener);
+  }, [setTab]);
+}
+
 /** 应用骨架：左侧终端式导航 + 主内容区。 */
 export default function App() {
   const [tab, setTab] = useState<Tab>("market");
   const { mode, colors, toggle } = useTheme();
   const sb = sidebarTheme;
+  useCrossPageNav(setTab);
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: colors.bg, color: colors.text }}>
