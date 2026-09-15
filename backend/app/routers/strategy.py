@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import date
+from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy import select, func
@@ -34,7 +34,7 @@ from sqlalchemy.orm import Session
 
 from app.config import DATA_DIR, settings
 from app.database import get_db
-from app.models import Backtest, Stock, KlineDaily, IndexKlineDaily, FundamentalsHistory
+from app.models import Backtest, Stock, KlineDaily, IndexKlineDaily, FundamentalsHistory, FinancialsRaw
 from app.schemas import (
     BacktestRequest,
     BacktestResult,
@@ -186,6 +186,26 @@ def _run_single(db, req, meta, params, start=None, end=None):
 
 
 # ——— 组合（指数增强）回测 ———
+_KLINE_MIN: dict = {}
+
+
+def _kline_min_date(db) -> date | None:
+    """本地个股日K的最早交易日（进程内缓存）。
+
+    用于把回测的预热取数窗口夹在数据边界内 —— 否则 warmup 天数会被
+    「只有指数有行情、个股还没有」的日期白白消耗掉，表现为回测开头长期空仓。
+    """
+    if "d" not in _KLINE_MIN:
+        try:
+            v = db.execute(
+                select(KlineDaily.trade_date).order_by(KlineDaily.trade_date).limit(1)
+            ).scalar()
+        except Exception:  # noqa: BLE001
+            v = None
+        _KLINE_MIN["d"] = v
+    return _KLINE_MIN["d"]
+
+
 def _run_portfolio(db, req, meta, params, progress_cb=None):
     index_code = meta.get("index_code", "000906")
     index_symbol = meta.get("index_symbol", "sh000906")
@@ -193,6 +213,13 @@ def _run_portfolio(db, req, meta, params, progress_cb=None):
 
     sd = date.fromisoformat(req.start)
     ed = date.fromisoformat(req.end)
+    # 预热期也要有行情：动量/波动等长回看因子需要 warmup_days 根 bar 才能出信号。
+    # 不往前多取，等于回测区间的前 warmup_days 个交易日全部空仓（白丢一年收益）。
+    warmup_days = int(params.get("warmup_days", 0) or 0)
+    load_start = sd - timedelta(days=int(warmup_days * 1.6) + 40) if warmup_days > 0 else sd
+    kmin = _kline_min_date(db)
+    if kmin and load_start < kmin:
+        load_start = kmin
 
     # 1) 时点(point-in-time)成分股成员资格：覆盖整个回测区间的月度快照
     #    消除『用当前成分股回测整段历史』带来的前视/幸存者偏差。
@@ -225,14 +252,14 @@ def _run_portfolio(db, req, meta, params, progress_cb=None):
         int(params.get("beta_lookback", 120)),
         int(params.get("tail_lookback", 120)),
     ) + 5
-    cached = duckdb_store.get_stock_bars_batch(union_syms, req.adj, sd, ed)
+    cached = duckdb_store.get_stock_bars_batch(union_syms, req.adj, load_start, ed)
     for sym, bars in cached.items():
         if len(bars) >= warmup_min:
             data[sym] = bars
     missing = [s for s in union_syms if s not in cached]
     total_missing = len(missing)
     for i, sym in enumerate(missing):
-        bars = _load_bars(db, sym, req.start, req.end, req.adj)
+        bars = _load_bars(db, sym, load_start.isoformat(), req.end, req.adj)
         if len(bars) >= warmup_min:
             data[sym] = bars
         if progress_cb and (i % 50 == 0 or i == total_missing - 1):
@@ -252,7 +279,7 @@ def _run_portfolio(db, req, meta, params, progress_cb=None):
         )
 
     # 3) 基准指数日K
-    benchmark = _load_index_bars(db, index_symbol, sd, ed, req.adj)
+    benchmark = _load_index_bars(db, index_symbol, load_start, ed, req.adj)
     if not benchmark:
         raise HTTPException(
             status_code=404,
@@ -262,12 +289,14 @@ def _run_portfolio(db, req, meta, params, progress_cb=None):
     # 4) 标的截面属性（行业/市值/估值），供中性化与估值因子使用
     syms = list(data.keys())
     attrs_rows = db.execute(
-        select(Stock.symbol, Stock.industry, Stock.market_cap, Stock.pe_ttm, Stock.pb,
-               Stock.roe, Stock.revenue_yoy, Stock.profit_yoy)
+        select(Stock.symbol, Stock.name, Stock.industry, Stock.market_cap, Stock.pe_ttm, Stock.pb,
+               Stock.roe, Stock.revenue_yoy, Stock.profit_yoy, Stock.list_date)
         .where(Stock.symbol.in_(syms))
     ).all()
     attributes = {
         r.symbol: {
+            "name": r.name,
+            "list_date": r.list_date,
             "industry": r.industry,
             "market_cap": r.market_cap,
             "pe_ttm": r.pe_ttm,
@@ -295,6 +324,27 @@ def _run_portfolio(db, req, meta, params, progress_cb=None):
             "profit_yoy": r.profit_yoy,
         })
 
+    # 5b) PIT 财务明细（现金流 / 资本开支 / 总资产），供 FCF 类因子按 ann_date 点查。
+    #     只在池内标的范围内加载，避免全市场拉大表拖慢回测。
+    fin_rows = []
+    if syms:
+        fin_rows = db.execute(
+            select(FinancialsRaw.symbol, FinancialsRaw.ann_date, FinancialsRaw.end_date,
+                   FinancialsRaw.roe, FinancialsRaw.n_cashflow_act, FinancialsRaw.capex,
+                   FinancialsRaw.total_assets)
+            .where(FinancialsRaw.symbol.in_(syms))
+        ).all()
+    financials_raw: dict[str, list] = {}
+    for r in fin_rows:
+        financials_raw.setdefault(r.symbol, []).append({
+            "ann_date": r.ann_date,
+            "end_date": r.end_date,
+            "roe": r.roe,
+            "ocf": r.n_cashflow_act,
+            "capex": r.capex,
+            "total_assets": r.total_assets,
+        })
+
     # 6) 风险约束（借鉴 ai-hedge-fund risk/limits）：从参数取单只/总敞口上限，<=0 视为关闭
     risk_limits = {}
     mpp = float(params.get("max_position_pct", 0) or 0)
@@ -310,11 +360,12 @@ def _run_portfolio(db, req, meta, params, progress_cb=None):
         commission=req.commission,
         slippage=req.slippage,
         rebalance_period=rebalance_period,
-        warmup=warmup_min,
+        warmup=max(warmup_min, int(params.get("warmup_days", 0) or 0)),
         attributes=attributes,
         membership=membership,
         risk_limits=risk_limits or None,
         fundamentals=fundamentals or None,
+        financials_raw=financials_raw or None,
     )
     try:
         return engine.run(meta["cls"], params)
@@ -324,42 +375,57 @@ def _run_portfolio(db, req, meta, params, progress_cb=None):
 
 # ——— 数据加载 ———
 def _load_bars(db: Session, symbol: str, start: str, end: str, adj: str) -> list[dict]:
+    """按复权口径加载个股日K。
+
+    全A 建仓后 kline_daily 统一存**未复权原价**，复权在读取时用
+    adj_factor_daily 折算 —— 三条路径都保持同一口径，避免回测取到未复权价。
+    """
     sd = date.fromisoformat(start)
     ed = date.fromisoformat(end)
     # ① DuckDB 分析库（列式加速，完整版架构默认路径）
     cached = duckdb_store.get_stock_bars(symbol, adj, sd, ed)
     if cached:
         return cached
-    # ② 回退 SQLite；③ 库无则在线拉取并写回
+
+    # ② 回退 SQLite：读原价 + 因子，再按 adj 折算
+    from app.models import AdjFactorDaily
+
     stmt = (
         select(KlineDaily)
         .where(
             KlineDaily.symbol == symbol,
-            KlineDaily.adj == adj,
+            KlineDaily.adj == "none",
             KlineDaily.trade_date >= sd,
             KlineDaily.trade_date <= ed,
         )
         .order_by(KlineDaily.trade_date)
     )
     rows = db.execute(stmt).scalars().all()
-    if not rows:
-        try:
-            fetched = data_source.get_stock_daily_qfq(symbol, sd, ed)
-            if fetched:
-                ingestion.upsert_kline(db, fetched, symbol, adj)
-                db.commit()
-                rows = db.execute(stmt).scalars().all()
-        except Exception:  # noqa: BLE001
-            pass
-    return [
-        {
-            "symbol": symbol,
-            "date": r.trade_date.isoformat(),
-            "open": r.open, "high": r.high, "low": r.low,
-            "close": r.close, "volume": r.volume, "amount": r.amount,
-        }
-        for r in rows
-    ]
+    if rows:
+        facs = {r.trade_date: r.adj_factor for r in db.execute(
+            select(AdjFactorDaily).where(
+                AdjFactorDaily.symbol == symbol,
+                AdjFactorDaily.trade_date >= sd,
+                AdjFactorDaily.trade_date <= ed,
+            )).scalars().all()}
+        bars = [
+            {
+                "symbol": symbol,
+                "date": r.trade_date.isoformat(),
+                "open": r.open, "high": r.high, "low": r.low,
+                "close": r.close, "volume": r.volume, "amount": r.amount,
+                "_f": facs.get(r.trade_date),
+            }
+            for r in rows
+        ]
+        return duckdb_store._adjust_bars(bars, adj)
+
+    # ③ 在线兜底：东财/腾讯返回的是**前复权**，仅当 adj='qfq' 时口径一致。
+    #    不写库 —— 库内要保持「只存未复权原价」这一单一事实源。
+    try:
+        return data_source.get_stock_daily_qfq(symbol, sd, ed) or []
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _load_index_bars(db: Session, symbol: str, sd: date, ed: date, adj: str) -> list[dict]:

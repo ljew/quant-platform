@@ -145,6 +145,34 @@ class PortfolioContext:
             {"symbol": symbol, "name": name, "value": float(value)}
         )
 
+    def cost(self, symbol: str) -> float:
+        """当前持仓的成本价（无持仓返回 0）。止损判断用。"""
+        return float(self.engine.avg_cost.get(symbol, 0.0) or 0.0)
+
+    def history_high(self, symbol: str, n: int):
+        """截至今日的最高价序列（最近 n 个，与 history() 逐日对齐）。"""
+        h = self.engine.hist_high.get(symbol, [])
+        if len(h) < n:
+            return None
+        return h[-n:]
+
+    def first_date(self, symbol: str):
+        """该标的在本轮回测中的首个交易日（近似上市天数过滤用）。"""
+        d = self.engine.hist_dates.get(symbol, [])
+        return d[0] if d else None
+
+    def benchmark_history(self, n: int):
+        """基准收盘价序列（最近 n 个交易日），趋势/择时判断用。"""
+        h = self.engine.bench_hist
+        return h[-n:] if len(h) >= n else None
+
+    def financial(self, symbol: str) -> list:
+        """PIT 财务明细 [{ann_date, end_date, roe, ocf, capex, total_assets}, ...]。
+
+        仅当装配层注入 financials_raw 时非空；调用方须自行按 ann_date <= 今日 过滤。
+        """
+        return self.engine.financials_raw.get(symbol, [])
+
     def attributes_snapshot(self) -> dict:
         """当前持仓权重快照 {symbol: weight}。"""
         eq = self.engine._equity_today()
@@ -194,6 +222,7 @@ class PortfolioBacktestEngine:
         membership: list | None = None,
         risk_limits: dict | None = None,
         fundamentals: dict | None = None,
+        financials_raw: dict | None = None,
     ):
         self.data = data
         self.benchmark = benchmark
@@ -221,6 +250,9 @@ class PortfolioBacktestEngine:
         }
         # 基本面历史快照 {symbol: [{report_date, roe, revenue_yoy, profit_yoy}, ...]}（PIT 时序因子用）。
         self.fundamentals: dict = fundamentals or {}
+        # PIT 财务明细 {symbol: [{ann_date, end_date, roe, ocf, capex, total_assets}, ...]}
+        # 供需要现金流/总资产的策略（如 FCF/OE）做点-in-time 查询，只在装配层显式注入时生效。
+        self.financials_raw: dict = financials_raw or {}
         self.holdings_snapshots: list[dict] = []
         # 因子研究（IC/IR）：上期因子记录 / 每期 IC 序列 / 当期待收集因子
         self.factor_records: list[dict] = []
@@ -248,6 +280,11 @@ class PortfolioBacktestEngine:
         }
         self.hist = {sym: [] for sym in data}
         self.hist_dates = {sym: [] for sym in data}  # 与 hist 对齐的交易日
+        self.high_map = {
+            sym: {b["date"]: float(b.get("high") or b["close"]) for b in bars}
+            for sym, bars in data.items()
+        }
+        self.hist_high = {sym: [] for sym in data}   # 与 hist 对齐的最高价（移动止损峰值用）
         self.positions: dict[str, float] = {sym: 0.0 for sym in data}
         self.avg_cost: dict[str, float] = {sym: 0.0 for sym in data}
         self.cash = self.initial_cash
@@ -439,6 +476,8 @@ class PortfolioBacktestEngine:
                     self._last_close[sym] = c
                     self.hist[sym].append(c)
                     self.hist_dates[sym].append(d)
+                    hh = self.high_map.get(sym, {}).get(d)
+                    self.hist_high[sym].append(float(hh) if hh else c)
 
             if d in self.bench_map:
                 bench_last = self.bench_map[d]
@@ -448,8 +487,9 @@ class PortfolioBacktestEngine:
                 if self.bench_first else self.initial_cash
             )
 
-            if i >= self.warmup and (i - self.warmup) % self.rebalance_period == 0:
+            if i >= self.warmup:
                 ctx.date = d
+            if i >= self.warmup and (i - self.warmup) % self.rebalance_period == 0:
                 # 1) 用本期价格对上期因子记录算区间收益，得到本期截面 IC
                 ic = self._compute_period_ic(d)
                 if ic is not None:
@@ -472,6 +512,15 @@ class PortfolioBacktestEngine:
                 })
                 # 4) 记录调仓后的持仓权重快照
                 self.holdings_snapshots.append({"date": d, "positions": ctx.attributes_snapshot()})
+            elif i >= self.warmup and hasattr(strat, "on_bar"):
+                # 非调仓日的日频回调：给策略跑止损/风控等必须每日执行的逻辑。
+                # 老策略没有 on_bar 方法 → 行为完全不变。
+                self._pending_orders = []
+                try:
+                    strat.on_bar(ctx, d)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"on_bar {d} failed: {e}")
+                self._flush_pending_orders(ctx)
 
             eq = self._equity_today()
             self.equity_curve.append(
