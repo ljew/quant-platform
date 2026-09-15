@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, OptimizeTrial, StrategyInfo } from "../api/client";
 import { useTheme } from "../theme";
 import type { ThemeColors } from "../theme";
@@ -13,6 +13,10 @@ const METRIC_LABEL: Record<MetricKey, string> = {
   oos_sharpe: "样本外夏普",
   robustness: "稳健性",
 };
+
+/** 超过这么多组就走后台任务（子进程 + 进度条）；再往上到 5000 组也支持。 */
+const ASYNC_THRESHOLD = 100;
+const ASYNC_MAX = 5000;
 
 /** 参数寻优：网格搜索 + 样本外验证 + 参数稳健性。 */
 export default function OptimizePage() {
@@ -31,7 +35,14 @@ export default function OptimizePage() {
   const [heatMetric, setHeatMetric] = useState<MetricKey>("sharpe");
   const [xKey, setXKey] = useState("");
   const [yKey, setYKey] = useState("");
+  // 大网格后台任务
+  const [jobId, setJobId] = useState("");
+  const [prog, setProg] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
+  const [asyncMode, setAsyncMode] = useState(false);
+  const polling = useRef(false);
   const { colors } = useTheme();
+
+  useEffect(() => () => { polling.current = false; }, []);  // 离开页面停止轮询
 
   useEffect(() => {
     api.strategies().then((s) => {
@@ -73,19 +84,52 @@ export default function OptimizePage() {
     [ranges]
   );
 
+  /** 轮询后台任务直到结束。polling.current 置 false 即退出（取消 / 离开页面）。 */
+  const pollJob = useCallback(async (id: string) => {
+    polling.current = true;
+    try {
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1000));
+        if (!polling.current) return;
+        const s = await api.optimizeAsyncStatus(id);
+        setProg({ done: s.done, total: s.total });
+        if (!s.running) {
+          if (!s.ok) throw new Error(s.error || "寻优失败");
+          setTrials(s.results);
+          return;
+        }
+      }
+    } finally {
+      polling.current = false;
+    }
+  }, []);
+
   const run = useCallback(async () => {
     setRunning(true);
     setError("");
     setTrials([]);
+    setProg({ done: 0, total: 0 });
+    setJobId("");
     try {
       const param_ranges = parseRanges();
       if (!Object.keys(param_ranges).length) throw new Error("请至少为一个参数填写取值列表（逗号分隔）");
-      const result = await api.optimize({
+      const body = {
         symbol, start, end, strategy: key,
         param_ranges, initial_cash: 1000000, rank_by: rankBy,
         oos_ratio: oosRatio / 100,
-      });
-      setTrials(result);
+      };
+      if (comboCount > ASYNC_THRESHOLD) {
+        // 大网格：提交后台任务（后端子进程执行），前端轮询进度
+        setAsyncMode(true);
+        const { job_id, total } = await api.optimizeAsync(body);
+        setJobId(job_id);
+        setProg({ done: 0, total });
+        await pollJob(job_id);
+      } else {
+        setAsyncMode(false);
+        const result = await api.optimize(body);
+        setTrials(result);
+      }
       setSel(0);
       const ks = Object.keys(param_ranges);
       if (ks.length >= 2) { setXKey(ks[0]); setYKey(ks[1]); }
@@ -93,8 +137,22 @@ export default function OptimizePage() {
       setError((e as Error).message);
     } finally {
       setRunning(false);
+      polling.current = false;
     }
-  }, [key, symbol, start, end, ranges, rankBy, oosRatio]);
+  }, [key, symbol, start, end, ranges, rankBy, oosRatio, comboCount, pollJob]);
+
+  const cancel = useCallback(async () => {
+    if (!jobId) return;
+    polling.current = false;
+    try {
+      await api.optimizeAsyncCancel(jobId);
+      setError("已取消本次寻优");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setRunning(false);
+    }
+  }, [jobId]);
 
   const meta = strategies.find((s) => s.key === key);
   const best = trials.length ? trials[Math.min(sel, trials.length - 1)] : null;
@@ -203,17 +261,34 @@ export default function OptimizePage() {
               </label>
             ))}
           </div>
-          {comboCount > 400 && (
-            <div style={{ color: colors.down, fontSize: 12, marginTop: 8 }}>
-              组合数超过 400 上限，请减少取值个数或维度后再跑。
-            </div>
-          )}
+          <div style={{ fontSize: 12, marginTop: 8, color: comboCount > ASYNC_MAX ? colors.down : colors.muted }}>
+            {comboCount > ASYNC_MAX
+              ? `组合数超过 ${ASYNC_MAX} 上限，请减少取值个数或维度。`
+              : comboCount > ASYNC_THRESHOLD
+                ? "组合数较多，将提交为后台任务（后端子进程执行）：可实时看进度、可随时取消，不占用页面。"
+                : "小网格直接同步跑，通常几秒内出结果。"}
+          </div>
         </Card>
       )}
 
-      <Btn onClick={run} disabled={running || comboCount > 400}>
-        {running ? "寻优中…（每组参数跑样本内+样本外两段）" : "开始寻优"}
+      <Btn onClick={run} disabled={running || comboCount > ASYNC_MAX}>
+        {running
+          ? asyncMode ? `寻优中… ${prog.done}/${prog.total} 组` : "寻优中…（每组参数跑样本内+样本外两段）"
+          : comboCount > ASYNC_THRESHOLD ? `开始寻优（后台运行 · ${comboCount} 组）` : "开始寻优"}
       </Btn>
+
+      {running && asyncMode && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "10px 0" }}>
+          <div style={{ flex: 1, height: 8, background: colors.border, borderRadius: 4, overflow: "hidden" }}>
+            <div style={{
+              width: `${prog.total ? (prog.done / prog.total) * 100 : 0}%`,
+              height: "100%", background: colors.accent, transition: "width .3s",
+            }} />
+          </div>
+          <span style={{ fontSize: 12, color: colors.muted, whiteSpace: "nowrap" }}>{prog.done}/{prog.total}</span>
+          <Btn onClick={cancel}>取消</Btn>
+        </div>
+      )}
       {error && <div style={{ color: colors.down, margin: "8px 0" }}>{error}</div>}
 
       {/* 结论 */}

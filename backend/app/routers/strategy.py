@@ -4,6 +4,10 @@
 - POST /strategy/backtest      运行一次回测（落库并返回结果）
 - GET  /strategy/backtests     回测历史列表
 - GET  /strategy/backtests/{id} 回测详情
+- POST /strategy/optimize      网格寻优（同步，≤400 组）
+- POST /strategy/optimize/async   大网格寻优（后台任务，≤5000 组，返回 job_id）
+- GET  /strategy/optimize/async/{job_id}  查进度 / 取结果
+- DELETE /strategy/optimize/async/{job_id} 取消任务
 
 支持两类策略：
 1. 单标的策略（dual_ma / ma_cross / momentum）—— 走 BacktestEngine
@@ -14,13 +18,21 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+import uuid
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
-from app.config import settings
+from app.config import DATA_DIR, settings
 from app.database import get_db
 from app.models import Backtest, Stock, KlineDaily, IndexKlineDaily, FundamentalsHistory
 from app.schemas import (
@@ -38,6 +50,9 @@ from app.core.engine.backtest_engine import BacktestEngine
 from app.core.engine.portfolio_backtest import PortfolioBacktestEngine
 from app.core.strategies.registry import get_strategy, list_strategies
 from app.core import task_queue
+
+# backend 目录（子进程脚本的工作目录与 PYTHONPATH 基准）
+_BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 router = APIRouter(prefix="/strategy", tags=["strategy"])
 
@@ -525,13 +540,15 @@ def get_backtest(bt_id: int, db: Session = Depends(get_db)):
     return _to_result(r, _strategy_name(r.strategy_key), r.multi_asset)
 
 
-# 单网格搜索的最大参数组合数。超出直接拒绝，避免同步回测把进程堵死。
-_MAX_OPTIMIZE_COMBOS = 400
+# 组合数上限。网格是笛卡尔积，维度一多就爆炸：
+# 同步接口卡在请求线程里，跑久了会把整个后端堵住 → 上限收紧；
+# 后台任务不占请求线程、可查进度可取消 → 放宽。
+_MAX_OPTIMIZE_COMBOS = 400      # POST /optimize（同步）
+_MAX_ASYNC_COMBOS = 5000        # POST /optimize/async（后台任务）
 
 
-@router.post("/optimize", response_model=list[OptimizeTrial])
-def optimize_strategy(req: OptimizeRequest, db: Session = Depends(get_db)):
-    """网格搜索参数寻优：遍历 param_ranges 中所有参数组合，按 rank_by 排序返回。"""
+def _prepare_optimize(req: OptimizeRequest, max_combos: int):
+    """校验寻优请求，返回 (meta, keys, axes, combos)。校验失败直接抛 HTTPException。"""
     try:
         meta = get_strategy(req.strategy)
     except KeyError:
@@ -549,17 +566,26 @@ def optimize_strategy(req: OptimizeRequest, db: Session = Depends(get_db)):
             status_code=400,
             detail=f"未知参数 {unknown}；{req.strategy} 可用参数：{sorted(meta['default_params'])}",
         )
-    # 组合数保护：网格是笛卡尔积，维度一多就爆炸，同步跑会把整个接口堵死
     axes = [list(req.param_ranges[k]) for k in keys]
     n_combo = 1
     for a in axes:
         n_combo *= len(a)
-    if n_combo > _MAX_OPTIMIZE_COMBOS:
+    if n_combo > max_combos:
         raise HTTPException(
             status_code=400,
-            detail=f"参数组合数 {n_combo} 超过上限 {_MAX_OPTIMIZE_COMBOS}，请缩小网格（减少维度或减少取值）",
+            detail=f"参数组合数 {n_combo} 超过上限 {max_combos}，请缩小网格（减少维度或减少取值）",
         )
-    combos = list(itertools.product(*axes))
+    return meta, keys, axes, list(itertools.product(*axes))
+
+
+def _optimize_core(db, req: OptimizeRequest, max_combos: int,
+                   progress=None, cancelled=None) -> list[OptimizeTrial]:
+    """网格搜索的全部计算：样本内/外两段回测 + 邻域稳健性 + 排序。
+
+    progress(done, total) 每跑完一组回调一次；cancelled() 为 True 时提前退出。
+    同步接口与后台任务共用这一段，避免两套逻辑走偏。
+    """
+    meta, keys, axes, combos = _prepare_optimize(req, max_combos)
 
     # —— 样本内 / 样本外切分：按**交易日数量**从区间末尾切出验证段 ——
     oos_ratio = 0.3 if req.oos_ratio is None else float(req.oos_ratio)
@@ -577,7 +603,10 @@ def optimize_strategy(req: OptimizeRequest, db: Session = Depends(get_db)):
             split_date = bars_all[split_i]["date"]
 
     results: dict[tuple, OptimizeTrial] = {}
-    for combo in combos:
+    total = len(combos)
+    for i, combo in enumerate(combos):
+        if cancelled is not None and cancelled():
+            break  # 用户点了「取消」，剩下的不跑了
         params = dict(zip(keys, combo))
         fixed = dict(meta["default_params"])
         fixed.update(params)
@@ -587,6 +616,8 @@ def optimize_strategy(req: OptimizeRequest, db: Session = Depends(get_db)):
                 start=req.start, end=(split_date or req.end),
             )
         except Exception:  # noqa: BLE001
+            if progress:
+                progress(i + 1, total)
             continue  # 某组参数可能无合格数据，跳过
 
         trial = OptimizeTrial(
@@ -612,6 +643,8 @@ def optimize_strategy(req: OptimizeRequest, db: Session = Depends(get_db)):
             except Exception:  # noqa: BLE001
                 pass  # 验证段跑不通就留 None，前端显示 —
         results[combo] = trial
+        if progress:
+            progress(i + 1, total)
 
     if not results:
         raise HTTPException(status_code=400, detail="所有参数组合均未产生有效回测结果，请检查区间与数据来源")
@@ -645,6 +678,147 @@ def optimize_strategy(req: OptimizeRequest, db: Session = Depends(get_db)):
         out = sorted(results.values(), key=lambda x: x.sharpe, reverse=True)
 
     return out
+
+
+@router.post("/optimize", response_model=list[OptimizeTrial])
+def optimize_strategy(req: OptimizeRequest, db: Session = Depends(get_db)):
+    """网格搜索参数寻优（同步）：遍历 param_ranges 全部组合，按 rank_by 排序返回。
+
+    组合数上限 400；更大的网格请用 POST /optimize/async（后台任务 + 进度 + 可取消）。
+    """
+    return _optimize_core(db, req, _MAX_OPTIMIZE_COMBOS)
+
+
+# ——— 大网格异步寻优 ———
+# 关键：不放后台线程，走**子进程 + 硬超时**（与数据调度、一键修复同款）。
+# 曾实测：同样逻辑在独立进程 0.4s 跑完，放进 uvicorn 进程的后台线程却卡死十几分钟，
+# 且 cancel 标志只在每组开始时检查 —— 卡在第一组就永远退不出来，只能重启后端。
+# 子进程可以被真正杀掉，也不会拖垮 API。
+_OPT_JOB_ROOT = os.path.join(str(DATA_DIR), "opt_jobs")
+_OPT_TIMEOUT = 3600  # 单任务硬超时（秒），超时直接 kill
+_opt_jobs: dict[str, dict] = {}
+_opt_lock = threading.Lock()
+_OPT_JOBS_KEEP = 10  # 最多保留多少个任务目录，防止无限堆积
+
+
+def _job_dir(job_id: str) -> str:
+    return os.path.join(_OPT_JOB_ROOT, job_id)
+
+
+def _read_json(path: str) -> dict | None:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _prune_jobs() -> None:
+    """清理旧任务目录（只清已完成的），避免磁盘无限堆积。"""
+    try:
+        done = [jid for jid, j in _opt_jobs.items() if not j["running"]]
+        for jid in done[:-_OPT_JOBS_KEEP]:
+            _opt_jobs.pop(jid, None)
+            shutil.rmtree(_job_dir(jid), ignore_errors=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _watch_job(job_id: str, proc) -> None:
+    """等子进程结束（带硬超时）；只负责收尾，不做任何计算。"""
+    job = _opt_jobs.get(job_id)
+    if not job:
+        return
+    try:
+        proc.wait(timeout=_OPT_TIMEOUT)
+    except subprocess.TimeoutExpired:  # noqa: F821
+        proc.kill()
+        job["error"] = f"超过 {_OPT_TIMEOUT}s 未完成，已强制终止"
+    finally:
+        job["running"] = False
+        job["finished_at"] = time.time()
+        res = _read_json(os.path.join(_job_dir(job_id), "result.json"))
+        if res:
+            job["ok"] = res.get("ok")
+            job["error"] = res.get("error") or job["error"]
+            job["results"] = res.get("results") or []
+        else:
+            # 连结果文件都没有 —— 多半是被取消或超时杀掉的
+            job["ok"] = False
+            job["error"] = job["error"] or ("任务已取消" if job["cancelled"] else "任务异常结束（无结果输出）")
+
+
+@router.post("/optimize/async")
+def optimize_async(req: OptimizeRequest):
+    """提交一个大网格寻优任务（子进程执行），立即返回 job_id。
+
+    用 GET /optimize/async/{job_id} 轮询进度，DELETE 可取消。
+    同时只允许一个任务在跑（回测吃 CPU 和 DB 连接）。
+    """
+    _meta, _keys, _axes, combos = _prepare_optimize(req, _MAX_ASYNC_COMBOS)
+    with _opt_lock:
+        if any(j["running"] for j in _opt_jobs.values()):
+            raise HTTPException(status_code=409, detail="已有寻优任务在运行，请等它跑完或先取消")
+        _prune_jobs()
+        job_id = uuid.uuid4().hex[:12]
+        d = _job_dir(job_id)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "payload.json"), "w", encoding="utf-8") as f:
+            json.dump(req.model_dump(), f, ensure_ascii=False)
+
+        env = dict(os.environ)
+        env["PYTHONPATH"] = _BACKEND_DIR
+        proc = subprocess.Popen(
+            [sys.executable, "scripts/optimize_job.py", d],
+            env=env, cwd=_BACKEND_DIR,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        job = {
+            "running": True, "cancelled": False, "ok": None, "error": None,
+            "done": 0, "total": len(combos), "results": [],
+            "started_at": time.time(), "finished_at": None, "pid": proc.pid,
+        }
+        _opt_jobs[job_id] = job
+        threading.Thread(target=_watch_job, args=(job_id, proc), daemon=True).start()
+
+    return {"job_id": job_id, "total": len(combos), "max_combos": _MAX_ASYNC_COMBOS, "pid": proc.pid}
+
+
+@router.get("/optimize/async/{job_id}")
+def optimize_async_status(job_id: str):
+    """查询寻优任务进度。running=False 且 ok=True 时 results 为最终结果。"""
+    job = _opt_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在或已被清理")
+    if job["running"]:
+        prog = _read_json(os.path.join(_job_dir(job_id), "progress.json")) or {}
+        job["done"] = prog.get("done", job["done"])
+        job["total"] = prog.get("total", job["total"])
+    return {
+        "job_id": job_id,
+        "running": job["running"],
+        "done": job["done"],
+        "total": job["total"],
+        "ok": job["ok"],
+        "error": job["error"],
+        "cancelled": job["cancelled"],
+        "elapsed": round((job["finished_at"] or time.time()) - job["started_at"], 1),
+        "results": [] if job["running"] else job["results"],
+    }
+
+
+@router.delete("/optimize/async/{job_id}")
+def optimize_async_cancel(job_id: str):
+    """取消正在跑的寻优任务（直接杀子进程，已算的部分不保留）。"""
+    job = _opt_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在或已被清理")
+    job["cancelled"] = True
+    try:
+        os.kill(job["pid"], signal.SIGTERM)
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True}
 
 
 def _grid_neighbors(combo: tuple, axes: list[list]) -> list[tuple]:

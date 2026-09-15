@@ -96,6 +96,13 @@ export const api = {
   // 参数寻优
   optimize: (payload: Record<string, unknown>) =>
     post<OptimizeTrial[]>("/strategy/optimize", payload),
+  // 大网格：提交后台任务（子进程执行），轮询进度
+  optimizeAsync: (payload: Record<string, unknown>) =>
+    post<{ job_id: string; total: number; pid: number }>("/strategy/optimize/async", payload),
+  optimizeAsyncStatus: (jobId: string) =>
+    get<OptimizeJobStatus>(`/strategy/optimize/async/${jobId}`),
+  optimizeAsyncCancel: (jobId: string) =>
+    del<{ ok: boolean }>(`/strategy/optimize/async/${jobId}`),
   // 模拟盘
   paperTasks: () => get<PaperTask[]>("/paper/tasks"),
   paperCreate: (body: Record<string, unknown>) => post<PaperTask>("/paper/tasks", body),
@@ -286,6 +293,20 @@ export interface OptimizeTrial {
   neighbor_count: number;
   neighbor_sharpe: number | null;
   robustness: number | null;
+}
+
+/** 大网格异步寻优任务的状态（GET /strategy/optimize/async/{job_id}） */
+export interface OptimizeJobStatus {
+  job_id: string;
+  running: boolean;
+  done: number;
+  total: number;
+  ok: boolean | null;
+  error: string | null;
+  cancelled: boolean;
+  elapsed: number;
+  /** 仅在 running=false 时返回实际结果 */
+  results: OptimizeTrial[];
 }
 
 // —— 模拟盘类型 ——
