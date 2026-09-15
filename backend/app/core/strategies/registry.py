@@ -232,6 +232,12 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             "stop_loss_pct": 0.15, "enable_ladder_stop": 1, "ladder_hold_days": 10,
             "ladder_trailing_pct": 0.15, "trailing_stop_pct": 0.10,
             "bullish_position": 1.0, "neutral_position": 0.9, "bearish_position": 0.0,
+            # 空头判据：'ma'=补 MA 空头排列（修原版 bearish 永不触发的缺陷）
+            # 'origin'=原版 score<=-2（实测 1449 日只触发 5 天）
+            "trend_bear_mode": "ma", "bear_immediate": 1,
+            # 波动率目标约束（原版未实现的文件头 R3 建议）：0=关闭（等价原版）
+            "vol_target": 0.0, "vol_lookback": 60, "vol_min_scale": 0.3,
+            "vol_max_scale": 1.0, "vol_react_thresh": 0.05,
             "reb_thresh": 0.02, "allow_star_market": 0,
             "exclude_financial": 1, "exclude_st": 0, "min_list_days": 250,
             "industry_level": 1,
@@ -257,6 +263,15 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             _float("neutral_position", "中性仓位", 0.9, 0.0, 1.0, 0.05),
             _float("bearish_position", "看空仓位", 0.0, 0.0, 1.0, 0.05),
             _float("reb_thresh", "调仓偏离阈值", 0.02, 0.0, 0.2, 0.005),
+            _opt("trend_bear_mode", "空头判据", "ma", ["ma", "origin"],
+                 "ma=MA空头排列(last<MA20<MA60<MA120)额外-2分（修原版bearish几乎不触发的缺陷）；"
+                 "origin=原版score<=-2（2019-2024全程1449日仅触发5天，风控形同虚设）"),
+            _int("bear_immediate", "看空即时清仓(1开/0关)", 1, 0, 1),
+            _float("vol_target", "波动率目标(年化,0=关闭)", 0.0, 0.0, 0.4, 0.01),
+            _int("vol_lookback", "波动率回看(交易日)", 60, 20, 120, 5),
+            _float("vol_min_scale", "波动率缩放下限", 0.30, 0.0, 1.0, 0.05),
+            _float("vol_max_scale", "波动率缩放上限(≤1不加杠杆)", 1.00, 0.0, 1.0, 0.05),
+            _float("vol_react_thresh", "波动率减仓触发阈值", 0.05, 0.01, 0.3, 0.01),
             _int("allow_star_market", "允许科创板(1开/0关)", 0, 0, 1),
             _int("industry_level", "行业口径(1申万一级/0东财细分)", 1, 0, 1),
             _opt("momentum_filter_mode", "动量准入口径", "m121", ["m121", "avg"],
@@ -283,6 +298,12 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             "stop_loss_pct": 0.15, "enable_ladder_stop": 1, "ladder_hold_days": 10,
             "ladder_trailing_pct": 0.15, "trailing_stop_pct": 0.10,
             "bullish_position": 1.0, "neutral_position": 0.9, "bearish_position": 0.0,
+            # 空头判据：'ma'=补 MA 空头排列（修原版 bearish 永不触发的缺陷）
+            # 'origin'=原版 score<=-2（实测 1449 日只触发 5 天）
+            "trend_bear_mode": "ma", "bear_immediate": 1,
+            # 波动率目标约束（原版未实现的文件头 R3 建议）：0=关闭（等价原版）
+            "vol_target": 0.0, "vol_lookback": 60, "vol_min_scale": 0.3,
+            "vol_max_scale": 1.0, "vol_react_thresh": 0.05,
             "reb_thresh": 0.02, "allow_star_market": 1,
             "exclude_financial": 1, "exclude_st": 0, "min_list_days": 250,
             "industry_level": 1, "pool_mode": "all",
@@ -308,6 +329,15 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             _float("neutral_position", "中性仓位", 0.9, 0.0, 1.0, 0.05),
             _float("bearish_position", "看空仓位", 0.0, 0.0, 1.0, 0.05),
             _float("reb_thresh", "调仓偏离阈值", 0.02, 0.0, 0.2, 0.005),
+            _opt("trend_bear_mode", "空头判据", "ma", ["ma", "origin"],
+                 "ma=MA空头排列(last<MA20<MA60<MA120)额外-2分（修原版bearish几乎不触发的缺陷）；"
+                 "origin=原版score<=-2（2019-2024全程1449日仅触发5天，风控形同虚设）"),
+            _int("bear_immediate", "看空即时清仓(1开/0关)", 1, 0, 1),
+            _float("vol_target", "波动率目标(年化,0=关闭)", 0.0, 0.0, 0.4, 0.01),
+            _int("vol_lookback", "波动率回看(交易日)", 60, 20, 120, 5),
+            _float("vol_min_scale", "波动率缩放下限", 0.30, 0.0, 1.0, 0.05),
+            _float("vol_max_scale", "波动率缩放上限(≤1不加杠杆)", 1.00, 0.0, 1.0, 0.05),
+            _float("vol_react_thresh", "波动率减仓触发阈值", 0.05, 0.01, 0.3, 0.01),
             _int("allow_star_market", "允许科创板(1开/0关)", 1, 0, 1),
             _int("industry_level", "行业口径(1申万一级/0东财细分)", 1, 0, 1),
             _opt("momentum_filter_mode", "动量准入口径", "m121", ["m121", "avg"],

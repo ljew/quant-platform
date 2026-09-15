@@ -92,21 +92,51 @@ class JKFactorStrategy(PortfolioStrategy):
         self.bullish_position = float(p.get("bullish_position", 1.00))
         self.neutral_position = float(p.get("neutral_position", 0.90))
         self.bearish_position = float(p.get("bearish_position", 0.00))
+        # —— 空头判据 ——
+        # 'origin'：只用原版 score<=-2（实测 2019-2024 全程 1449 日只触发 5 天，
+        #           因为 last<ma250*0.8 在 2021-2023 阴跌中差一点点够不着 → 风控形同虚设）
+        # 'ma'（默认）：MA 空头排列 last<ma20<ma60<ma120 额外 -2 分 → bearish 可触发
+        self.trend_bear_mode = str(p.get("trend_bear_mode", "ma"))
+        # 1=趋势转空当日就在 on_bar 清仓；0=等到下一个调仓日（原版行为，最多延迟 21 日）
+        self.bear_immediate = int(p.get("bear_immediate", 1)) == 1
+        # —— 波动率目标约束（原版未实现，见文件头 R3 建议）——
+        # 在趋势档位之上再乘一个 scale = clamp(vol_target / 基准实现波动, min, max)。
+        # vol_target=0 关闭（等价于原版行为）。
+        self.vol_target = float(p.get("vol_target", 0.0))
+        self.vol_lookback = int(p.get("vol_lookback", 60))
+        self.vol_min_scale = float(p.get("vol_min_scale", 0.30))
+        self.vol_max_scale = float(p.get("vol_max_scale", 1.00))
+        # 波动率突破后不等下一个调仓日（21 交易日）就减仓的触发阈值
+        self.vol_react_thresh = float(p.get("vol_react_thresh", 0.05))
         # —— 调仓 ——
         self.reb_thresh = float(p.get("reb_thresh", 0.02))
 
         # —— 运行时状态 ——
         self.market_trend = "neutral"
-        self.position_ratio = self.neutral_position
+        self._trend_position = self.neutral_position    # 趋势档位（周更）
+        self.vol_scale = 1.0                            # 波动率缩放（日更）
+        self.realized_vol = 0.0                         # 最近一次实现波动率（年化）
+        self.position_ratio = self.neutral_position     # = _trend_position × vol_scale
         self._last_trend_week = None
         self._peak: dict[str, float] = {}       # 建仓以来最高价（移动止损基准）
         self._hold_days: dict[str, int] = {}    # 已持仓交易日数（阶梯止损用）
 
     # ==================== 日频：趋势 + 止损 ====================
     def on_bar(self, ctx, date: str) -> None:
-        """非调仓日的日频回调：周线趋势检查 + 每日止损。"""
+        """非调仓日的日频回调：周线趋势检查 + 波动率约束 + 每日止损。"""
         self._update_trend(ctx, date)
-        self._check_stop_loss(ctx, date)
+        self._update_vol_scale(ctx, date)
+        self._recalc_position()
+        if self.bear_immediate and self.position_ratio <= 0.01:
+            self._clear_all(ctx, "jk_bearish", "趋势看空清仓观望")
+        else:
+            self._check_stop_loss(ctx, date)
+            self._trim_to_target(ctx, date)
+
+    def _clear_all(self, ctx, signal: str, reason: str) -> None:
+        for s in list(ctx.positions().keys()):
+            ctx.order_target_percent(s, 0.0, signal, reason)
+            self._forget(s)
         if date[8:] <= "03":      # 每月头几天打一条，便于确认日频钩子在跑
             pos = ctx.positions()
             logger.warning("[jk] on_bar %s 持仓%d 成本=%s", date, len(pos),
@@ -162,12 +192,60 @@ class JKFactorStrategy(PortfolioStrategy):
             elif vol60 > 0.35:
                 score -= 1
 
+        # ⚠️ 原版空头判据失效：只靠 last<ma250*0.8 这 -2 分，2021-2023 阴跌中
+        #    沪深300 最低只到 ma250 的 0.81 倍，差一点点够不着 → 全程 1449 日
+        #    bearish 仅 5 天，neutral 占 82%。补上 MA 空头排列判据。
+        if self.trend_bear_mode == "ma" and last < ma20 < ma60 < ma120:
+            score -= 2
+
         if score >= 4:
-            self.market_trend, self.position_ratio = "bullish", self.bullish_position
+            self.market_trend, self._trend_position = "bullish", self.bullish_position
         elif score <= -2:
-            self.market_trend, self.position_ratio = "bearish", self.bearish_position
+            self.market_trend, self._trend_position = "bearish", self.bearish_position
         else:
-            self.market_trend, self.position_ratio = "neutral", self.neutral_position
+            self.market_trend, self._trend_position = "neutral", self.neutral_position
+        self._recalc_position()
+
+    # ==================== 波动率目标约束 ====================
+    def _update_vol_scale(self, ctx, date: str) -> None:
+        """按基准实现波动率缩放仓位：scale = clamp(vol_target / rv, min, max)。
+
+        原版文件头 R3 写了「真正的风控缺口应通过给总仓位加独立的波动率约束来解决」，
+        但原版从未实现 —— 本平台补上。只降不升（vol_max_scale ≤ 1），不引入杠杆。
+        """
+        if self.vol_target <= 0:
+            self.vol_scale, self.realized_vol = 1.0, 0.0
+            return
+        c = ctx.benchmark_history(self.vol_lookback + 5)
+        if not c or len(c) < self.vol_lookback + 1:
+            return
+        rets = [c[i] / c[i - 1] - 1 for i in range(len(c) - self.vol_lookback, len(c))]
+        if len(rets) < 20:
+            return
+        rv = statistics.stdev(rets) * (252 ** 0.5)
+        self.realized_vol = rv
+        self.vol_scale = (self.vol_max_scale if rv <= 1e-6
+                          else max(self.vol_min_scale,
+                                   min(self.vol_max_scale, self.vol_target / rv)))
+
+    def _recalc_position(self) -> None:
+        self.position_ratio = max(0.0, min(1.0, self._trend_position * self.vol_scale))
+
+    def _trim_to_target(self, ctx, date: str) -> None:
+        """波动率跳升时不等下一个调仓日（21 交易日），立即按比例缩减现有持仓。"""
+        if self.vol_target <= 0:
+            return
+        cur_w = ctx.attributes_snapshot()
+        tot = sum(v for v in cur_w.values() if v > 0)
+        if tot <= 0.01 or tot - self.position_ratio <= self.vol_react_thresh:
+            return
+        k = self.position_ratio / tot
+        for sym in list(ctx.positions().keys()):
+            w = cur_w.get(sym, 0.0)
+            if w > 0:
+                ctx.order_target_percent(
+                    sym, w * k, "jk_vol_trim",
+                    f"波动率约束 实现{self.realized_vol * 100:.0f}% → 仓位{tot * 100:.0f}%→{self.position_ratio * 100:.0f}%")
 
     def _forget(self, sym: str) -> None:
         self._peak.pop(sym, None)
@@ -425,11 +503,11 @@ class JKFactorStrategy(PortfolioStrategy):
 
     def rebalance(self, ctx, date: str) -> None:
         self._update_trend(ctx, date)
+        self._update_vol_scale(ctx, date)
+        self._recalc_position()
 
         if self.position_ratio <= 0.01:
-            for s in list(ctx.positions().keys()):
-                ctx.order_target_percent(s, 0.0, "jk_bearish", "趋势看空清仓观望")
-                self._forget(s)
+            self._clear_all(ctx, "jk_bearish", "趋势看空清仓观望")
             return
 
         pool = self._build_pool(ctx, date)
