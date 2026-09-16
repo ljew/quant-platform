@@ -61,11 +61,15 @@ class HealthResponse(BaseModel):
 class ParamField(BaseModel):
     key: str
     label: str
-    type: str  # int / float
-    default: float
+    type: str  # int / float / str
+    # ⚠️ 必须是 float|str：枚举参数（_opt）的 default 是字符串，若只声明 float
+    #    会让 /strategy/strategies 整个接口 500 → 前端策略下拉框空白。
+    default: float | str | None = None
     min: float | None = None
     max: float | None = None
     step: float | None = None
+    options: list[str] | None = None   # 枚举型参数的可选值（type=str 时用）
+    desc: str | None = None            # 参数说明
 
 
 class StrategyInfo(BaseModel):
