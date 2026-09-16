@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Callable
 
 from app.core.strategies.dual_ma import DualMAStrategy
@@ -456,6 +457,66 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
 }
 
 
+# ———————————————— 参数分组（前端左栏折叠面板用） ————————————————
+# jk 系列有 30 个参数、enhanced_factor 有 23 个，平铺渲染时既找不到目标项、
+# 也看不出「跑这一版到底动过哪几个」。这里按语义切组，交给前端折叠展示。
+GROUP_ORDER = [
+    "组合构建", "因子权重", "因子参数", "准入过滤", "风控止损", "择时仓位", "波动率目标", "信号参数",
+]
+
+# jk001/jk002 参数完全相同（只是默认值不同），显式指定分组：自动规则会把
+# vol_lookback 按 `_lookback$` 判进「因子参数」，但它其实属于「波动率目标」。
+_JK_GROUPS: dict[str, set[str]] = {
+    "组合构建": {"rebalance_period", "stock_num", "max_stock_weight",
+                 "max_industry_num", "reb_thresh"},
+    "因子权重": {"w_fundamental", "w_lowvol"},
+    "准入过滤": {"enable_trend_filter", "max_intraday_chg", "momentum_filter_mode",
+                 "allow_star_market", "industry_level", "exclude_financial",
+                 "min_list_days", "financial_pit"},
+    "风控止损": {"stop_loss_pct", "enable_ladder_stop", "ladder_hold_days",
+                 "ladder_trailing_pct", "trailing_stop_pct", "bear_immediate"},
+    "择时仓位": {"bullish_position", "neutral_position", "bearish_position", "trend_bear_mode"},
+    "波动率目标": {"vol_target", "vol_lookback", "vol_min_scale",
+                   "vol_max_scale", "vol_react_thresh"},
+}
+
+# 其余策略走规则兜底（先匹配先赢）。顺序敏感：`_lookback$` 必须排在 `^vol_` 之前，
+# 否则 enhanced_factor 的 vol_lookback（波动率因子的回看窗口）会被误判进「择时仓位」。
+_AUTO_GROUP_RULES: list[tuple[str, str]] = [
+    (r"^w_", "因子权重"),
+    (r"_lookback$", "因子参数"),
+    (r"^(top_n|stock_num|rebalance_period|reb_thresh|max_weight|max_stock_weight"
+     r"|max_industry_num|weight_method|neutralize_|hold_buffer)", "组合构建"),
+    (r"^(exclude_|allow_|min_list_days|industry_level|financial_pit|universe_"
+     r"|enable_trend_filter|max_intraday_chg|momentum_filter_mode)", "准入过滤"),
+    (r"(stop|ladder|trailing|max_drawdown|daily_loss|position_limit"
+     r"|max_position_pct|max_gross)", "风控止损"),
+    (r"^(vol_|bull|bear|neutral|trend_)", "择时仓位"),
+]
+_DEFAULT_GROUP = "信号参数"
+
+
+def _group_of(key: str, strategy_key: str) -> str:
+    if strategy_key in ("jk001", "jk002"):
+        for gname, keys in _JK_GROUPS.items():
+            if key in keys:
+                return gname
+    for pat, gname in _AUTO_GROUP_RULES:
+        if re.search(pat, key):
+            return gname
+    return _DEFAULT_GROUP
+
+
+def _grouped_schema(schema: list[dict], strategy_key: str) -> list[dict]:
+    """打 group 标并按 GROUP_ORDER 稳定重排（组内保持原声明顺序）。"""
+    tagged = [
+        {**f, "group": f.get("group") or _group_of(f["key"], strategy_key)}
+        for f in schema
+    ]
+    rank = {g: i for i, g in enumerate(GROUP_ORDER)}
+    return sorted(tagged, key=lambda f: rank.get(f["group"], len(GROUP_ORDER)))
+
+
 def get_strategy(key: str) -> dict:
     if key not in STRATEGY_REGISTRY:
         raise KeyError(f"未知策略: {key}")
@@ -469,7 +530,7 @@ def list_strategies() -> list[dict]:
             "name": v["name"],
             "description": v["description"],
             "default_params": v["default_params"],
-            "param_schema": v["param_schema"],
+            "param_schema": _grouped_schema(v["param_schema"], k),
             "multi_asset": v.get("multi_asset", False),
             "index_code": v.get("index_code"),
             "index_symbol": v.get("index_symbol"),

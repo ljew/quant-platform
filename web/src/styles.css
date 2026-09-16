@@ -41,3 +41,21 @@ input, select {
   background: var(--card);
   border: 1px solid var(--border);
 }
+
+/* —— 策略回测页：左参数栏 + 右结果区 —— */
+/* 参数最多的策略（jk001/jk002 各 30 项）需要固定侧栏才看得清；
+   窄屏时改为上下堆叠，避免侧栏把图表挤没。 */
+.bt-body {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+@media (max-width: 1180px) {
+  .bt-body { flex-direction: column; }
+  .param-panel {
+    width: 100% !important;
+    position: static !important;
+    max-height: none !important;
+  }
+}
+

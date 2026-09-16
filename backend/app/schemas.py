@@ -70,6 +70,9 @@ class ParamField(BaseModel):
     step: float | None = None
     options: list[str] | None = None   # 枚举型参数的可选值（type=str 时用）
     desc: str | None = None            # 参数说明
+    # 前端左栏折叠面板的分组名（组合构建/因子权重/…）。jk 系列参数多达 30 个，
+    # 平铺渲染时无法定位、也看不出改过哪些，故由 registry 统一打标分组。
+    group: str | None = None
 
 
 class StrategyInfo(BaseModel):

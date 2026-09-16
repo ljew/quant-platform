@@ -22,12 +22,29 @@ export const put = <T>(path: string, body: unknown) =>
 export const del = <T>(path: string) => request<T>(path, { method: "DELETE" });
 
 // —— 类型 ——
+/** 策略参数元数据（后端 registry 提供，含分组）。 */
+export interface ParamField {
+  key: string;
+  label: string;
+  type: string;              // int / float / str
+  default?: unknown;
+  min?: number | null;
+  max?: number | null;
+  step?: number | null;
+  options?: string[] | null; // type=str 时的枚举值
+  desc?: string | null;      // 参数口径说明
+  group?: string | null;     // 折叠分组名
+}
+
 export interface StrategyInfo {
   key: string;
   name: string;
   desc?: string;
+  description?: string;
   default_params: Record<string, unknown>;
-  param_schema: { key: string; label: string; type: string; default: unknown }[];
+  param_schema: ParamField[];
+  multi_asset?: boolean;
+  index_name?: string | null;
 }
 
 export interface KlineBar {
