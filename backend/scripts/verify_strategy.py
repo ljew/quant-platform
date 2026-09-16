@@ -43,7 +43,7 @@ OUT_DIR = ROOT / "data" / "reports"
 REFERENCE = {
     "jk001": [
         {
-            "name": "样本内 2019-01-02~2024-12-13",
+            "name": "① 样本内 2019-01-02~2024-12-13（无滑点）",
             "start": "2019-01-02", "end": "2024-12-13",
             "ref": {"total_return": 0.5729, "sharpe": 0.5956, "max_drawdown": -0.1893,
                     "benchmark": 0.3227},
@@ -68,22 +68,33 @@ REFERENCE = {
             "comparable": True,
         },
         {
-            "name": "样本外 2025-01-02~2026-09-11",
+            "name": "② 样本外 2025-01-02~2026-09-11（无滑点）",
             "start": "2025-01-02", "end": "2026-09-11",
             "ref": {"total_return": 0.1740, "sharpe": 0.674, "max_drawdown": -0.1103,
                     "benchmark": 0.1805},
+            "slippage": 0.0,
             "note": "⚠️ 该参考值与已被证伪的样本内 +114.83% 同源，可靠性存疑，"
                     "暂按『仅作方向性参考』处理（comparable=False）。"
                     "待老刘提供 2025-2026 的聚宽实盘/回测存档后再校正。"
                     "基准 +18.05% 已确认与聚宽一致，可作为数据侧的校验锚点。",
             "comparable": False,
         },
+        {
+            "name": "③ 全段含 0.2% 滑点 2019-01-02~2026-09-11",
+            "start": "2019-01-02", "end": "2026-09-11",
+            "ref": None,
+            "slippage": 0.002,
+            "note": "三段验证的第三段（最苛刻）：双边 0.2% 滑点、跨越 2019/2021-23/2024-09/2025-26 "
+                    "四段风格迥异的行情。只看这一段，因为它是唯一包含真实交易成本的数字。",
+            "comparable": False,
+        },
     ],
     "jk002": [
         {
-            "name": "全区间 2019-01-02~2024-12-13",
+            "name": "① 样本内 2019-01-02~2024-12-13（无滑点）",
             "start": "2019-01-02", "end": "2024-12-13",
             "ref": None,
+            "slippage": 0.0,
             "note": "jk002 是平台新增的扩池版本：池子=平台全A（pool_mode=all，含科创板），"
                     "基准=国证A指 sz399317（近似全市场）。聚宽侧无对应实盘，仅做平台内部留档。"
                     "注：中证全指 000985 的历史 PIT 成分与行情均取不到（tushare index_weight 受权限"
@@ -91,10 +102,20 @@ REFERENCE = {
             "comparable": False,
         },
         {
-            "name": "样本外 2025-01-02~2026-09-11",
+            "name": "② 样本外 2025-01-02~2026-09-11（无滑点）",
             "start": "2025-01-02", "end": "2026-09-11",
             "ref": None,
+            "slippage": 0.0,
             "note": "同上，平台内部留档。",
+            "comparable": False,
+        },
+        {
+            "name": "③ 全段含 0.2% 滑点 2019-01-02~2026-09-11",
+            "start": "2019-01-02", "end": "2026-09-11",
+            "ref": None,
+            "slippage": 0.002,
+            "note": "全A 池换手约 80%/月，滑点在 jk002 上是最大的单项成本（样本外 0 滑点 +7.97% → "
+                    "0.2% 滑点 +1.79%，吃掉 6.2pp），故第三段对 jk002 尤其关键。",
             "comparable": False,
         },
     ],
@@ -143,19 +164,26 @@ def _html(key: str, rows: list[dict]) -> str:
     trs = []
     for r in rows:
         color = {"一致": "#1a8a48", "偏离": "#d92c2c", "参考": "#7a8299"}.get(r["verdict"], "#333")
+        tr = r["got"].get("total_return")
+        bm = r["got"].get("benchmark")
+        if tr is None or bm is None:
+            excess = "—"
+        else:
+            excess = f"{tr - bm:+.2%}"
         trs.append(f"""<tr>
       <td>{r['name']}</td>
-      <td class="num">{cell(r['got'].get('total_return'))}</td>
+      <td class="num">{cell(tr)}</td>
       <td class="num">{cell(r['ref'].get('total_return') if r['ref'] else None)}</td>
+      <td class="num">{excess}</td>
+      <td class="num">{cell(bm)}</td>
       <td class="num">{r['got'].get('sharpe', 0):.3f}</td>
       <td class="num">{r['ref'].get('sharpe') if r['ref'] else '—'}</td>
       <td class="num">{cell(r['got'].get('max_drawdown'))}</td>
       <td class="num">{cell(r['ref'].get('max_drawdown') if r['ref'] else None)}</td>
-      <td class="num">{cell(r['got'].get('benchmark'))}</td>
       <td class="num">{r['got'].get('trade_count', 0)}</td>
       <td style="color:{color};font-weight:600">{r['verdict']}</td>
     </tr>
-    <tr><td colspan="10" class="note">{r['detail']}</td></tr>""")
+    <tr><td colspan="11" class="note">{r['detail']}</td></tr>""")
     return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <title>{key} 验证报告</title><style>
 body{{font-family:-apple-system,"PingFang SC",sans-serif;margin:32px;color:#1f2533;background:#fff}}
@@ -167,10 +195,11 @@ th{{background:#f4f6fa;color:#7a8299;font-weight:600}}
 .meta{{color:#7a8299;font-size:12px;margin-top:6px}}
 </style></head><body>
 <h1>策略验证报告 · {key}</h1>
-<div class="meta">生成时间 {date.today().isoformat()} · 平台回测（收盘价成交，qfq，佣金 0.03%，滑点 0.2%）</div>
+<div class="meta">生成时间 {date.today().isoformat()} · 平台回测（收盘价成交，qfq，佣金 0.03%）·
+三段结构：① 样本内无滑点 ② 样本外无滑点 ③ 全段含 0.2% 滑点</div>
 <table>
-<tr><th>区间</th><th>平台收益</th><th>参考收益</th><th>平台夏普</th><th>参考夏普</th>
-<th>平台回撤</th><th>参考回撤</th><th>基准</th><th>成交</th><th>判定</th></tr>
+<tr><th>区间</th><th>平台收益</th><th>参考收益</th><th>超额</th><th>基准</th>
+<th>平台夏普</th><th>参考夏普</th><th>平台回撤</th><th>参考回撤</th><th>成交</th><th>判定</th></tr>
 {''.join(trs)}
 </table>
 </body></html>"""

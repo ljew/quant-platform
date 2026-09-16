@@ -239,6 +239,11 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             "vol_target": 0.0, "vol_lookback": 60, "vol_min_scale": 0.3,
             "vol_max_scale": 1.0, "vol_react_thresh": 0.05,
             "reb_thresh": 0.02, "allow_star_market": 0,
+            # ⚠️ exclude_st 故意「不进 param_schema」、也就不会出现在 UI 上：
+            #    平台没有历史 ST 标记，开启后只能用「当前名称」匹配 → 拿今天的 ST 名单
+            #    去剔除历史股票 = 前视偏差。实测开启后 jk002 样本外从 +7.97% "改善" 到
+            #    +9.43%，但这 1.5pp 是凭空变出来的。要真正启用，先补 st_history 表
+            #    （按公告日记录 ST/*ST 进出），再按 PIT 口径引用。
             "exclude_financial": 1, "exclude_st": 0, "min_list_days": 250,
             "industry_level": 1,
             "max_position_pct": 0.0, "max_gross_exposure": 0.0,
@@ -305,6 +310,7 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             "vol_target": 0.0, "vol_lookback": 60, "vol_min_scale": 0.3,
             "vol_max_scale": 1.0, "vol_react_thresh": 0.05,
             "reb_thresh": 0.02, "allow_star_market": 1,
+            # 同 jk001：exclude_st 故意不暴露到 UI（无历史 ST 标记，开启即前视偏差）
             "exclude_financial": 1, "exclude_st": 0, "min_list_days": 250,
             "industry_level": 1, "pool_mode": "all",
             "max_position_pct": 0.0, "max_gross_exposure": 0.0,
