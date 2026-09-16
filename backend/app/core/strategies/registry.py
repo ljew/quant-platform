@@ -230,7 +230,7 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             "w_price_volume": 0.0, "w_momentum": 0.0,
             "enable_trend_filter": 1, "max_intraday_chg": 0.05,
             "stop_loss_pct": 0.15, "enable_ladder_stop": 1, "ladder_hold_days": 10,
-            "ladder_trailing_pct": 0.15, "trailing_stop_pct": 0.10,
+            "ladder_trailing_pct": 0.15, "trailing_stop_pct": 0.08,
             "bullish_position": 1.0, "neutral_position": 0.9, "bearish_position": 0.0,
             # 空头判据：'ma'=补 MA 空头排列（修原版 bearish 永不触发的缺陷）
             # 'origin'=原版 score<=-2（实测 1449 日只触发 5 天）
@@ -258,7 +258,7 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             _int("enable_ladder_stop", "阶梯移动止损(1开/0关)", 1, 0, 1),
             _int("ladder_hold_days", "阶梯切换(持有交易日)", 10, 1, 60, 1),
             _float("ladder_trailing_pct", "阶梯后段回撤阈值", 0.15, 0.02, 0.5, 0.01),
-            _float("trailing_stop_pct", "阶梯前段回撤阈值", 0.10, 0.02, 0.5, 0.01),
+            _float("trailing_stop_pct", "阶梯前段回撤阈值", 0.08, 0.02, 0.5, 0.01),
             _float("bullish_position", "看多仓位", 1.0, 0.0, 1.0, 0.05),
             _float("neutral_position", "中性仓位", 0.9, 0.0, 1.0, 0.05),
             _float("bearish_position", "看空仓位", 0.0, 0.0, 1.0, 0.05),
@@ -296,7 +296,7 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             "w_price_volume": 0.0, "w_momentum": 0.0,
             "enable_trend_filter": 1, "max_intraday_chg": 0.05,
             "stop_loss_pct": 0.15, "enable_ladder_stop": 1, "ladder_hold_days": 10,
-            "ladder_trailing_pct": 0.15, "trailing_stop_pct": 0.10,
+            "ladder_trailing_pct": 0.15, "trailing_stop_pct": 0.08,
             "bullish_position": 1.0, "neutral_position": 0.9, "bearish_position": 0.0,
             # 空头判据：'ma'=补 MA 空头排列（修原版 bearish 永不触发的缺陷）
             # 'origin'=原版 score<=-2（实测 1449 日只触发 5 天）
@@ -324,7 +324,7 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             _int("enable_ladder_stop", "阶梯移动止损(1开/0关)", 1, 0, 1),
             _int("ladder_hold_days", "阶梯切换(持有交易日)", 10, 1, 60, 1),
             _float("ladder_trailing_pct", "阶梯后段回撤阈值", 0.15, 0.02, 0.5, 0.01),
-            _float("trailing_stop_pct", "阶梯前段回撤阈值", 0.10, 0.02, 0.5, 0.01),
+            _float("trailing_stop_pct", "阶梯前段回撤阈值", 0.08, 0.02, 0.5, 0.01),
             _float("bullish_position", "看多仓位", 1.0, 0.0, 1.0, 0.05),
             _float("neutral_position", "中性仓位", 0.9, 0.0, 1.0, 0.05),
             _float("bearish_position", "看空仓位", 0.0, 0.0, 1.0, 0.05),
