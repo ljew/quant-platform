@@ -466,7 +466,11 @@ class PortfolioBacktestEngine:
             meta[sym] = {"signal_type": o["signal_type"], "signal_reason": o["signal_reason"]}
         self._pending_orders = []
 
-        if not any(targets.values()):
+        # ⚠️ 必须是「没有任何标的」才返回，不能判断权重是否全为 0：
+        #    止损/止盈/风控清仓这类「当日只有卖出」的场景，targets 值全是 0.0，
+        #    用 any(targets.values()) 会把整批卖单判成空单直接丢弃 →
+        #    日频风控全线失效（jk 系列六年 131 次止损触发、0 笔成交）。
+        if not targets:
             return
 
         clamped, clamps = self._apply_risk_limits(targets, self.risk_limits)

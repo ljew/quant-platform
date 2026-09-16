@@ -9,7 +9,7 @@ import { signalLabel } from "../signalLabel";
 export default function BacktestPage() {
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
   const [key, setKey] = useState("dual_ma");
-  const [params, setParams] = useState<Record<string, number>>({});
+  const [params, setParams] = useState<Record<string, number | string>>({});
   const [symbol, setSymbol] = useState("sh600519");
   const [start, setStart] = useState("2023-01-01");
   const [end, setEnd] = useState("2025-06-30");
@@ -31,8 +31,11 @@ export default function BacktestPage() {
   }, []);
 
   const initParams = (s: StrategyInfo) => {
-    const p: Record<string, number> = {};
-    (s.param_schema || []).forEach((f) => (p[f.key] = Number(f.default ?? 0)));
+    // 枚举参数保持字符串原值（Number('ma') 会变成 NaN 传后端）
+    const p: Record<string, number | string> = {};
+    (s.param_schema || []).forEach((f) => {
+      p[f.key] = f.type === "str" ? String(f.default ?? "") : Number(f.default ?? 0);
+    });
     setParams(p);
   };
 
@@ -164,18 +167,34 @@ export default function BacktestPage() {
 
       {(meta?.param_schema || []).length > 0 && (
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
-          {meta!.param_schema.map((f) => (
-            <label key={f.key} style={{ fontSize: 12 }}>
-              {f.label}
-              <input
-                type="number"
-                step={f.type === "int" ? 1 : 0.01}
-                value={params[f.key] ?? Number(f.default ?? 0)}
-                onChange={(e) => setParams((p) => ({ ...p, [f.key]: Number(e.target.value) }))}
-                style={{ ...inputStyle(colors), width: 110, marginTop: 2 }}
-              />
-            </label>
-          ))}
+          {meta!.param_schema.map((f) => {
+            // 枚举型参数（type=str 且带 options）必须渲染成下拉框：
+            // 用数字框会把 'ma' 这类值 Number() 成 NaN 传给后端，静默退回默认口径。
+            const opts = (f as Record<string, unknown>).options as string[] | undefined;
+            const isEnum = f.type === "str" && Array.isArray(opts) && opts.length > 0;
+            return (
+              <label key={f.key} style={{ fontSize: 12 }}>
+                {f.label}
+                {isEnum ? (
+                  <select
+                    value={String(params[f.key] ?? f.default ?? opts![0])}
+                    onChange={(e) => setParams((p) => ({ ...p, [f.key]: e.target.value }))}
+                    style={{ ...inputStyle(colors), width: 130, marginTop: 2 }}
+                  >
+                    {opts!.map((o) => (<option key={o} value={o}>{o}</option>))}
+                  </select>
+                ) : (
+                  <input
+                    type="number"
+                    step={f.type === "int" ? 1 : 0.01}
+                    value={params[f.key] ?? Number(f.default ?? 0)}
+                    onChange={(e) => setParams((p) => ({ ...p, [f.key]: Number(e.target.value) }))}
+                    style={{ ...inputStyle(colors), width: 110, marginTop: 2 }}
+                  />
+                )}
+              </label>
+            );
+          })}
         </div>
       )}
 

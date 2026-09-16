@@ -166,7 +166,9 @@ function signalLabel(t){
     '突破买入':'突破买入','跌破卖出':'跌破卖出','超卖买入':'超卖买入','超买卖出':'超买卖出',
     '均线多头买入':'均线多头','均线空头卖出':'均线空头','动量买入':'动量买入','动量卖出':'动量卖出',
     turtle_entry:'海龟建仓',turtle_add:'海龟加仓',turtle_stop:'海龟止损',turtle_exit:'海龟离场',
-    risk_forced:'风控强平',macd_boll:'MACD布林',boll_break:'跌破下轨'};
+    risk_forced:'风控强平',macd_boll:'MACD布林',boll_break:'跌破下轨',
+    jk_rebalance:'jk调仓买入',jk_exit:'jk调仓卖出',jk_stop_loss:'jk固定止损',
+    jk_trailing_stop:'jk移动止损',jk_bearish:'jk看空清仓',jk_vol_trim:'jk波动减仓'};
   return m[t]||t||'—';
 }
 
