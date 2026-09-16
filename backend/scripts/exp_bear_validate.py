@@ -20,8 +20,6 @@ from app.core.strategies.registry import STRATEGY_REGISTRY  # noqa: E402
 from app.routers.strategy import _run_portfolio            # noqa: E402
 from app.schemas import BacktestRequest                    # noqa: E402
 
-KEY = "jk001"
-
 COMBOS = [("origin", 0), ("ma", 0), ("ma", 1)]
 SEGS = [
     ("样本内 2019-2024", "2019-01-02", "2024-12-20", 0.0),
@@ -32,21 +30,32 @@ SEGS = [
 
 
 def main() -> int:
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--strategy", default="jk001", help="jk001 / jk002")
+    ap.add_argument("--quick", action="store_true",
+                    help="只跑 origin+0 与 ma+1 两组、只跑样本内/样本外两段（全A池很慢时用）")
+    args = ap.parse_args()
+    key = args.strategy
+
     init_db()
     db = SessionLocal()
-    meta = STRATEGY_REGISTRY[KEY]
+    meta = STRATEGY_REGISTRY[key]
     base = dict(meta["default_params"])
 
+    print(f"策略 {key}  基准 {meta.get('index_symbol')}  池 {base.get('pool_mode')}")
     print(f"{'区间':<18} {'判据':>7} {'即时':>4} | {'收益':>8} {'回撤':>8} "
           f"{'夏普':>6} {'Calmar':>7} {'基准':>8} {'超额':>8}")
     print("-" * 88)
-    for seg_name, start, end, slip in SEGS:
-        for mode, imm in COMBOS:
+    segs = SEGS[:2] if args.quick else SEGS
+    combos = [("origin", 0), ("ma", 1)] if args.quick else COMBOS
+    for seg_name, start, end, slip in segs:
+        for mode, imm in combos:
             p = dict(base)
             p.update({"trend_bear_mode": mode, "bear_immediate": imm})
             try:
                 req = BacktestRequest(symbol=meta.get("index_symbol", "sh000300"),
-                                      start=start, end=end, strategy=KEY, params=p,
+                                      start=start, end=end, strategy=key, params=p,
                                       initial_cash=1_000_000, commission=0.0003,
                                       slippage=slip, adj="qfq")
                 r = _run_portfolio(db, req, meta, p)
