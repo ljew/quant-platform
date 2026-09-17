@@ -151,6 +151,11 @@ export const api = {
     get<{ date: string; n_articles: number; n_finance: number; bull: number; bear: number; net_sentiment: number | null }[]>(`/factor/news/daily?limit=${limit}`),
   factorNewsTest: (extreme_pct: number, horizon: number) =>
     post<NewsEventReport>("/factor/news/event-test", { extreme_pct, horizon }),
+  // AI 因子生成（自然语言 ↔ 表达式）
+  factorAiStatus: () => get<AiStatus>("/factor/ai/status"),
+  factorAiGenerate: (text: string, max_retry = 3) =>
+    post<AiGenerateResult>("/factor/ai/generate", { text, max_retry }),
+  factorAiExplain: (expr: string) => post<AiExplainResult>("/factor/ai/explain", { expr }),
   // 数据健康度 + 数据流全景
   monitorHealth: () => get<HealthReport>(`/monitor/health-report`),
   monitorDataflow: () => get<DataflowReport>(`/monitor/dataflow`),
@@ -171,6 +176,46 @@ export const api = {
 export interface RegistryRow {
   id: number; name: string; expr: string; direction: number;
   category: string; status: string; ic_mean: number | null; created_at: string;
+}
+
+// —— AI 因子生成 ——
+export interface AiStatus {
+  configured: boolean;
+  model: string;
+  base_url: string;
+}
+
+/** 一次校验失败的记录（模型第几轮写了什么、报什么错），用于展示自修复过程。 */
+export interface AiFix {
+  attempt: number;
+  expr: string;
+  error: string;
+}
+
+export interface AiGenerateResult {
+  ok: boolean;
+  expr?: string;
+  name?: string;
+  logic?: string;
+  direction?: string;
+  unsupported?: string;
+  confidence?: number | null;
+  sample_value?: number | null;
+  attempts?: number;
+  fixes?: AiFix[];
+  model?: string;
+  error?: string;
+  hint?: string;
+}
+
+export interface AiExplainResult {
+  ok: boolean;
+  expr?: string;
+  name?: string;
+  logic?: string;
+  direction?: string;
+  caveats?: string;
+  error?: string;
 }
 
 export interface HealthCheck {

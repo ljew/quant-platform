@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import EChart from "../components/EChart";
 import { Badge, Btn, Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
-import { api, FactorMineReport, FactorMineSummary, GpMineResult, NewsEventReport } from "../api/client";
+import {
+  api, AiExplainResult, AiGenerateResult, AiStatus,
+  FactorMineReport, FactorMineSummary, GpMineResult, NewsEventReport,
+} from "../api/client";
 import { useTheme, ThemeColors } from "../theme";
 
 const DIRECTION_CN: Record<string, string> = {
@@ -25,6 +28,14 @@ export default function FactorMinePage() {
   const [report, setReport] = useState<FactorMineReport | null>(null);
   const [history, setHistory] = useState<FactorMineSummary[]>([]);
   const [error, setError] = useState("");
+  // AI 自然语言生成（生成后需人工确认，不自动挖掘）
+  const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
+  const [aiText, setAiText] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiResult, setAiResult] = useState<AiGenerateResult | null>(null);
+  const [aiError, setAiError] = useState("");
+  const [explainBusy, setExplainBusy] = useState(false);
+  const [explainResult, setExplainResult] = useState<AiExplainResult | null>(null);
   // GP 自动挖掘
   const [gpDirs, setGpDirs] = useState<{ key: string; note: string }[]>([]);
   const [gpSel, setGpSel] = useState<string[]>(["momentum", "volatility", "value"]);
@@ -48,8 +59,49 @@ export default function FactorMinePage() {
     api.factorFunctions().then(setFns).catch(() => {});
     api.factorGpDirections().then(setGpDirs).catch(() => {});
     api.factorNewsDaily(600).then(setNewsSeries).catch(() => {});
+    api.factorAiStatus().then(setAiStatus).catch(() => {});
     loadHistory();
   }, [loadHistory]);
+
+  const runAiGenerate = async () => {
+    const text = aiText.trim();
+    if (!text) return;
+    setAiBusy(true);
+    setAiError("");
+    setAiResult(null);
+    setExplainResult(null);
+    try {
+      const r = await api.factorAiGenerate(text);
+      setAiResult(r);
+      if (!r.ok) setAiError(r.error || "生成失败");
+    } catch (e) {
+      setAiError((e as Error).message);
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  // 只回填、不自动跑：把「要不要挖」的决定权留给用户
+  const applyAiExpr = () => {
+    if (!aiResult?.expr) return;
+    setExpr(aiResult.expr);
+    if (aiResult.name) setName(aiResult.name);
+    setValid(null);
+    setError("");
+  };
+
+  const runExplain = async () => {
+    if (!expr.trim()) return;
+    setExplainBusy(true);
+    setExplainResult(null);
+    try {
+      setExplainResult(await api.factorAiExplain(expr));
+    } catch (e) {
+      setExplainResult({ ok: false, error: (e as Error).message });
+    } finally {
+      setExplainBusy(false);
+    }
+  };
 
   const runNewsTest = async () => {
     setNewsTesting(true);
@@ -114,9 +166,98 @@ export default function FactorMinePage() {
         actions={<Btn onClick={() => setShowFns(!showFns)} kind="ghost" small>函数参考</Btn>}
       />
 
+      {/* —— AI 自然语言生成（未配置大模型时整块隐藏）—— */}
+      {aiStatus?.configured && (
+        <Card
+          title="AI 生成因子"
+          colors={colors}
+          extra={<Badge text={aiStatus.model} color={colors.accent} soft />}
+          style={{ marginBottom: 14 }}
+        >
+          <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
+            <input
+              value={aiText}
+              onChange={(e) => setAiText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !aiBusy) runAiGenerate(); }}
+              placeholder="用一句话描述你要找什么样的股票，例如：估值不高、近期缩量整理、但现金流在改善的公司"
+              style={{ ...inputStyle(colors), flex: 1 }}
+            />
+            <Btn onClick={runAiGenerate} disabled={aiBusy || !aiText.trim()}>
+              {aiBusy ? "生成中…" : "生成表达式"}
+            </Btn>
+          </div>
+
+          {aiError && !aiResult?.ok && (
+            <div style={{ color: colors.up, fontSize: 13, marginTop: 8 }}>
+              {aiError}
+              {aiResult?.hint ? <span style={{ color: colors.muted }}> · {aiResult.hint}</span> : null}
+            </div>
+          )}
+
+          {aiResult?.ok && aiResult.expr && (
+            <div style={{
+              marginTop: 12, padding: 12, borderRadius: 9,
+              border: `1px solid ${colors.border}`, background: colors.tableStripe,
+            }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ fontWeight: 600, fontSize: 13.5 }}>
+                  {aiResult.name}
+                  {aiResult.direction && (
+                    <span style={{ color: colors.muted, fontWeight: 400, fontSize: 12 }}> · {aiResult.direction}</span>
+                  )}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  {!!aiResult.attempts && aiResult.attempts > 1 && (
+                    <Badge text={`自修复 ${aiResult.attempts - 1} 轮`} color="#c8860d" soft />
+                  )}
+                  <Btn kind="ghost" small onClick={applyAiExpr}>填入表达式框</Btn>
+                </div>
+              </div>
+              <code style={{
+                display: "block", marginTop: 8, wordBreak: "break-all",
+                fontFamily: "'SF Mono', Menlo, Consolas, monospace",
+                fontSize: 13, color: colors.accent,
+              }}>
+                {aiResult.expr}
+              </code>
+              {aiResult.logic && (
+                <div style={{ fontSize: 12.5, color: colors.muted, marginTop: 8 }}>{aiResult.logic}</div>
+              )}
+              {aiResult.unsupported && (
+                <div style={{ fontSize: 12.5, color: "#c8860d", marginTop: 8 }}>
+                  平台缺少所需数据：{aiResult.unsupported} —— 上面的表达式是退而求其次的近似，用前请确认
+                </div>
+              )}
+              {!!aiResult.fixes?.length && (
+                <details style={{ marginTop: 8 }}>
+                  <summary style={{ fontSize: 12, color: colors.muted, cursor: "pointer" }}>
+                    查看 {aiResult.fixes.length} 次未通过的尝试
+                  </summary>
+                  <div style={{ marginTop: 6, fontSize: 11.5, color: colors.muted, lineHeight: 1.7 }}>
+                    {aiResult.fixes.map((f) => (
+                      <div key={f.attempt}>
+                        第 {f.attempt} 轮 <code>{f.expr || "(空)"}</code> — {f.error}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
+
       {/* —— 配置面板 —— */}
       <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 14, marginBottom: 16 }}>
-        <Card title="因子表达式" colors={colors}>
+        <Card
+          title="因子表达式"
+          colors={colors}
+          extra={aiStatus?.configured ? (
+            <Btn kind="ghost" small onClick={runExplain} disabled={explainBusy || !expr.trim()}>
+              {explainBusy ? "解读中…" : "AI 解读"}
+            </Btn>
+          ) : undefined}
+        >
           <textarea
             value={expr}
             onChange={(e) => { setExpr(e.target.value); setValid(null); }}
@@ -144,6 +285,31 @@ export default function FactorMinePage() {
                 <span style={{ color: colors.down }}>✓ 表达式有效 · 试算值 <code>{valid.sample_value ?? "—"}</code></span>
               ) : (
                 <span style={{ color: colors.up }}>✗ {valid.error}</span>
+              )}
+            </div>
+          )}
+          {explainResult && (
+            <div style={{
+              marginTop: 8, padding: "9px 11px", borderRadius: 8, fontSize: 12.5,
+              background: colors.tableStripe, border: `1px solid ${colors.border}`,
+            }}>
+              {explainResult.ok ? (
+                <>
+                  <div style={{ fontWeight: 600 }}>
+                    {explainResult.name}
+                    {explainResult.direction && (
+                      <span style={{ color: colors.muted, fontWeight: 400 }}> · {explainResult.direction}</span>
+                    )}
+                  </div>
+                  {explainResult.logic && (
+                    <div style={{ color: colors.muted, marginTop: 4 }}>{explainResult.logic}</div>
+                  )}
+                  {explainResult.caveats && (
+                    <div style={{ color: "#c8860d", marginTop: 4 }}>失效场景：{explainResult.caveats}</div>
+                  )}
+                </>
+              ) : (
+                <div style={{ color: colors.up }}>{explainResult.error}</div>
               )}
             </div>
           )}

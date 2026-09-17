@@ -21,8 +21,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.engine.factor_expr import eval_factor
-from app.models import KlineDaily, Stock, FundamentalsHistory, IndexKlineDaily
+from app.datahub.ns_vars import fin_asof, fin_hist_map, make_ns
+from app.models import FinancialsRaw, FundamentalsHistory, IndexKlineDaily, KlineDaily, Stock
 from app.services.factor_mining import (
+    _collect_seg,
     _spearman,
     _mean,
     _std,
@@ -32,8 +34,13 @@ from app.services.factor_mining import (
 )
 
 # ============ 表达式文法 ============
-LIST_VARS = ["c_m", "c_v", "c_b", "c_r", "c_t"]
-ATTR_VARS = ["pe_ttm", "pb", "market_cap", "roe", "revenue_yoy", "profit_yoy", "earnings_surprise"]
+# 量能序列与收盘序列同窗口同长度，可自由互换/组合（如 corr(returns(c_v), returns(vol_v))）
+LIST_VARS = ["c_m", "c_v", "c_b", "c_r", "c_t",
+             "vol_m", "vol_v", "vol_r", "amt_m", "amt_v", "amt_r"]
+# 属性终端只投放「无量纲」财务量：ocf/capex/total_assets 是元为单位的大数，
+# 直接进 GP 会主导量纲、淹没其他项，故只暴露比值型。
+ATTR_VARS = ["pe_ttm", "pb", "market_cap", "roe", "revenue_yoy", "profit_yoy",
+             "earnings_surprise", "fcf_yield", "ocf_to_assets", "capex_intensity"]
 
 # 一元列表→标量 终结函数
 TERMINALS_1ARG = ["std", "mean", "min", "max", "sum", "skew", "maxdd"]
@@ -166,15 +173,29 @@ def build_context(db: Session, start: str, end: str, forward: int, step: int,
     es_map = _es_map(db, syms)
     load_from = sd - timedelta(days=300)
 
+    # 财务（PIT）：全量预载一次，按公告日逐截面选取
+    fin_hist = fin_hist_map(db.execute(
+        select(FinancialsRaw.symbol, FinancialsRaw.ann_date,
+               FinancialsRaw.n_cashflow_act, FinancialsRaw.capex,
+               FinancialsRaw.total_assets)
+    ).all())
+
     axis_dates = _dates_in_range(db, load_from, ed)
     aligned: dict[str, dict[date, float]] = {}
+    vol_aligned: dict[str, dict[date, float]] = {}
+    amt_aligned: dict[str, dict[date, float]] = {}
     rows = db.execute(
-        select(KlineDaily.symbol, KlineDaily.trade_date, KlineDaily.close)
-        .where(KlineDaily.symbol.in_(syms), KlineDaily.adj == "qfq",
+        select(KlineDaily.symbol, KlineDaily.trade_date, KlineDaily.close,
+               KlineDaily.volume, KlineDaily.amount)
+        .where(KlineDaily.symbol.in_(syms), KlineDaily.adj == "none",
                KlineDaily.trade_date >= load_from, KlineDaily.trade_date <= ed)
     ).all()
-    for sym, td, close in rows:
+    for sym, td, close, vol, amt in rows:
         aligned.setdefault(sym, {})[td] = float(close)
+        if vol is not None:
+            vol_aligned.setdefault(sym, {})[td] = float(vol)
+        if amt is not None:
+            amt_aligned.setdefault(sym, {})[td] = float(amt)
     bench_rows = db.execute(
         select(IndexKlineDaily.trade_date, IndexKlineDaily.close)
         .where(IndexKlineDaily.symbol == "sh000906",
@@ -223,14 +244,13 @@ def build_context(db: Session, start: str, end: str, forward: int, step: int,
                 amap = aligned.get(sym)
                 if not amap or snap not in amap:
                     continue
-                seg = [c for c in (amap.get(d) for d in slice_dates) if c is not None]
-                a = attrs.get(sym, {}) or {}
-                ns = {"c_m": seg, "c_r": seg, "c_v": seg, "c_b": seg, "c_t": seg,
-                      "mkt_b": bench_aligned[i0: idx + 1][-len(seg):],
-                      "pe_ttm": a.get("pe_ttm"), "pb": a.get("pb"), "market_cap": a.get("market_cap"),
-                      "roe": a.get("roe"), "revenue_yoy": a.get("revenue_yoy"),
-                      "profit_yoy": a.get("profit_yoy"), "earnings_surprise": es_map.get(sym),
-                      "industry": a.get("industry")}
+                seg, vseg, aseg = _collect_seg(
+                    amap, vol_aligned.get(sym) or {}, amt_aligned.get(sym) or {}, slice_dates)
+                if len(seg) < 60:
+                    continue
+                ns = make_ns(seg, bench_aligned[i0: idx + 1], attrs.get(sym, {}) or {},
+                             esv=es_map.get(sym), vols=vseg, amts=aseg,
+                             fin=fin_asof(fin_hist, sym, snap))
                 try:
                     v = eval_factor(fexpr, ns)
                 except Exception:  # noqa: BLE001
@@ -256,6 +276,7 @@ def build_context(db: Session, start: str, end: str, forward: int, step: int,
 
     return {
         "syms": syms, "attrs": attrs, "es_map": es_map, "aligned": aligned,
+        "vol_aligned": vol_aligned, "amt_aligned": amt_aligned, "fin_hist": fin_hist,
         "axis_dates": axis_dates, "bench_aligned": bench_aligned, "snap_pairs": snap_pairs,
         "ortho_cache": ortho_cache,
         "news_lookup": _news_lookup,
@@ -313,7 +334,7 @@ def evaluate_candidate(expr: str, ctx: dict, groups: int,
     g_rets: dict[int, list[float]] = {g: [] for g in range(1, groups + 1)}
     crisis_ic_list: list[float] = []
     crisis_windows = 0
-    fv_cache: dict[tuple, list[float]] = {}
+    fv_cache: dict[tuple, tuple] = {}
     for idx, snap, fwd_date, bench_ret, is_crisis in ctx["snap_pairs"]:
         i0 = max(0, idx - 130)
         slice_dates = ctx["axis_dates"][i0: idx + 1]
@@ -326,27 +347,23 @@ def evaluate_candidate(expr: str, ctx: dict, groups: int,
             if not amap or snap not in amap or fwd_date not in amap:
                 continue
             key = (sym, idx)
-            seg_list = fv_cache.get(key)
-            if seg_list is None:
-                seg_list = [c for c in (amap.get(d) for d in slice_dates) if c is not None]
-                fv_cache[key] = seg_list
-            seg = seg_list
+            cached = fv_cache.get(key)
+            if cached is None:
+                cached = _collect_seg(
+                    amap, (ctx.get("vol_aligned") or {}).get(sym) or {},
+                    (ctx.get("amt_aligned") or {}).get(sym) or {}, slice_dates)
+                fv_cache[key] = cached
+            seg, vseg, aseg = cached
             if len(seg) < 55:
                 continue
             mkt_b = bench_seg_raw[-len(seg):]
             if len(mkt_b) != len(seg):
                 continue
             a = ctx["attrs"].get(sym, {}) or {}
-            # 差异化窗口（对齐 multi_factor 语义）：动量125/反转25/波动125/Beta125/尾部125
-            def tail(n: int) -> list[float]:
-                return seg[-n:] if len(seg) >= n else seg
-            ns = {"c_m": tail(126), "c_r": tail(26), "c_v": tail(61), "c_b": tail(126),
-                  "c_t": tail(121), "mkt_b": mkt_b[-(len(tail(126))):],
-                  "pe_ttm": a.get("pe_ttm"), "pb": a.get("pb"), "market_cap": a.get("market_cap"),
-                  "roe": a.get("roe"), "revenue_yoy": a.get("revenue_yoy"),
-                  "profit_yoy": a.get("profit_yoy"), "earnings_surprise": ctx["es_map"].get(sym),
-                  "news_senti": ctx["news_lookup"](sym, snap),
-                  "industry": a.get("industry")}
+            ns = make_ns(seg, bench_seg_raw, a,
+                         news=ctx["news_lookup"](sym, snap),
+                         esv=ctx["es_map"].get(sym), vols=vseg, amts=aseg,
+                         fin=fin_asof(ctx.get("fin_hist") or {}, sym, snap))
             try:
                 v = eval_factor(expr, ns)
             except Exception:  # noqa: BLE001

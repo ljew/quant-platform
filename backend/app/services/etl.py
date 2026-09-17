@@ -838,6 +838,16 @@ def compute_factor_cross_section(db: Session, syms: list[str], trade_date: date)
         logger.warning("基准序列不足，跳过因子计算")
         return 0
 
+    # 财务（PIT）：全量预载一次，逐股按「公告日 ≤ 交易日」选取，避免前视
+    from app.datahub.ns_vars import fin_asof, fin_hist_map
+    from app.models import FinancialsRaw
+
+    fin_hist = fin_hist_map(db.execute(
+        select(FinancialsRaw.symbol, FinancialsRaw.ann_date,
+               FinancialsRaw.n_cashflow_act, FinancialsRaw.capex,
+               FinancialsRaw.total_assets)
+    ).all())
+
     rows_written = 0
     existing = {
         r[0] for r in db.execute(
@@ -849,8 +859,9 @@ def compute_factor_cross_section(db: Session, syms: list[str], trade_date: date)
         if sym in existing:
             continue
         bars = db.execute(
-            select(KlineDaily.trade_date, KlineDaily.close).where(
-                KlineDaily.symbol == sym, KlineDaily.adj == "qfq",
+            select(KlineDaily.trade_date, KlineDaily.close,
+                   KlineDaily.volume, KlineDaily.amount).where(
+                KlineDaily.symbol == sym, KlineDaily.adj == "none",
                 KlineDaily.trade_date >= sd, KlineDaily.trade_date <= trade_date,
             ).order_by(KlineDaily.trade_date)
         ).all()
@@ -861,10 +872,15 @@ def compute_factor_cross_section(db: Session, syms: list[str], trade_date: date)
         if len(mkt_b) != len(closes):
             continue
         attrs = attrs_map.get(sym, {}) or {}
-        from app.datahub.ns_vars import make_ns
+        from app.datahub.ns_vars import fill_missing, make_ns
+
+        vols = fill_missing([float(b[2]) if b[2] is not None else None for b in bars])
+        amts = fill_missing([float(b[3]) if b[3] is not None else None for b in bars])
         esv = _earnings_surprise_latest(db, sym)
         ns = make_ns(closes, mkt_b, attrs,
-                     news=news_lookup(sym, trade_date), esv=esv)
+                     news=news_lookup(sym, trade_date), esv=esv,
+                     vols=vols, amts=amts,
+                     fin=fin_asof(fin_hist, sym, trade_date))
         vals = {}
         for f in FACTORS:
             vals[f.name] = eval_factor(f.expr, ns)

@@ -19,7 +19,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.engine.factor_expr import eval_factor
-from app.models import Stock, FundamentalsHistory, FactorDaily, FACTOR_COLUMNS
+from app.datahub.ns_vars import fin_asof, fin_hist_map, make_ns, var_names
+from app.models import (
+    FACTOR_COLUMNS,
+    FactorDaily,
+    FinancialsRaw,
+    FundamentalsHistory,
+    Stock,
+)
 
 # 截面抽样间隔（交易日）：20 ≈ 每月一次
 DEFAULT_STEP = 20
@@ -71,7 +78,11 @@ def _std(xs: list[float]) -> float:
 
 
 def validate_expr(expr: str) -> tuple[bool, str, float | None]:
-    """校验表达式：AST 预检（函数名/变量名/属性访问）→ 受限命名空间试算。"""
+    """校验表达式：AST 预检（函数名/变量名/属性访问）→ 受限命名空间试算。
+
+    白名单与试算命名空间均从 ns_vars 派生，而非在此硬编码：
+    变量增删时校验层自动跟随，保证「校验通过」等价于「真实挖掘可求值」。
+    """
     import ast
     import random
 
@@ -82,10 +93,7 @@ def validate_expr(expr: str) -> tuple[bool, str, float | None]:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as e:
         return False, f"语法错误: {e.msg}", None
-    allowed_vars = {
-        "c_m", "c_r", "c_v", "c_b", "c_t", "mkt_b", "pe_ttm", "pb", "market_cap",
-        "roe", "revenue_yoy", "profit_yoy", "earnings_surprise", "industry", "news_senti",
-    }
+    allowed_vars = var_names()
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             if not isinstance(node.func, ast.Name) or node.func.id not in FUNCS:
@@ -96,20 +104,23 @@ def validate_expr(expr: str) -> tuple[bool, str, float | None]:
         elif isinstance(node, ast.Name) and node.id not in allowed_vars and node.id not in FUNCS:
             return False, f"未定义的变量: {node.id}", None
 
-    # ② 试算（示例序列）
+    # ② 试算：命名空间由 make_ns 构造，与真实挖掘同构
     random.seed(42)
-    n = 130
+    n = 140
     base = 10.0
     closes: list[float] = []
     for _ in range(n):
         base *= 1 + random.uniform(-0.02, 0.02)
         closes.append(round(base, 3))
-    ns = {
-        "c_m": closes, "c_r": closes, "c_v": closes, "c_b": closes, "c_t": closes,
-        "mkt_b": closes, "pe_ttm": 15.0, "pb": 2.0, "market_cap": 1e10,
-        "roe": 0.12, "revenue_yoy": 0.10, "profit_yoy": 0.08,
-        "earnings_surprise": 0.02, "news_senti": 0.02, "industry": "测试",
-    }
+    vols = [round(1e6 * (1 + random.uniform(-0.3, 0.3)), 1) for _ in range(n)]
+    amts = [round(1e8 * (1 + random.uniform(-0.3, 0.3)), 1) for _ in range(n)]
+    ns = make_ns(
+        closes, closes,
+        {"pe_ttm": 15.0, "pb": 2.0, "market_cap": 100.0, "roe": 0.12,
+         "revenue_yoy": 0.10, "profit_yoy": 0.08, "industry": "测试"},
+        news=0.02, esv=0.02, vols=vols, amts=amts,
+        fin={"ocf": 1e9, "capex": 2e8, "total_assets": 5e9},
+    )
     try:
         v = eval_factor(expr, ns)
         if v is None:
@@ -122,10 +133,8 @@ def validate_expr(expr: str) -> tuple[bool, str, float | None]:
 # 复杂度权重（QuantaAlpha C(f) = α₁·语法长度 + α₂·参数数 + α₃·log(1+特征数)）
 _W_SL, _W_PC, _W_F = 0.15, 0.25, 0.6
 
-_ALLOWED_VARS = {
-    "c_m", "c_r", "c_v", "c_b", "c_t", "mkt_b", "pe_ttm", "pb", "market_cap",
-    "roe", "revenue_yoy", "profit_yoy", "earnings_surprise", "industry", "news_senti",
-}
+# 变量白名单统一由 ns_vars 派生，避免与 make_ns 增删脱节
+_ALLOWED_VARS = var_names()
 
 
 def compute_complexity(expr: str) -> dict:
@@ -225,6 +234,32 @@ def _dates_in_range(db: Session, sd: date, ed: date) -> list[date]:
     return [r[0] for r in rows]
 
 
+def _collect_seg(cmap: dict, vmap: dict, amtmap: dict, dates: list) -> tuple[list, list, list]:
+    """按统一日期轴采集收盘与量能序列。
+
+    收盘缺失 → 整点丢弃（保持原有行为）；量能缺失 → 前值填充；
+    序列首端仍向量能缺失 → 返回空列表，交由上层把量能变量置 None。
+    三者共用同一趟遍历，从根上杜绝「收盘 61 个点、量能 60 个点」的错位。
+    """
+    seg: list[float] = []
+    vseg: list[float] = []
+    aseg: list[float] = []
+    for d in dates:
+        c = cmap.get(d)
+        if c is None:
+            continue
+        seg.append(float(c))
+        v = vmap.get(d)
+        vseg.append(float(v) if v is not None else (vseg[-1] if vseg else None))
+        a = amtmap.get(d)
+        aseg.append(float(a) if a is not None else (aseg[-1] if aseg else None))
+    if vseg and vseg[0] is None:
+        vseg = []
+    if aseg and aseg[0] is None:
+        aseg = []
+    return seg, vseg, aseg
+
+
 # ============ 挖掘主流程 ============
 def mine_factor(db: Session, expr: str, name: str = "自定义因子",
                 start: str = "", end: str = "",
@@ -247,6 +282,13 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
 
     attrs = _attrs_map(db, syms)
     es_map = _es_map(db, syms)
+    # 财务（PIT 口径）：一次全量预载到内存（14 万行 ≈ 数 MB），
+    # 之后按「公告日 ≤ 截面日」逐点选取，避免前视。
+    fin_hist = fin_hist_map(db.execute(
+        select(FinancialsRaw.symbol, FinancialsRaw.ann_date,
+               FinancialsRaw.n_cashflow_act, FinancialsRaw.capex,
+               FinancialsRaw.total_assets)
+    ).all())
 
     # 个股新闻情绪 lookup（当日或近3日均值）
     from app.models import NewsStockDaily
@@ -276,13 +318,20 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
 
     axis = _dates_in_range(db, sd - timedelta(days=300), ed)
     aligned: dict[str, dict[date, float]] = {}
+    vol_aligned: dict[str, dict[date, float]] = {}
+    amt_aligned: dict[str, dict[date, float]] = {}
     rows = db.execute(
-        select(KlineDaily.symbol, KlineDaily.trade_date, KlineDaily.close)
-        .where(KlineDaily.symbol.in_(syms), KlineDaily.adj == "qfq",
+        select(KlineDaily.symbol, KlineDaily.trade_date, KlineDaily.close,
+               KlineDaily.volume, KlineDaily.amount)
+        .where(KlineDaily.symbol.in_(syms), KlineDaily.adj == "none",
                KlineDaily.trade_date >= sd - timedelta(days=300), KlineDaily.trade_date <= ed)
     ).all()
-    for sym, td, close in rows:
+    for sym, td, close, vol, amt in rows:
         aligned.setdefault(sym, {})[td] = float(close)
+        if vol is not None:
+            vol_aligned.setdefault(sym, {})[td] = float(vol)
+        if amt is not None:
+            amt_aligned.setdefault(sym, {})[td] = float(amt)
     bench_map = {d: c for d, c in zip(
         _dates_in_range(db, sd - timedelta(days=300), ed),
         _bench_closes(db, sd - timedelta(days=300), ed),
@@ -311,10 +360,12 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
             amap = aligned.get(sym)
             if not amap or snap not in amap or fwd_date not in amap:
                 continue
-            # 因子窗口：snap 往前 125 根
+            # 因子窗口：snap 往前 131 根（122 交易日缓冲，供 c_m/c_t 窗口切分）
             i0 = max(0, idx - 130)
-            seg = [amap.get(d) for d in axis_dates[i0: idx + 1]]
-            seg = [c for c in seg if c is not None]
+            seg, vseg, aseg = _collect_seg(
+                amap, vol_aligned.get(sym) or {}, amt_aligned.get(sym) or {},
+                axis_dates[i0: idx + 1],
+            )
             if len(seg) < 60:
                 continue
             mkt_b = [c for c in bench_aligned[i0: idx + 1] if c is not None]
@@ -323,18 +374,12 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
                 if len(mkt_b) != len(seg):
                     continue
             a = attrs.get(sym, {}) or {}
-            # 个股新闻情绪（当日或近3日）
-            nl = news_lookup(sym, snap) if news_lookup else None
-            ns = {
-                "c_m": seg, "c_r": seg, "c_v": seg, "c_b": seg, "c_t": seg,
-                "mkt_b": mkt_b,
-                "news_senti": nl,
-                "pe_ttm": a.get("pe_ttm"), "pb": a.get("pb"), "market_cap": a.get("market_cap"),
-                "roe": a.get("roe"), "revenue_yoy": a.get("revenue_yoy"),
-                "profit_yoy": a.get("profit_yoy"),
-                "earnings_surprise": es_map.get(sym),
-                "industry": a.get("industry"),
-            }
+            ns = make_ns(
+                seg, mkt_b, a,
+                news=news_lookup(sym, snap) if news_lookup else None,
+                esv=es_map.get(sym), vols=vseg, amts=aseg,
+                fin=fin_asof(fin_hist, sym, snap),
+            )
             try:
                 val = eval_factor(expr, ns)
             except Exception:  # noqa: BLE001
@@ -381,7 +426,11 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
     mono_score = sum(1 for d in diffs if (d > 0) == (monotonic > 0)) / len(diffs) if diffs else 0.0
 
     # 与现有因子相关性（最新因子截面）
-    corr_table = _corr_with_existing(db, expr, syms, attrs, es_map, aligned, axis_dates, bench_aligned)
+    corr_table = _corr_with_existing(
+        db, expr, syms, attrs, es_map, aligned, axis_dates, bench_aligned,
+        vol_aligned=vol_aligned, amt_aligned=amt_aligned,
+        fin_hist=fin_hist, news_lookup=news_lookup,
+    )
 
     # 有效性评级
     if abs(t_stat) >= 2 and abs(ic_mean) > 0.02 and mono_score >= 0.6 and abs(corr_table.get("max_abs_corr", 0)) < 0.8:
@@ -417,7 +466,9 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
     }
 
 
-def _corr_with_existing(db, expr, syms, attrs, es_map, aligned, axis_dates, bench_aligned) -> dict:
+def _corr_with_existing(db, expr, syms, attrs, es_map, aligned, axis_dates, bench_aligned,
+                        vol_aligned=None, amt_aligned=None, fin_hist=None,
+                        news_lookup=None) -> dict:
     """最新截面：新因子与 factor_daily 现有 14 因子 Spearman 相关。"""
     latest = db.execute(
         select(FactorDaily.trade_date).order_by(FactorDaily.trade_date.desc()).limit(1)
@@ -439,20 +490,29 @@ def _corr_with_existing(db, expr, syms, attrs, es_map, aligned, axis_dates, benc
         idx = axis_dates.index(latest)
         snap = latest
     new_vals: dict[str, float] = {}
+    vol_aligned = vol_aligned or {}
+    amt_aligned = amt_aligned or {}
+    fin_hist = fin_hist or {}
     for sym in syms:
         amap = aligned.get(sym)
         if not amap or snap not in amap:
             continue
         i0 = max(0, idx - 130)
-        seg = [c for c in (amap.get(d) for d in axis_dates[i0: idx + 1]) if c is not None]
+        seg, vseg, aseg = _collect_seg(
+            amap, vol_aligned.get(sym) or {}, amt_aligned.get(sym) or {},
+            axis_dates[i0: idx + 1],
+        )
         if len(seg) < 60:
             continue
         mkt_b = bench_aligned[i0: idx + 1][-len(seg):]
         if len(mkt_b) != len(seg):
             continue
-        from app.datahub.ns_vars import make_ns
-        ns = make_ns(seg, bench_aligned[i0: idx + 1],
-                     attrs.get(sym, {}) or {}, esv=es_map.get(sym))
+        ns = make_ns(
+            seg, bench_aligned[i0: idx + 1], attrs.get(sym, {}) or {},
+            news=news_lookup(sym, snap) if news_lookup else None,
+            esv=es_map.get(sym), vols=vseg, amts=aseg,
+            fin=fin_asof(fin_hist, sym, snap),
+        )
         try:
             v = eval_factor(expr, ns)
         except Exception:  # noqa: BLE001
