@@ -3,6 +3,7 @@ import { api, BacktestResult, OptimizeTrial, StrategyInfo } from "../api/client"
 import { useTheme } from "../theme";
 import type { ThemeColors } from "../theme";
 import { Btn, Card, PageHeader } from "../components/ui";
+import ParamPanel, { ParamMap } from "../components/ParamPanel";
 import EChart from "../components/EChart";
 
 type MetricKey = "sharpe" | "total_return" | "oos_sharpe" | "robustness";
@@ -18,6 +19,35 @@ const METRIC_LABEL: Record<MetricKey, string> = {
 const ASYNC_THRESHOLD = 100;
 const ASYNC_MAX = 5000;
 
+/**
+ * 网格模式初始值：全部留空。
+ * 空 = 该参数不参与扫描（用策略默认值单点跑），用户填哪个就扫哪个 ——
+ * 避免 30 个参数全预填默认值、组合数看着像 1 实则需要逐个检查的困惑。
+ */
+const emptyGrid = (s: StrategyInfo): ParamMap => {
+  const out: ParamMap = {};
+  (s.param_schema || []).forEach((f) => { out[f.key] = ""; });
+  return out;
+};
+
+/**
+ * 逗号 / 空格分隔的取值列表 → 数字数组。
+ *
+ * 两个都要防：
+ * - **空串不能当 0**：`Number("") === 0`，若只做 isFinite 过滤，未填写的参数
+ *   会被解析成「取值为 0」提交上去（实测会把 30 个参数全发成 0，触发后端 400）。
+ *   所以必须先剔除空片段。
+ * - **0 与负数要保留**：jk001 有 17 个参数 min=0（enable_trend_filter 是 0/1 开关），
+ *   若按 `n > 0` 过滤，想扫「关闭」这一档就永远提交不上去。
+ */
+const splitNums = (v: unknown): number[] =>
+  String(v ?? "")
+    .split(/[,，\s]+/)
+    .map((s) => s.trim())
+    .filter((s) => s !== "")
+    .map(Number)
+    .filter(Number.isFinite);
+
 /** 参数寻优：网格搜索 + 样本外验证 + 参数稳健性。 */
 export default function OptimizePage() {
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
@@ -25,7 +55,7 @@ export default function OptimizePage() {
   const [symbol, setSymbol] = useState("sh600519");
   const [start, setStart] = useState("2021-01-01");
   const [end, setEnd] = useState("2025-06-30");
-  const [ranges, setRanges] = useState<Record<string, string>>({});
+  const [ranges, setRanges] = useState<ParamMap>({});
   const [rankBy, setRankBy] = useState("sharpe");
   const [oosRatio, setOosRatio] = useState(30); // 百分比
   const [trials, setTrials] = useState<OptimizeTrial[]>([]);
@@ -66,13 +96,13 @@ export default function OptimizePage() {
 
   useEffect(() => {
     api.strategies().then((s) => {
-      const single = s.filter((x) => !x.default_params?.multi_asset);
+      // multi_asset 是注册表顶层字段（早期误写成 default_params.multi_asset，
+      // 导致过滤条恒为真 → 指数增强策略也出现在寻优下拉里，选中后后端报 400）
+      const single = s.filter((x) => !x.multi_asset);
       setStrategies(single);
       if (single.length) {
         setKey(single[0].key);
-        const r: Record<string, string> = {};
-        (single[0].param_schema || []).forEach((f) => (r[f.key] = String(f.default)));
-        setRanges(r);
+        setRanges(emptyGrid(single[0]));
       }
     });
   }, []);
@@ -80,27 +110,20 @@ export default function OptimizePage() {
   const onStrategyChange = (k: string) => {
     setKey(k);
     const s = strategies.find((x) => x.key === k);
-    if (s) {
-      const r: Record<string, string> = {};
-      (s.param_schema || []).forEach((f) => (r[f.key] = String(f.default)));
-      setRanges(r);
-    }
+    if (s) setRanges(emptyGrid(s));
   };
 
   const parseRanges = () => {
     const out: Record<string, number[]> = {};
     for (const [pk, v] of Object.entries(ranges)) {
-      const nums = v.split(/[,，\s]+/).map(Number).filter((n) => Number.isFinite(n) && n > 0);
+      const nums = splitNums(v);
       if (nums.length) out[pk] = nums;
     }
     return out;
   };
 
-  const comboCount = useMemo(
-    () => Object.values(ranges).reduce((acc, v) => {
-      const n = v.split(/[,，\s]+/).map(Number).filter(Number.isFinite).length;
-      return acc * Math.max(n, 1);
-    }, 1),
+  const comboCount = useMemo<number>(
+    () => Object.values(ranges).reduce<number>((acc, v) => acc * Math.max(splitNums(v).length, 1), 1),
     [ranges]
   );
 
@@ -332,6 +355,23 @@ export default function OptimizePage() {
   return (
     <div style={{ maxWidth: 1280, margin: "0 auto" }}>
       <PageHeader title="参数寻优" desc="网格搜索 · 样本外验证 · 参数稳健性——防止挑出来的最优参数只是运气" />
+
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+        {/* 左栏：参数取值（按语义分组折叠）——只填想扫的参数，留空 = 用默认值单点跑 */}
+        {meta && (meta.param_schema || []).length > 0 && (
+          <ParamPanel
+            strategy={meta}
+            params={ranges}
+            onChange={(k, v) => setRanges((r) => ({ ...r, [k]: v }))}
+            onPatch={(next) => setRanges(next)}
+            colors={colors}
+            width={252}
+            mode="grid"
+          />
+        )}
+
+        {/* 右区：设置 + 运行 + 结果 */}
+        <div style={{ flex: 1, minWidth: 0 }}>
       <Card title="回测设置" colors={colors}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10 }}>
           <label>
@@ -364,27 +404,16 @@ export default function OptimizePage() {
         </div>
       </Card>
 
-      {/* 参数取值列表 */}
-      {(meta?.param_schema || []).length > 0 && (
-        <Card title={`参数取值（逗号分隔 = 网格搜索）· 预估组合数 ${comboCount}`} colors={colors}>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            {meta!.param_schema.map((f) => (
-              <label key={f.key} style={{ fontSize: 12 }}>
-                {f.label}
-                <input value={ranges[f.key] ?? ""} onChange={(e) => setRanges((r) => ({ ...r, [f.key]: e.target.value }))}
-                  style={{ ...inputStyle(colors), width: 130, marginTop: 2 }} placeholder={`默认 ${f.default}`} />
-              </label>
-            ))}
-          </div>
-          <div style={{ fontSize: 12, marginTop: 8, color: comboCount > ASYNC_MAX ? colors.down : colors.muted }}>
-            {comboCount > ASYNC_MAX
-              ? `组合数超过 ${ASYNC_MAX} 上限，请减少取值个数或维度。`
-              : comboCount > ASYNC_THRESHOLD
-                ? "组合数较多，将提交为后台任务（后端子进程执行）：可实时看进度、可随时取消，不占用页面。"
-                : "小网格直接同步跑，通常几秒内出结果。"}
-          </div>
-        </Card>
-      )}
+      {/* 组合数提示（参数取值在左侧面板） */}
+      <div style={{ fontSize: 12, margin: "10px 0 8px", color: comboCount > ASYNC_MAX ? colors.down : colors.muted }}>
+        {comboCount <= 1
+          ? "尚未填写取值 —— 请到左侧面板为想扫描的参数填写取值（逗号分隔），留空的参数按默认值单点跑。"
+          : comboCount > ASYNC_MAX
+            ? `预估组合数 ${comboCount}，超过 ${ASYNC_MAX} 上限，请减少取值个数或维度。`
+            : comboCount > ASYNC_THRESHOLD
+              ? `预估组合数 ${comboCount}，将提交为后台任务（后端子进程执行）：可实时看进度、可随时取消。`
+              : `预估组合数 ${comboCount}，小网格直接同步跑，通常几秒内出结果。`}
+      </div>
 
       <Btn onClick={run} disabled={running || comboCount > ASYNC_MAX}>
         {running
@@ -626,6 +655,8 @@ export default function OptimizePage() {
           </div>
         </div>
       )}
+        </div>
+      </div>
     </div>
   );
 }

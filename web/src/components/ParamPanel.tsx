@@ -37,6 +37,13 @@ interface Props {
   colors: ThemeColors;
   /** 面板宽度，默认 224。 */
   width?: number;
+  /**
+   * 取值模式：
+   * - `value`（默认）每个参数一个值 —— 回测用。
+   * - `grid` 每个参数填逗号分隔的候选值 —— 参数寻优的网格搜索用。
+   *   此时「已改」的语义变为「已填取值」（空 = 不参与扫描，用默认单点）。
+   */
+  mode?: "value" | "grid";
 }
 
 // —— 参数类型判定 ——
@@ -74,6 +81,19 @@ export function changedKeys(strategy: StrategyInfo, params: ParamMap): Set<strin
   return out;
 }
 
+/**
+ * 网格模式的「已填取值」集合 —— 语义与 changedKeys 不同：
+ * 空串代表「不参与扫描」（用默认单点），只要填了就视为参与了扫描。
+ */
+export function gridKeys(schema: ParamField[], params: ParamMap): Set<string> {
+  const out = new Set<string>();
+  schema.forEach((f) => {
+    const v = params[f.key];
+    if (v !== undefined && v !== null && String(v).trim() !== "") out.add(f.key);
+  });
+  return out;
+}
+
 /** 把参数还原成该策略的默认值（只覆盖 schema 里可见的参数）。 */
 export function defaultParams(strategy: StrategyInfo): ParamMap {
   const p: ParamMap = {};
@@ -97,7 +117,10 @@ function Tri({ open, color }: { open: boolean; color: string }) {
   );
 }
 
-export default function ParamPanel({ strategy, params, onChange, onPatch, colors, width = 224 }: Props) {
+export default function ParamPanel({
+  strategy, params, onChange, onPatch, colors, width = 224, mode = "value",
+}: Props) {
+  const grid = mode === "grid";
   const schema = useMemo(() => strategy.param_schema || [], [strategy]);
   const defaults = strategy.default_params || {};
 
@@ -141,7 +164,10 @@ export default function ParamPanel({ strategy, params, onChange, onPatch, colors
     return order.map((name) => ({ name, fields: map[name] }));
   }, [schema]);
 
-  const changed = useMemo(() => changedKeys(strategy, params), [strategy, params]);
+  const changed = useMemo(
+    () => (grid ? gridKeys(schema, params) : changedKeys(strategy, params)),
+    [grid, schema, strategy, params],
+  );
 
   const q = query.trim().toLowerCase();
   const match = (f: ParamField) =>
@@ -195,13 +221,24 @@ export default function ParamPanel({ strategy, params, onChange, onPatch, colors
   };
 
   const resetAll = () => {
-    onPatch(defaultParams(strategy));
+    if (grid) {
+      // 网格模式没有「默认值」概念，清空即回到「全部用默认单点扫描」
+      const next: ParamMap = { ...params };
+      schema.forEach((f) => { next[f.key] = ""; });
+      onPatch(next);
+    } else {
+      onPatch(defaultParams(strategy));
+    }
     setDraft({});
   };
   const resetGroup = (name: string) => {
     const next: ParamMap = { ...params };
     const byKey = new Map(schema.map((f) => [f.key, f]));
     groups.find((g) => g.name === name)?.fields.forEach((f) => {
+      if (grid) {
+        next[f.key] = "";
+        return;
+      }
       const meta = byKey.get(f.key)!;
       next[f.key] = isEnum(meta) ? String(meta.default ?? meta.options![0]) : Number(meta.default ?? 0);
     });
@@ -221,6 +258,47 @@ export default function ParamPanel({ strategy, params, onChange, onPatch, colors
     const cur = params[f.key];
     const labelColor = ch ? colors.accent : colors.muted;
     const borderColor = ch ? colors.accent : colors.border;
+
+    // —— 网格模式：每个参数填一组候选值（逗号分隔），用上下布局给输入框留足宽度 ——
+    if (grid) {
+      const pct = isPct(f);
+      const dft = f.default;
+      const hint = isEnum(f)
+        ? f.options!.join(" / ")
+        : dft === undefined || dft === null
+          ? "默认值"
+          : pct
+            ? `默认 ${fmt(dft)}（${fmt(Number(dft) * 100)}%）`
+            : `默认 ${fmt(dft)}`;
+      return (
+        <div key={f.key} style={{ padding: "4px 0", opacity: q && !match(f) ? 0.25 : 1 }}>
+          <div
+            title={f.desc || f.label}
+            style={{
+              fontSize: 11.5, color: labelColor, fontWeight: ch ? 600 : 400, marginBottom: 2,
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+            }}
+          >
+            {ch && (
+              <span
+                style={{
+                  display: "inline-block", width: 5, height: 5, borderRadius: "50%",
+                  background: colors.accent, marginRight: 5, verticalAlign: 1,
+                }}
+              />
+            )}
+            {f.label}
+          </div>
+          <input
+            value={cur === undefined || cur === null ? "" : String(cur)}
+            onChange={(e) => onChange(f.key, e.target.value)}
+            placeholder={hint}
+            spellCheck={false}
+            style={{ ...inputStyle(colors), width: "100%", fontSize: 11.5, padding: "3px 7px", borderColor }}
+          />
+        </div>
+      );
+    }
 
     let ctrl: React.ReactNode;
     if (isEnum(f)) {
@@ -349,7 +427,7 @@ export default function ParamPanel({ strategy, params, onChange, onPatch, colors
                       background: `${colors.accent}1a`, color: colors.accent, fontWeight: 600,
                     }}
                   >
-                    {nChanged} 项已改
+                    {nChanged} 项{grid ? "参与扫描" : "已改"}
                   </span>
                 )}
                 <span style={{ fontSize: 11, color: colors.muted }}>{g.fields.length}</span>
@@ -361,7 +439,7 @@ export default function ParamPanel({ strategy, params, onChange, onPatch, colors
                 {nChanged > 0 && !q && (
                   <div style={{ textAlign: "right", paddingTop: 3 }}>
                     <button onClick={() => resetGroup(g.name)} style={linkBtn}>
-                      恢复本组默认
+                      {grid ? "清空本组取值" : "恢复本组默认"}
                     </button>
                   </div>
                 )}
@@ -383,21 +461,21 @@ export default function ParamPanel({ strategy, params, onChange, onPatch, colors
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
-        <span style={{ fontSize: 13, fontWeight: 600 }}>参数配置</span>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>{grid ? "参数取值" : "参数配置"}</span>
         <span style={{ fontSize: 11.5, color: colors.muted }}>
-          {total} 项{nAll > 0 ? ` · 已改 ${nAll}` : ""}
+          {total} 项{nAll > 0 ? (grid ? ` · 已填 ${nAll}` : ` · 已改 ${nAll}`) : ""}
         </span>
         <button
           onClick={resetAll}
           disabled={nAll === 0}
-          title="全部恢复为该策略的默认参数"
+          title={grid ? "清空全部取值（回到用默认单点扫描）" : "全部恢复为该策略的默认参数"}
           style={{
             marginLeft: "auto", border: 0, background: "transparent",
             color: nAll > 0 ? colors.accent : colors.muted,
             fontSize: 11.5, cursor: nAll > 0 ? "pointer" : "default", padding: "2px 0",
           }}
         >
-          恢复默认
+          {grid ? "清空全部" : "恢复默认"}
         </button>
       </div>
 

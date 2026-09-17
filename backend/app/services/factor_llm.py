@@ -37,8 +37,111 @@ def llm_info() -> dict:
     """供前端探测 AI 模式是否可用（不泄露 key）。"""
     return {
         "configured": llm_configured(),
-        "model": settings.llm_model if llm_configured() else "",
-        "base_url": settings.llm_base_url if llm_configured() else "",
+        "model": settings.llm_model,
+        "base_url": settings.llm_base_url,
+        # 未配置大模型时，本地规则兜底仍可用 —— 前端据此决定提示「试用模式」还是「配置引导」
+        "fallback_ready": True,
+        "env_key": "QUANT_LLM_API_KEY",
+    }
+
+
+# ============ 本地规则兜底（未配置大模型时的「试用模式」） ============
+# 这不是 AI：只做关键词匹配，覆盖高频投资表述。存在的意义是让功能在配置 key
+# 之前就能被验证和试用，而不是整块不可见；命中不了的如实说明，绝不假装理解。
+# 格式：(触发词, 表达式, 中文名, 逻辑说明)
+_LOCAL_RULES: list[tuple[tuple[str, ...], str, str, str]] = [
+    # —— 估值 ——
+    (("低估", "便宜", "市盈率低", "pe低", "估值不高", "估值低"), "safe_inv(pe_ttm, 0, 1000)", "低估值", "市盈率越低得分越高"),
+    (("破净", "市净率低", "pb低"), "safe_inv(pb, 0, 100)", "低市净率", "市净率越低得分越高"),
+    # —— 质量 / 成长 ——
+    (("高roe", "roe高", "盈利能力强", "赚钱能力", "高回报"), "roe", "高ROE", "净资产收益率越高越好"),
+    (("利润增长", "利润加速", "业绩增长", "业绩好"), "profit_yoy", "利润成长", "净利润增速越高越好"),
+    (("成长", "营收增长", "收入增长", "增速快"), "revenue_yoy", "营收成长", "营业收入增速越高越好"),
+    (("超预期", "盈余惊喜", "业绩超预期", "pead"), "earnings_surprise", "盈余惊喜", "业绩超预期后的漂移效应"),
+    # —— 波动 / 风险 ——
+    (("低波", "波动小", "波动低", "波动率低", "稳健", "防御"), "-std(returns(c_v))", "低波动", "收益率标准差越小越好"),
+    (("低beta", "低贝塔"), "-beta(c_b, mkt_b)", "低Beta", "对基准指数的敏感度越低越好"),
+    # —— 量能 ——
+    (("缩量", "量能萎缩", "成交萎缩", "量能小"), "-(mean(vol_r) / mean(vol_v))", "缩量", "近期成交量相对长期萎缩"),
+    (("放量", "成交放大", "量能放大", "量能大"), "mean(vol_r) / mean(vol_v)", "放量", "近期成交量相对长期放大"),
+    (("量价背离", "价涨量缩"), "-corr(returns(c_v), returns(vol_v))", "量价背离", "价格与成交量负相关"),
+    (("量价配合", "量价齐升", "量价同步"), "corr(returns(c_v), returns(vol_v))", "量价配合", "价格与成交量正相关"),
+    (("成交额", "成交活跃", "资金关注"), "mean(amt_r) / mean(amt_v)", "成交额放大", "近期成交额相对放大"),
+    # —— 动量 / 反转 ——
+    (("动量", "趋势", "强势", "涨势"), "roc(c_m, 60)", "中期动量", "过去约60个交易日涨幅"),
+    (("反转", "超跌", "跌多了", "回调"), "-roc(c_r, 5)", "短期反转", "短期跌幅越大越可能反弹"),
+    # —— 现金流 ——
+    # 注意：宽泛词「现金流」放最后，并由 _LOCAL_EXCLUDE 防止与更具体的规则重复计入
+    (("经营现金流", "现金流质量", "现金流健康", "现金流稳定"), "ocf_to_assets", "现金流质量", "经营现金流/总资产"),
+    (("自由现金流", "fcf", "现金牛", "现金流"), "fcf_yield", "自由现金流收益率", "自由现金流/总市值，越高越便宜"),
+    (("资本开支", "扩张", "重资产", "capex"), "capex_intensity", "资本开支强度", "资本开支/总资产，衡量投入强度"),
+    # —— 情绪 / 市值 ——
+    (("情绪", "舆情", "消息面", "新闻"), "news_senti", "新闻情绪", "个股新闻情绪越正面越好"),
+    (("小市值", "小盘"), "-market_cap", "小市值", "总市值越小越好"),
+    (("大市值", "大盘", "蓝筹", "龙头"), "market_cap", "大市值", "总市值越大越好"),
+]
+
+# 命中更具体表述时，跳过被其涵盖的宽泛规则，避免同一逻辑被重复计入
+_LOCAL_EXCLUDE: dict[str, tuple[str, ...]] = {
+    "自由现金流收益率": ("经营现金流", "现金流质量", "现金流健康", "现金流稳定"),
+}
+
+
+def local_generate(text: str) -> dict:
+    """本地关键词兜底：把常见投资表述翻译成表达式（明确标注 source=local）。
+
+    多个说法同时命中时按命中顺序取前 3 条相加 —— 权重未做优化，只用于快速试跑。
+    生成的表达式同样要过 validate_expr，保证与手写路径同一道闸。
+    """
+    from app.services.factor_mining import validate_expr
+
+    t = (text or "").strip()
+    if not t:
+        return {"ok": False, "source": "local", "error": "请输入因子想法"}
+
+    hits: list[tuple[str, str, str]] = []
+    for words, expr, name, logic in _LOCAL_RULES:
+        if not any(w in t for w in words):
+            continue
+        # 更具体的规则已命中时，跳过被其涵盖的宽泛规则
+        if any(x in t for x in _LOCAL_EXCLUDE.get(name, ())):
+            continue
+        hits.append((expr, name, logic))
+    if not hits:
+        return {
+            "ok": False,
+            "source": "local",
+            "error": "本地规则未命中这个描述",
+            "hint": "试用模式只覆盖常见表述（估值/成长/波动/量能/动量/现金流/情绪/市值）；"
+                    "配置 QUANT_LLM_API_KEY 后即可理解任意自然语言",
+            "matched": [],
+        }
+
+    top = hits[:3]
+    expr = " + ".join(f"({e})" for e, _, _ in top) if len(top) > 1 else top[0][0]
+    name = "+".join(n for _, n, _ in top)[:20]
+    ok, err, sample = validate_expr(expr)
+    if not ok:
+        # 组合后失效（理论上不该发生）：退回第一条仍然可用的规则
+        for e, n, l in top:
+            ok, err, sample = validate_expr(e)
+            if ok:
+                expr, name, top = e, n, [(e, n, l)]
+                break
+    return {
+        "ok": bool(ok),
+        "expr": expr if ok else "",
+        "name": name,
+        "logic": " + ".join(f"{n}：{l}" for _, n, l in top),
+        "direction": "越大越优",
+        "unsupported": "",
+        "sample_value": sample,
+        "attempts": 1,
+        "fixes": [],
+        "model": "本地规则匹配",
+        "source": "local",
+        "matched": [n for _, n, _ in top],
+        "error": "" if ok else err,
     }
 
 
@@ -230,7 +333,8 @@ def nl_to_expr(text: str, *, max_retry: int = 3, timeout: int = 90) -> dict:
     if not text:
         return {"ok": False, "error": "请输入因子想法"}
     if not llm_configured():
-        raise LLMUnavailable("未配置大模型：请在 .env 设置 QUANT_LLM_API_KEY")
+        # 未配置大模型 → 走本地关键词兜底（结果明确标注 source=local，不冒充 AI）
+        return local_generate(text)
 
     messages = [
         {"role": "system", "content": system_prompt()},
@@ -262,6 +366,7 @@ def nl_to_expr(text: str, *, max_retry: int = 3, timeout: int = 90) -> dict:
                 "attempts": attempt,
                 "fixes": fixes,
                 "model": settings.llm_model,
+                "source": "llm",
             }
         fixes.append({"attempt": attempt, "expr": expr, "error": err})
         if attempt > max_retry:
@@ -280,6 +385,7 @@ def nl_to_expr(text: str, *, max_retry: int = 3, timeout: int = 90) -> dict:
         "error": f"连续 {max_retry + 1} 次生成均未通过校验",
         "fixes": fixes,
         "hint": "可以换一种更具体的说法，或直接手写表达式",
+        "source": "llm",
     }
 
 

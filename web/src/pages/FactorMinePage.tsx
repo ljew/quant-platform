@@ -55,13 +55,18 @@ export default function FactorMinePage() {
     api.factorMineResults(15).then(setHistory).catch(() => {});
   }, []);
 
+  // 单独抽出来：配好 key 并重启后端后，页面上点「重新检测」即可生效，无需刷新
+  const loadAiStatus = useCallback(() => {
+    api.factorAiStatus().then(setAiStatus).catch(() => setAiStatus(null));
+  }, []);
+
   useEffect(() => {
     api.factorFunctions().then(setFns).catch(() => {});
     api.factorGpDirections().then(setGpDirs).catch(() => {});
     api.factorNewsDaily(600).then(setNewsSeries).catch(() => {});
-    api.factorAiStatus().then(setAiStatus).catch(() => {});
+    loadAiStatus();
     loadHistory();
-  }, [loadHistory]);
+  }, [loadAiStatus, loadHistory]);
 
   const runAiGenerate = async () => {
     const text = aiText.trim();
@@ -166,14 +171,53 @@ export default function FactorMinePage() {
         actions={<Btn onClick={() => setShowFns(!showFns)} kind="ghost" small>函数参考</Btn>}
       />
 
-      {/* —— AI 自然语言生成（未配置大模型时整块隐藏）—— */}
-      {aiStatus?.configured && (
+      {/* —— AI 自然语言生成（常驻；未配置大模型时给配置引导 + 本地规则试用）—— */}
+      {aiStatus && (
         <Card
           title="AI 生成因子"
           colors={colors}
-          extra={<Badge text={aiStatus.model} color={colors.accent} soft />}
+          extra={aiStatus.configured
+            ? <Badge text={aiStatus.model} color={colors.accent} soft />
+            : <Badge text="试用模式 · 本地规则" color="#c8860d" soft />}
           style={{ marginBottom: 14 }}
         >
+          {!aiStatus.configured && (
+            <div style={{
+              marginBottom: 12, padding: "10px 12px", borderRadius: 8,
+              border: "1px solid #c8860d55", background: "#c8860d12",
+            }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>
+                尚未配置大模型 —— 当前用本地关键词规则匹配，可直接试
+              </div>
+              <div style={{ fontSize: 12.5, color: colors.muted, lineHeight: 1.75, marginTop: 4 }}>
+                试用模式只识别常见表述的组合（估值 / 成长 / 波动 / 量能 / 动量 / 现金流 / 情绪 / 市值）。
+                配置大模型后即可理解任意自然语言，并带「校验失败自动重修」闭环。
+              </div>
+              <details style={{ marginTop: 8 }}>
+                <summary style={{ fontSize: 12, color: colors.muted, cursor: "pointer" }}>
+                  怎么配置（3 步 · 以 DeepSeek 为例）
+                </summary>
+                <pre style={{
+                  margin: "8px 0 0", padding: "8px 10px", borderRadius: 6,
+                  background: colors.tableStripe, border: `1px solid ${colors.border}`,
+                  fontSize: 11.5, lineHeight: 1.85, overflowX: "auto",
+                  fontFamily: "'SF Mono', Menlo, Consolas, monospace", color: colors.text,
+                }}>{`# 1. 在 quant-platform/.env 追加
+QUANT_LLM_API_KEY=sk-你的key
+# 换厂商亦可（OpenAI 兼容协议通用）：
+#   QUANT_LLM_BASE_URL / QUANT_LLM_MODEL
+
+# 2. 重启后端（配置在启动时读取）
+lsof -ti:8000 -sTCP:LISTEN | xargs kill
+
+# 3. 回来后点下面的「重新检测」`}</pre>
+              </details>
+              <div style={{ marginTop: 8 }}>
+                <Btn kind="ghost" small onClick={loadAiStatus}>重新检测</Btn>
+              </div>
+            </div>
+          )}
+
           <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
             <input
               value={aiText}
@@ -207,7 +251,10 @@ export default function FactorMinePage() {
                   )}
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  {!!aiResult.attempts && aiResult.attempts > 1 && (
+                  {aiResult.source === "local" && (
+                    <Badge text="本地规则匹配" color="#c8860d" soft />
+                  )}
+                  {!!aiResult.attempts && aiResult.attempts > 1 && aiResult.source !== "local" && (
                     <Badge text={`自修复 ${aiResult.attempts - 1} 轮`} color="#c8860d" soft />
                   )}
                   <Btn kind="ghost" small onClick={applyAiExpr}>填入表达式框</Btn>
@@ -222,6 +269,13 @@ export default function FactorMinePage() {
               </code>
               {aiResult.logic && (
                 <div style={{ fontSize: 12.5, color: colors.muted, marginTop: 8 }}>{aiResult.logic}</div>
+              )}
+              {aiResult.source === "local" && (
+                <div style={{ fontSize: 12, color: "#c8860d", marginTop: 8, lineHeight: 1.7 }}>
+                  试用模式：以上是关键词匹配结果，未调用大模型
+                  {!!aiResult.matched?.length && <>，命中「{aiResult.matched.join(" + ")}」</>}
+                  。请确认是否贴合你的本意。
+                </div>
               )}
               {aiResult.unsupported && (
                 <div style={{ fontSize: 12.5, color: "#c8860d", marginTop: 8 }}>
@@ -252,11 +306,15 @@ export default function FactorMinePage() {
         <Card
           title="因子表达式"
           colors={colors}
-          extra={aiStatus?.configured ? (
-            <Btn kind="ghost" small onClick={runExplain} disabled={explainBusy || !expr.trim()}>
+          extra={
+            <Btn
+              kind="ghost" small onClick={runExplain}
+              disabled={explainBusy || !expr.trim() || !aiStatus?.configured}
+              title={aiStatus?.configured ? "" : "需要配置大模型后才能解读表达式"}
+            >
               {explainBusy ? "解读中…" : "AI 解读"}
             </Btn>
-          ) : undefined}
+          }
         >
           <textarea
             value={expr}

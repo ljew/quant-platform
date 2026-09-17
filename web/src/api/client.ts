@@ -183,6 +183,10 @@ export interface AiStatus {
   configured: boolean;
   model: string;
   base_url: string;
+  /** 未配置大模型时，本地关键词规则兜底是否可用（试用模式）。 */
+  fallback_ready?: boolean;
+  /** 需要配置的环境变量名，前端在配置引导里展示。 */
+  env_key?: string;
 }
 
 /** 一次校验失败的记录（模型第几轮写了什么、报什么错），用于展示自修复过程。 */
@@ -206,6 +210,10 @@ export interface AiGenerateResult {
   model?: string;
   error?: string;
   hint?: string;
+  /** 结果来源：llm=大模型，local=本地关键词规则（试用模式）。 */
+  source?: "llm" | "local";
+  /** 本地模式下命中的规则名（让用户一眼看出是否理解对了）。 */
+  matched?: string[];
 }
 
 export interface AiExplainResult {

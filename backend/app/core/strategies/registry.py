@@ -26,18 +26,27 @@ from app.core.strategies.chan_strategy import ChanStrategy
 from app.core.strategies.jk_series import JKFactorStrategy
 
 
-def _int(key, label, default, mn, mx, step=1):
-    return {"key": key, "label": label, "type": "int", "default": default, "min": mn, "max": mx, "step": step}
+def _int(key, label, default, mn, mx, step=1, group=None):
+    d = {"key": key, "label": label, "type": "int", "default": default, "min": mn, "max": mx, "step": step}
+    if group:
+        d["group"] = group
+    return d
 
 
-def _float(key, label, default, mn, mx, step):
-    return {"key": key, "label": label, "type": "float", "default": default, "min": mn, "max": mx, "step": step}
+def _float(key, label, default, mn, mx, step, group=None):
+    d = {"key": key, "label": label, "type": "float", "default": default, "min": mn, "max": mx, "step": step}
+    if group:
+        d["group"] = group
+    return d
 
 
-def _opt(key, label, default, options, desc=""):
+def _opt(key, label, default, options, desc="", group=None):
     """枚举型参数（用于口径切换类的对照实验）。"""
-    return {"key": key, "label": label, "type": "str", "default": default,
-            "options": options, "desc": desc}
+    d = {"key": key, "label": label, "type": "str", "default": default,
+         "options": options, "desc": desc}
+    if group:
+        d["group"] = group
+    return d
 
 
 STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
@@ -116,14 +125,14 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
         "default_params": {"entry": 20, "exit": 10, "atr_period": 20, "risk_pct": 0.01,
                            "max_units": 4, "add_step": 0.5, "stop_n": 2.0, "use_exit_channel": 1},
         "param_schema": [
-            _int("entry", "入场通道(日)", 20, 5, 120, 1),
-            _int("exit", "离场通道(日)", 10, 3, 60, 1),
-            _int("atr_period", "N(ATR周期,日)", 20, 5, 60, 1),
-            _float("risk_pct", "单单元风险占比", 0.01, 0.002, 0.05, 0.001),
-            _int("max_units", "最大单元数", 4, 1, 6),
-            _float("add_step", "加仓间隔(N倍)", 0.5, 0.25, 2.0, 0.25),
-            _float("stop_n", "止损幅度(N倍)", 2.0, 1.0, 4.0, 0.5),
-            _int("use_exit_channel", "启用通道离场(1/0)", 1, 0, 1),
+            _int("entry", "入场通道(日)", 20, 5, 120, 1, group="入场通道"),
+            _int("exit", "离场通道(日)", 10, 3, 60, 1, group="入场通道"),
+            _int("use_exit_channel", "启用通道离场(1/0)", 1, 0, 1, group="入场通道"),
+            _int("atr_period", "N(ATR周期,日)", 20, 5, 60, 1, group="ATR 仓位"),
+            _float("risk_pct", "单单元风险占比", 0.01, 0.002, 0.05, 0.001, group="ATR 仓位"),
+            _int("max_units", "最大单元数", 4, 1, 6, group="ATR 仓位"),
+            _float("add_step", "加仓间隔(N倍)", 0.5, 0.25, 2.0, 0.25, group="ATR 仓位"),
+            _float("stop_n", "止损幅度(N倍)", 2.0, 1.0, 4.0, 0.5, group="止损离场"),
         ],
     },
     "ma_alignment": {
@@ -146,14 +155,14 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
         "default_params": {"fast": 12, "slow": 26, "signal": 9, "boll_period": 20, "boll_k": 2.0,
                            "max_drawdown_limit": 0.15, "daily_loss_limit": 0.0, "position_limit": 0.0},
         "param_schema": [
-            _int("fast", "MACD快线(天)", 12, 3, 60),
-            _int("slow", "MACD慢线(天)", 26, 10, 200),
-            _int("signal", "MACD信号(天)", 9, 2, 60),
-            _int("boll_period", "布林周期(天)", 20, 5, 120),
-            _float("boll_k", "布林倍数", 2.0, 0.5, 4.0, 0.1),
-            _float("max_drawdown_limit", "最大回撤止损(0=关)", 0.15, 0.0, 0.6, 0.01),
-            _float("daily_loss_limit", "单日亏损上限(0=关)", 0.0, 0.0, 0.15, 0.005),
-            _float("position_limit", "仓位上限(0=关)", 0.0, 0.0, 1.0, 0.05),
+            _int("fast", "MACD快线(天)", 12, 3, 60, group="MACD"),
+            _int("slow", "MACD慢线(天)", 26, 10, 200, group="MACD"),
+            _int("signal", "MACD信号(天)", 9, 2, 60, group="MACD"),
+            _int("boll_period", "布林周期(天)", 20, 5, 120, group="布林带"),
+            _float("boll_k", "布林倍数", 2.0, 0.5, 4.0, 0.1, group="布林带"),
+            _float("max_drawdown_limit", "最大回撤止损(0=关)", 0.15, 0.0, 0.6, 0.01, group="风控止损"),
+            _float("daily_loss_limit", "单日亏损上限(0=关)", 0.0, 0.0, 0.15, 0.005, group="风控止损"),
+            _float("position_limit", "仓位上限(0=关)", 0.0, 0.0, 1.0, 0.05, group="风控止损"),
         ],
     },
     "csi800_enhanced": {
@@ -461,7 +470,12 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
 # jk 系列有 30 个参数、enhanced_factor 有 23 个，平铺渲染时既找不到目标项、
 # 也看不出「跑这一版到底动过哪几个」。这里按语义切组，交给前端折叠展示。
 GROUP_ORDER = [
-    "组合构建", "因子权重", "因子参数", "准入过滤", "风控止损", "择时仓位", "波动率目标", "信号参数",
+    # 通用语义组（多数策略复用）
+    "组合构建", "因子权重", "因子参数", "准入过滤",
+    # 策略专属组：只影响排序，未在此列出的组按声明顺序排在末尾。
+    # 显式分组（param_schema 里直接写 group=）优先于 _AUTO_GROUP_RULES 的兜底。
+    "入场通道", "MACD", "布林带", "ATR 仓位", "止损离场",
+    "风控止损", "择时仓位", "波动率目标", "信号参数",
 ]
 
 # jk001/jk002 参数完全相同（只是默认值不同），显式指定分组：自动规则会把
