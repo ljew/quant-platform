@@ -4,8 +4,9 @@
 - nl_to_expr(text)    自然语言想法 → 因子表达式（生成 → 校验 → 失败回灌重修）
 - explain_expr(expr)  表达式 → 中文逻辑说明（读懂 GP 挖出的天书）
 
-LLM 通道走 OpenAI 兼容协议（DeepSeek / 火山方舟 / DashScope 兼容模式均适用），
-用标准库 urllib 发起请求，不新增第三方依赖。
+LLM 通道走 OpenAI 兼容协议（DeepSeek / 火山方舟 / DashScope 兼容模式均适用）。
+请求实现与配置存储见 ``services/llm_config.py``：配置落库、每次调用现读，
+因此在页面上改模型或 key 之后**无需重启**即刻生效；未配置时由本地关键词规则兜底。
 
 三条设计红线：
 1. **契约动态化**：提示词里的函数表由 factor_expr.FUNCS 反射生成、变量表取自
@@ -19,26 +20,31 @@ LLM 通道走 OpenAI 兼容协议（DeepSeek / 火山方舟 / DashScope 兼容�
 from __future__ import annotations
 
 import json
-import urllib.error
-import urllib.request
 
-from app.config import settings
+from app.services.llm_config import (
+    LLMUnavailable,
+    chat as _http_chat,
+    llm_configured,
+    mask_key,
+    resolve_active,
+)
 
-
-class LLMUnavailable(RuntimeError):
-    """LLM 通道未配置或调用失败（路由层据此降级为 503 并由前端提示）。"""
-
-
-def llm_configured() -> bool:
-    return bool((settings.llm_api_key or "").strip())
+# LLMUnavailable / llm_configured 由 llm_config 统一实现并在本模块 re-export，
+# 保持 routers 里既有的 `from app.services.factor_llm import LLMUnavailable` 不变。
 
 
 def llm_info() -> dict:
-    """供前端探测 AI 模式是否可用（不泄露 key）。"""
+    """供前端探测 AI 模式是否可用（配置每次现读，不泄露 key）。"""
+    cfg = resolve_active()
     return {
-        "configured": llm_configured(),
-        "model": settings.llm_model,
-        "base_url": settings.llm_base_url,
+        "configured": cfg["configured"],
+        "model": cfg["model"],
+        "base_url": cfg["base_url"],
+        # 来源：db=页面上配置的通道；env=来自 .env（向后兼容通道）
+        "source": cfg["source"] if cfg["configured"] else "",
+        "provider_name": cfg["name"] if cfg["configured"] else "",
+        "provider_id": cfg["provider_id"],
+        "key_masked": mask_key(cfg["api_key"]),
         # 未配置大模型时，本地规则兜底仍可用 —— 前端据此决定提示「试用模式」还是「配置引导」
         "fallback_ready": True,
         "env_key": "QUANT_LLM_API_KEY",
@@ -258,40 +264,13 @@ def explain_prompt() -> str:
 # ============ 通道 ============
 def _chat(messages: list[dict], *, temperature: float = 0.3,
           timeout: int = 90, max_tokens: int = 1200) -> str:
-    """调用 OpenAI 兼容的 chat/completions。"""
-    if not llm_configured():
-        raise LLMUnavailable("未配置大模型：请在 .env 设置 QUANT_LLM_API_KEY")
-    url = settings.llm_base_url.rstrip("/") + "/chat/completions"
-    payload = {
-        "model": settings.llm_model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "stream": False,
-    }
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {settings.llm_api_key}",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "ignore")[:300]
-        raise LLMUnavailable(f"模型接口返回 {e.code}：{detail}") from e
-    except urllib.error.URLError as e:
-        raise LLMUnavailable(f"无法连接模型服务：{e.reason}") from e
-    except Exception as e:  # noqa: BLE001
-        raise LLMUnavailable(f"模型调用失败：{type(e).__name__}: {e}") from e
-    try:
-        return body["choices"][0]["message"]["content"] or ""
-    except (KeyError, IndexError, TypeError) as e:
-        raise LLMUnavailable(f"模型返回结构异常：{str(body)[:200]}") from e
+    """调用当前生效的通道。
+
+    配置在**每次调用时**现读（``resolve_active``）—— 因此在页面上改了模型或 key
+    之后立即生效，不需要重启后端。HTTP 细节统一在 llm_config.chat 实现。
+    """
+    return _http_chat(resolve_active(), messages, temperature=temperature,
+                      timeout=timeout, max_tokens=max_tokens)
 
 
 def _slice_braces(s: str) -> str:
@@ -332,7 +311,8 @@ def nl_to_expr(text: str, *, max_retry: int = 3, timeout: int = 90) -> dict:
     text = (text or "").strip()
     if not text:
         return {"ok": False, "error": "请输入因子想法"}
-    if not llm_configured():
+    cfg = resolve_active()
+    if not cfg["configured"]:
         # 未配置大模型 → 走本地关键词兜底（结果明确标注 source=local，不冒充 AI）
         return local_generate(text)
 
@@ -365,7 +345,7 @@ def nl_to_expr(text: str, *, max_retry: int = 3, timeout: int = 90) -> dict:
                 "sample_value": sample,
                 "attempts": attempt,
                 "fixes": fixes,
-                "model": settings.llm_model,
+                "model": cfg["model"],
                 "source": "llm",
             }
         fixes.append({"attempt": attempt, "expr": expr, "error": err})
@@ -400,7 +380,7 @@ def explain_expr(expr: str, *, timeout: int = 60) -> dict:
     if not ok:
         return {"ok": False, "error": f"表达式无效：{err}"}
     if not llm_configured():
-        raise LLMUnavailable("未配置大模型：请在 .env 设置 QUANT_LLM_API_KEY")
+        raise LLMUnavailable("未配置大模型通道：请在因子挖掘页配置，或设置环境变量 QUANT_LLM_API_KEY")
 
     raw = _chat([
         {"role": "system", "content": explain_prompt()},
@@ -416,5 +396,5 @@ def explain_expr(expr: str, *, timeout: int = 60) -> dict:
         "logic": str(data.get("logic") or "").strip(),
         "direction": str(data.get("direction") or "").strip(),
         "caveats": str(data.get("caveats") or "").strip(),
-        "model": settings.llm_model,
+        "model": resolve_active()["model"],
     }

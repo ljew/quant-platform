@@ -19,6 +19,8 @@ export const post = <T>(path: string, body: unknown) =>
   request<T>(path, { method: "POST", body: JSON.stringify(body) });
 export const put = <T>(path: string, body: unknown) =>
   request<T>(path, { method: "PUT", body: JSON.stringify(body) });
+export const patch = <T>(path: string, body: unknown) =>
+  request<T>(path, { method: "PATCH", body: JSON.stringify(body) });
 export const del = <T>(path: string) => request<T>(path, { method: "DELETE" });
 
 // —— 类型 ——
@@ -156,6 +158,20 @@ export const api = {
   factorAiGenerate: (text: string, max_retry = 3) =>
     post<AiGenerateResult>("/factor/ai/generate", { text, max_retry }),
   factorAiExplain: (expr: string) => post<AiExplainResult>("/factor/ai/explain", { expr }),
+
+  // —— 大模型通道配置：页面维护，写入即生效（无需重启后端）——
+  llmProviders: () => get<LlmProviderList>("/llm/providers"),
+  llmPresets: () => get<{ presets: LlmVendorPreset[] }>("/llm/presets"),
+  llmCreate: (p: LlmProviderInput) => post<LlmProvider>("/llm/providers", p),
+  llmUpdate: (id: number, p: Partial<LlmProviderInput>) =>
+    patch<LlmProvider>(`/llm/providers/${id}`, p),
+  llmDelete: (id: number) => del<{ ok: boolean }>(`/llm/providers/${id}`),
+  llmSetDefault: (id: number) => post<{ ok: boolean }>(`/llm/providers/${id}/default`, {}),
+  /** 用库中已保存的配置测试（编辑时未改 key 的场景）。 */
+  llmTestSaved: (id: number) => post<LlmTestResult>(`/llm/providers/${id}/test`, {}),
+  /** 用表单当前值测试（保存前先验证）；api_key 留空且有 id 时后端复用已存 key。 */
+  llmTestDraft: (p: { id?: number; base_url: string; model: string; api_key?: string }) =>
+    post<LlmTestResult>("/llm/test", p),
   // 数据健康度 + 数据流全景
   monitorHealth: () => get<HealthReport>(`/monitor/health-report`),
   monitorDataflow: () => get<DataflowReport>(`/monitor/dataflow`),
@@ -187,6 +203,74 @@ export interface AiStatus {
   fallback_ready?: boolean;
   /** 需要配置的环境变量名，前端在配置引导里展示。 */
   env_key?: string;
+  /** 生效来源：db=页面配置的通道，env=环境变量（向后兼容通道）。 */
+  source?: "" | "db" | "env";
+  /** 生效通道名（页面配置时为其名称）。 */
+  provider_name?: string;
+  provider_id?: number | null;
+  key_masked?: string;
+}
+
+// —— 大模型通道配置（/llm/*）——
+export interface LlmProvider {
+  id: number;
+  name: string;
+  vendor: string;
+  base_url: string;
+  model: string;
+  /** 脱敏后的 key，如 sk-abc******wxyz；明文永远不会返回。 */
+  api_key_masked: string;
+  has_key: boolean;
+  is_default: boolean;
+  last_test_at: string | null;
+  last_test_ok: boolean | null;
+  last_test_ms: number | null;
+  last_test_msg: string | null;
+  updated_at: string | null;
+}
+
+export interface LlmActive {
+  configured: boolean;
+  source: "" | "db" | "env";
+  name: string;
+  model: string;
+  base_url: string;
+  provider_id: number | null;
+  key_masked: string;
+  count: number;
+  /** 页面已配置但 .env 里也有 key 时给出提示，避免「改了 .env 没反应」的困惑。 */
+  env_shadowed: boolean;
+}
+
+export interface LlmProviderList {
+  active: LlmActive;
+  items: LlmProvider[];
+}
+
+export interface LlmVendorPreset {
+  vendor: string;
+  label: string;
+  base_url: string;
+  models: string[];
+  note: string;
+}
+
+export interface LlmTestResult {
+  ok: boolean;
+  ms: number;
+  model: string;
+  reply?: string;
+  error?: string;
+}
+
+/** 新建/编辑通道的提交体（编辑时 api_key 留空 = 不修改）。 */
+export interface LlmProviderInput {
+  name: string;
+  vendor: string;
+  base_url: string;
+  model: string;
+  api_key?: string;
+  make_default?: boolean;
 }
 
 /** 一次校验失败的记录（模型第几轮写了什么、报什么错），用于展示自修复过程。 */

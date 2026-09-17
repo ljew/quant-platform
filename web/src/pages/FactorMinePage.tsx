@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import EChart from "../components/EChart";
+import LlmConfigModal from "../components/LlmConfigModal";
 import { Badge, Btn, Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
 import {
   api, AiExplainResult, AiGenerateResult, AiStatus,
@@ -36,6 +37,8 @@ export default function FactorMinePage() {
   const [aiError, setAiError] = useState("");
   const [explainBusy, setExplainBusy] = useState(false);
   const [explainResult, setExplainResult] = useState<AiExplainResult | null>(null);
+  // 大模型通道配置弹窗
+  const [cfgOpen, setCfgOpen] = useState(false);
   // GP 自动挖掘
   const [gpDirs, setGpDirs] = useState<{ key: string; note: string }[]>([]);
   const [gpSel, setGpSel] = useState<string[]>(["momentum", "volatility", "value"]);
@@ -176,9 +179,20 @@ export default function FactorMinePage() {
         <Card
           title="AI 生成因子"
           colors={colors}
-          extra={aiStatus.configured
-            ? <Badge text={aiStatus.model} color={colors.accent} soft />
-            : <Badge text="试用模式 · 本地规则" color="#c8860d" soft />}
+          extra={
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {aiStatus.configured
+                ? <Badge
+                    text={aiStatus.provider_name
+                      ? `${aiStatus.provider_name} · ${aiStatus.model}`
+                      : aiStatus.model}
+                    color={colors.accent} soft />
+                : <Badge text="试用模式 · 本地规则" color="#c8860d" soft />}
+              <Btn kind="ghost" small onClick={() => setCfgOpen(true)}>
+                {aiStatus.configured ? "模型配置" : "配置模型"}
+              </Btn>
+            </div>
+          }
           style={{ marginBottom: 14 }}
         >
           {!aiStatus.configured && (
@@ -193,28 +207,29 @@ export default function FactorMinePage() {
                 试用模式只识别常见表述的组合（估值 / 成长 / 波动 / 量能 / 动量 / 现金流 / 情绪 / 市值）。
                 配置大模型后即可理解任意自然语言，并带「校验失败自动重修」闭环。
               </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+                <Btn small onClick={() => setCfgOpen(true)}>配置模型</Btn>
+                <Btn kind="ghost" small onClick={loadAiStatus}>重新检测</Btn>
+              </div>
               <details style={{ marginTop: 8 }}>
                 <summary style={{ fontSize: 12, color: colors.muted, cursor: "pointer" }}>
-                  怎么配置（3 步 · 以 DeepSeek 为例）
+                  也可用环境变量配置（需重启后端）
                 </summary>
                 <pre style={{
                   margin: "8px 0 0", padding: "8px 10px", borderRadius: 6,
                   background: colors.tableStripe, border: `1px solid ${colors.border}`,
                   fontSize: 11.5, lineHeight: 1.85, overflowX: "auto",
                   fontFamily: "'SF Mono', Menlo, Consolas, monospace", color: colors.text,
-                }}>{`# 1. 在 quant-platform/.env 追加
+                }}>{`# 在 quant-platform/.env 追加
 QUANT_LLM_API_KEY=sk-你的key
 # 换厂商亦可（OpenAI 兼容协议通用）：
 #   QUANT_LLM_BASE_URL / QUANT_LLM_MODEL
 
-# 2. 重启后端（配置在启动时读取）
+# 改完需重启后端（环境变量在启动时读取）
 lsof -ti:8000 -sTCP:LISTEN | xargs kill
 
-# 3. 回来后点下面的「重新检测」`}</pre>
+# 注意：页面上配置的通道优先级更高，会覆盖这里的 key`}</pre>
               </details>
-              <div style={{ marginTop: 8 }}>
-                <Btn kind="ghost" small onClick={loadAiStatus}>重新检测</Btn>
-              </div>
             </div>
           )}
 
@@ -615,6 +630,14 @@ lsof -ti:8000 -sTCP:LISTEN | xargs kill
       </div>
 
       <style>{`.num{fontVariantNumeric:tabular-nums}`}</style>
+
+      {/* 大模型通道配置：改完立即生效，无需重启后端 */}
+      <LlmConfigModal
+        open={cfgOpen}
+        colors={colors}
+        onClose={() => setCfgOpen(false)}
+        onChanged={loadAiStatus}
+      />
     </div>
   );
 }

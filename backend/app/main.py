@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings, BASE_DIR
 from app.database import init_db
-from app.routers import data, market, strategy, paper, hedge, live, monitor, factor
+from app.routers import data, market, strategy, paper, hedge, live, monitor, factor, llm
 from app.schemas import HealthResponse
 
 import os
@@ -31,11 +31,16 @@ app.include_router(hedge.router, prefix=settings.api_prefix)
 app.include_router(live.router, prefix=settings.api_prefix)
 app.include_router(monitor.router, prefix=settings.api_prefix)
 app.include_router(factor.router, prefix=settings.api_prefix)
+app.include_router(llm.router, prefix=settings.api_prefix)
 
 
 @app.on_event("startup")
 def on_startup():
     init_db()
+    # 首次升级：把 .env 里已配的 LLM key 落成一条记录（仅当表为空），
+    # 之后配置统一在页面上维护，改完即时生效无需重启。
+    from app.services.llm_config import ensure_env_provider
+    ensure_env_provider()
     from app.core.engine.paper_scheduler import start_paper_scheduler
     start_paper_scheduler()
     # 数据管道调度（settings.data_schedule ← .env/环境 QUANT_DATA_SCHEDULE=1：

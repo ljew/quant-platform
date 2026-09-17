@@ -546,3 +546,34 @@ class HealthRule(Base):
     last_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_status: Mapped[str | None] = mapped_column(String(8), nullable=True)
     last_checked: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class LlmProvider(Base):
+    """大模型通道配置（页面上维护，运行时生效，无需重启）。
+
+    为什么落库而不是只读 .env：.env 是**启动时**加载的，改一次要重启后端；本表由
+    ``services/llm_config.resolve_active()`` 在每次调用时读，页面改完立即生效。
+
+    不变量：只要有记录，就有且仅有一条 ``is_default=1``（由服务层维护），
+    因此不存在「全都不是默认」的悬空态。
+
+    安全：``api_key`` 为明文存储 —— 与 ``.env`` 同级（本机单用户、库文件同权限），
+    不做假加密；API 返回一律走 :func:`llm_config.mask_key` 脱敏，绝不出明文。
+    """
+
+    __tablename__ = "llm_providers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64))  # 显示名，如「DeepSeek 主号」
+    vendor: Mapped[str] = mapped_column(String(24), default="custom")  # 预设标识
+    base_url: Mapped[str] = mapped_column(String(255))
+    api_key: Mapped[str] = mapped_column(Text, default="")
+    model: Mapped[str] = mapped_column(String(120))
+    is_default: Mapped[int] = mapped_column(Integer, default=0)
+    # 最近一次连通性测试结果（页面直接展示，省得每次重测）
+    last_test_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_test_ok: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_test_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_test_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
