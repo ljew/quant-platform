@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -19,7 +20,10 @@ from sqlalchemy.orm import Session
 from app.datahub.ns_vars import VAR_DOC
 from app.database import get_db
 from app.models import FactorMineResult
-from app.services.factor_mining import mine_factor, validate_expr, compute_complexity, news_event_test
+from app.services.factor_mining import (
+    mine_factor, validate_expr, compute_complexity, news_event_test, resolve_range,
+    snapshot_dates,
+)
 from app.services.factor_gp import gp_search, DIRECTION_TEMPLATES
 
 router = APIRouter(prefix="/factor", tags=["factor"])
@@ -78,6 +82,7 @@ class MinePayload(BaseModel):
     end: str = ""
     groups: int = Field(5, ge=2, le=10)
     forward: int = Field(20, ge=1, le=60)
+    force: bool = Field(False, description="忽略重复表达式提示，强制重算并另存一条记录")
 
 
 @router.get("/functions")
@@ -93,22 +98,91 @@ def validate(payload: MinePayload):
     return {"ok": True, "sample_value": round(sample, 6) if sample is not None else None}
 
 
+def _find_existing(db: Session, expr: str, payload: MinePayload, sig: str):
+    """查找同「表达式 + 区间 + groups + forward」的历史记录。
+
+    返回 (记录, 已解析报告)；记录存在但报告不可解析时报告为 None。
+
+    两级匹配 ——
+    ① 精确：表达式 + 参数签名完全一致；
+    ② 兼容：params_json 是后加的列，老记录为空。但那些记录的 ic_series 日期
+       序列由「区间 + forward + step」唯一决定，日期序列一致即参数等价；
+       命中后顺手把签名回填，下次走①的快路径。
+    """
+
+    def _load(row) -> dict | None:
+        try:
+            cached = json.loads(row.result_json)
+        except (TypeError, ValueError):
+            return None
+        return cached if isinstance(cached, dict) and cached.get("ok") else None
+
+    row = db.execute(
+        select(FactorMineResult)
+        .where(FactorMineResult.expr == expr, FactorMineResult.params_json == sig)
+        .order_by(FactorMineResult.id.desc()).limit(1)
+    ).scalar_one_or_none()
+    if row is not None:
+        return row, _load(row)
+
+    legacy = db.execute(
+        select(FactorMineResult)
+        .where(FactorMineResult.expr == expr, FactorMineResult.params_json == "")
+        .order_by(FactorMineResult.id.desc()).limit(5)
+    ).scalars().all()
+    snaps: list[str] | None = None
+    for cand in legacy:
+        c = _load(cand)
+        if not c:
+            continue
+        if c.get("groups") != payload.groups or c.get("forward_days") != payload.forward:
+            continue
+        if snaps is None:
+            snaps = snapshot_dates(db, payload.start, payload.end, payload.forward)
+        if [x.get("date") for x in c.get("ic_series", [])] == snaps:
+            cand.params_json = sig
+            db.commit()
+            return cand, c
+    return None, None
+
+
 @router.post("/mine")
 def mine(payload: MinePayload, db: Session = Depends(get_db)):
-    """同步因子挖掘（核心池截面检验）。返回报告并落库。"""
+    """同步因子挖掘（核心池截面检验）。返回报告并落库。
+
+    防重复：同「表达式 + 区间 + groups + forward」若已挖过，直接回放上次报告
+    并打上 duplicate_of 标记，既不重算也不落库 —— Spearman IC 是确定性计算，
+    同参数重复跑只会得到同一个数字，却会在历史列表里堆出一串看似「挖了新因子」
+    的重复记录。底层数据已更新、确实需要重算时传 force=true（此时**就地更新**
+    原记录而非再插一条，历史列表不会膨胀）。
+    """
+    expr = payload.expr.strip()
+    sd, ed = resolve_range(payload.start, payload.end)
+    sig = f"{sd.isoformat()}|{ed.isoformat()}|{payload.groups}|{payload.forward}"
+
+    row, cached = _find_existing(db, expr, payload, sig)
+    if not payload.force and cached is not None:
+        cached["duplicate_of"] = row.id
+        cached["duplicate_created_at"] = row.created_at.isoformat() if row.created_at else None
+        return cached
+
     result = mine_factor(
-        db, payload.expr, name=payload.name,
+        db, expr, name=payload.name,
         start=payload.start, end=payload.end,
         groups=payload.groups, forward=payload.forward,
     )
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "挖掘失败"))
-    row = FactorMineResult(
-        name=result["name"], expr=result["expr"], rating=result["rating"],
-        ic_mean=result["ic_mean"], icir=result["icir"],
-        result_json=json.dumps(result, ensure_ascii=False, default=str),
-    )
-    db.add(row)
+    # 同参数已有记录 → 原地更新（顺带补齐 factor_stats 等新增字段），否则新增
+    if row is None:
+        row = FactorMineResult(expr=expr, params_json=sig)
+        db.add(row)
+    row.name = result["name"]
+    row.rating = result["rating"]
+    row.ic_mean = result["ic_mean"]
+    row.icir = result["icir"]
+    row.result_json = json.dumps(result, ensure_ascii=False, default=str)
+    row.created_at = datetime.utcnow()
     db.commit()
     db.refresh(row)
     result["id"] = row.id

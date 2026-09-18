@@ -151,12 +151,13 @@ export default function FactorMinePage() {
     }
   };
 
-  const runMine = async () => {
+  // force=true 跳过前端重复检查，强制重算并另存一条历史记录
+  const runMine = async (force = false) => {
     setRunning(true);
     setError("");
     setReport(null);
     try {
-      const r = await api.factorMine({ expr, name, start, end, groups, forward });
+      const r = await api.factorMine({ expr, name, start, end, groups, forward, force });
       setReport(r);
       loadHistory();
     } catch (e) {
@@ -425,7 +426,7 @@ lsof -ti:8000 -sTCP:LISTEN | xargs kill
           </div>
           <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
             <Btn onClick={doValidate} kind="warning" small disabled={running}>校验表达式</Btn>
-            <Btn onClick={runMine} disabled={running}>{running ? "挖掘中…" : "开始挖掘"}</Btn>
+            <Btn onClick={() => runMine()} disabled={running}>{running ? "挖掘中…" : "开始挖掘"}</Btn>
           </div>
           <div style={{ marginTop: 14, fontSize: 11.5, color: colors.muted, lineHeight: 1.7 }}>
             流程：逐期截面计算因子值 → Spearman IC vs 未来收益 → 分组单调性 / 多空累计 /
@@ -583,7 +584,7 @@ lsof -ti:8000 -sTCP:LISTEN | xargs kill
       </div>
 
       {/* —— 报告 —— */}
-      {report ? <MineReport report={report} colors={colors} /> : (
+      {report ? <MineReport report={report} colors={colors} onForce={() => runMine(true)} /> : (
         <Card colors={colors} pad={40}>
           <div style={{ textAlign: "center", color: colors.muted, fontSize: 13.5, lineHeight: 2 }}>
             输入表达式并点击「开始挖掘」<br />
@@ -643,9 +644,53 @@ lsof -ti:8000 -sTCP:LISTEN | xargs kill
 }
 
 /* ============ 报告组件 ============ */
-function MineReport({ report, colors }: { report: FactorMineReport; colors: ThemeColors }) {
+/** 时间戳统一成 MM-DD HH:mm（后端可能给 ISO「2026-09-18T06:41:04」或「2026-09-18 06:41:04」两种格式） */
+function fmtStamp(s: string): string {
+  return s.slice(5, 16).replace("T", " ");
+}
+
+/** 因子值量纲跨度极大（fcf_yield ~1e-3 到 市值 ~1e2），按量级切换显示精度 */
+function fmtNum(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  const a = Math.abs(v);
+  if (a === 0) return "0";
+  if (a >= 1e6 || a < 1e-3) return v.toExponential(2);
+  if (a >= 100) return v.toFixed(2);
+  if (a >= 1) return v.toFixed(3);
+  return v.toFixed(4);
+}
+
+function MineReport({ report, colors, onForce }: { report: FactorMineReport; colors: ThemeColors; onForce?: () => void }) {
+  const fs = report.factor_stats;
+  const statCells: [string, number | null][] = fs ? [
+    ["均值", fs.mean], ["标准差", fs.std], ["最小值", fs.min], ["P25", fs.p25],
+    ["中位数", fs.p50], ["P75", fs.p75], ["最大值", fs.max], ["偏度", fs.skew],
+  ] : [];
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {/* 重复表达式提示：本次是历史回放，没有重算 —— 否则用户会以为「挖了新的却没变化」 */}
+      {report.duplicate_of != null && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+          padding: "11px 15px", borderRadius: 10,
+          background: colors.tableStripe, border: `1px solid ${colors.border}`,
+          borderLeft: `3px solid ${colors.accent}`,
+        }}>
+          <span style={{ fontSize: 13, fontWeight: 500 }}>表达式未变化</span>
+          <span style={{ fontSize: 12.5, color: colors.muted }}>
+            与历史 #{report.duplicate_of}
+            {report.duplicate_created_at ? `（${fmtStamp(report.duplicate_created_at)}）` : ""}
+            的「表达式 + 区间 + 分组数 + forward」完全一致，本次直接回放该结果，未重算、未新增记录。
+          </span>
+          <span style={{ flex: 1 }} />
+          {onForce && (
+            <button onClick={onForce} style={{
+              padding: "4px 12px", borderRadius: 6, border: `1px solid ${colors.accent}`,
+              background: "transparent", color: colors.accent, cursor: "pointer", fontSize: 12,
+            }}>仍然重新挖掘</button>
+          )}
+        </div>
+      )}
       {/* 评级横幅 */}
       <Card colors={colors}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
@@ -693,6 +738,30 @@ function MineReport({ report, colors }: { report: FactorMineReport; colors: Them
         <KpiCard label="单调评分" value={report.mono_score.toFixed(2)} sub="相邻组同向占比"
           tone={report.mono_score >= 0.6 ? "down" : "neutral"} colors={colors} />
       </div>
+
+      {/* 因子值统计：IC 是秩相关、对缩放/平移/单调变换免疫，这里是参数调整唯一可见的反馈 */}
+      {report.factor_stats && (
+        <Card title="因子值统计（全区间全部样本）" colors={colors}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(100px,1fr))", gap: 7 }}>
+            {statCells.map(([label, v]) => (
+              <div key={label} style={{
+                textAlign: "center", padding: "8px 4px", borderRadius: 8,
+                background: colors.tableStripe, border: `1px solid ${colors.border}`,
+              }}>
+                <div style={{ fontSize: 11, color: colors.muted }}>{label}</div>
+                <div style={{ fontSize: 14.5, fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>{fmtNum(v)}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop: 9, fontSize: 12, color: colors.muted, lineHeight: 1.7 }}>
+            样本 <b>{report.factor_stats.n_values}</b> 个（{report.n_periods} 期 × 平均 {report.factor_stats.n_per_period} 只）
+            {" · "}取值 <b>{report.factor_stats.n_unique}</b> 种
+            <br />
+            提示：IC 只看因子值的<b>排序</b>，对整体缩放、加减常数、套 log/sqrt 等单调变换完全不敏感。
+            若你调整的是这类参数，IC 不会变；请对照本卡片确认因子数值是否真的变了。
+          </div>
+        </Card>
+      )}
 
       {/* 图表三宫格 */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>

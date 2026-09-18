@@ -447,6 +447,9 @@ class FactorMineResult(Base):
     ic_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
     icir: Mapped[float | None] = mapped_column(Float, nullable=True)
     result_json: Mapped[str] = mapped_column(Text, default="{}")
+    # 影响结果的全部入参签名（start|end|groups|forward）。
+    # 只比 expr 不够：同表达式换区间/调 forward 结果本就不同，必须一并纳入查重键。
+    params_json: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     def __repr__(self):

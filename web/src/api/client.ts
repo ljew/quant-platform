@@ -361,6 +361,21 @@ export interface GpMineResult {
 }
 
 // —— 因子挖掘类型 ——
+/** 因子值本身的分布统计：IC 是秩相关、对数值缩放免疫，这里是唯一能反映「参数改了没有」的反馈 */
+export interface FactorValueStats {
+  n_values: number;
+  n_per_period: number;
+  mean: number | null;
+  std: number | null;
+  min: number | null;
+  p25: number | null;
+  p50: number | null;
+  p75: number | null;
+  max: number | null;
+  skew: number | null;
+  n_unique: number;
+}
+
 export interface FactorMineReport {
   ok: boolean;
   error?: string;
@@ -383,6 +398,10 @@ export interface FactorMineReport {
   n_periods: number;
   n_stocks: number;
   forward_days: number;
+  factor_stats?: FactorValueStats;
+  /** 命中重复表达式时，指向已存在的那条历史记录 id（本次未重算、未落库） */
+  duplicate_of?: number;
+  duplicate_created_at?: string | null;
 }
 
 export interface FactorMineSummary {

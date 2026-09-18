@@ -78,6 +78,87 @@ def _std(xs: list[float]) -> float:
     return math.sqrt(sum((x - m) ** 2 for x in xs) / (len(xs) - 1))
 
 
+def resolve_range(start: str, end: str) -> tuple[date, date]:
+    """解析挖掘区间（缺省 end=今天、start=end 往前 400 天）。
+
+    单独抽出来是为了让「结果实际用的区间」与「落库的参数签名」同源 ——
+    查重层据此生成签名，不会因为默认值展开规则不一致而误判重复。
+    """
+    ed = date.fromisoformat(end) if end else date.today()
+    sd = date.fromisoformat(start) if start else ed - timedelta(days=400)
+    return sd, ed
+
+
+def snapshot_dates(db: Session, start: str, end: str,
+                   forward: int = DEFAULT_FORWARD, step: int = DEFAULT_STEP) -> list[str]:
+    """本次挖掘将使用的截面日期列表（与 mine_factor 内部分期规则同源）。
+
+    用于识别「参数签名缺失的历史记录」：签名是后加的列，老记录为空，
+    但它们的 ic_series 日期序列由 (区间, forward, step) 唯一决定 ——
+    日期序列一致即等价于同一组参数，可据此回填签名并判定重复。
+    """
+    sd, ed = resolve_range(start, end)
+    all_dates = _dates_in_range(db, sd, ed)
+    return [d.isoformat() for i, d in enumerate(all_dates)
+            if i % step == 0 and i + forward < len(all_dates)]
+
+
+def _sig(x: float | None) -> float | None:
+    """保留 6 位有效数字：因子值量纲横跨 1e-3（fcf_yield）到 1e2（市值），
+    固定小数位要么丢信息要么刷屏，有效数字才是量纲无关的写法。"""
+    if x is None or not math.isfinite(x):
+        return None
+    return float(f"{x:.6g}")
+
+
+def _quantile(sorted_xs: list[float], q: float) -> float:
+    """线性插值分位数（sorted_xs 必须已升序）。"""
+    if not sorted_xs:
+        return 0.0
+    if len(sorted_xs) == 1:
+        return sorted_xs[0]
+    pos = q * (len(sorted_xs) - 1)
+    lo = int(math.floor(pos))
+    hi = min(lo + 1, len(sorted_xs) - 1)
+    return sorted_xs[lo] + (sorted_xs[hi] - sorted_xs[lo]) * (pos - lo)
+
+
+def _factor_stats(vals: list[float], n_periods: int) -> dict:
+    """因子值本身的分布统计（与 IC 无关）。
+
+    存在的意义：IC 是 Spearman 秩相关，对整体缩放、加减常数、单调变换完全
+    免疫 —— 用户调整这类参数时 IC 分毫不动，会误以为「改了没反应」。因子值
+    的均值/标准差/分位数对数值变化敏感，是唯一能让参数调整「可见」的反馈。
+    """
+    if not vals:
+        return {}
+    s = sorted(vals)
+    return {
+        "n_values": len(vals),
+        "n_per_period": round(len(vals) / n_periods, 1) if n_periods else 0.0,
+        "mean": _sig(_mean(vals)),
+        "std": _sig(_std(vals)),
+        "min": _sig(s[0]),
+        "p25": _sig(_quantile(s, 0.25)),
+        "p50": _sig(_quantile(s, 0.50)),
+        "p75": _sig(_quantile(s, 0.75)),
+        "max": _sig(s[-1]),
+        "skew": _sig(_skew(vals)),
+        "n_unique": len(set(round(v, 10) for v in s)),
+    }
+
+
+def _skew(xs: list[float]) -> float:
+    n = len(xs)
+    if n < 3:
+        return 0.0
+    m = _mean(xs)
+    sd = math.sqrt(sum((x - m) ** 2 for x in xs) / n)
+    if sd == 0:
+        return 0.0
+    return sum(((x - m) / sd) ** 3 for x in xs) / n
+
+
 def validate_expr(expr: str) -> tuple[bool, str, float | None]:
     """校验表达式：AST 预检（函数名/变量名/属性访问）→ 受限命名空间试算。
 
@@ -284,8 +365,7 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
     if not ok:
         return {"ok": False, "error": f"表达式无效：{err}"}
 
-    ed = date.fromisoformat(end) if end else date.today()
-    sd = date.fromisoformat(start) if start else ed - timedelta(days=400)
+    sd, ed = resolve_range(start, end)
     if progress:
         progress(0.05, "加载股票池与数据…")
 
@@ -371,6 +451,7 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
 
     ic_list = []
     ic_dates = []
+    all_vals: list[float] = []  # 全区间所有参与检验的因子值（供 factor_stats 用）
     group_rets = {g: [] for g in range(1, groups + 1)}
     ls_cum = 0.0
     long_short = []
@@ -420,6 +501,7 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
             continue
         vals = [x[1] for x in fv]
         rets = [x[2] for x in fv]
+        all_vals.extend(vals)
         ic = _spearman(vals, rets)
         ic_list.append(ic)
         ic_dates.append(snap.isoformat())
@@ -489,6 +571,7 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
         "rating": rating,
         "n_periods": len(ic_list),
         "complexity": compute_complexity(expr),
+        "factor_stats": _factor_stats(all_vals, len(ic_list)),
         "n_stocks": len(syms),
         "forward_days": forward,
     }
