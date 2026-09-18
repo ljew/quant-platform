@@ -99,6 +99,7 @@ def local_generate(text: str) -> dict:
     多个说法同时命中时按命中顺序取前 3 条相加 —— 权重未做优化，只用于快速试跑。
     生成的表达式同样要过 validate_expr，保证与手写路径同一道闸。
     """
+    from app.datahub.ns_vars import TEXT_FACTOR_ENABLED
     from app.services.factor_mining import validate_expr
 
     t = (text or "").strip()
@@ -107,6 +108,9 @@ def local_generate(text: str) -> dict:
 
     hits: list[tuple[str, str, str]] = []
     for words, expr, name, logic in _LOCAL_RULES:
+        # 文本数据未就绪时跳过文本类规则，避免生成必然过不了校验的表达式
+        if not TEXT_FACTOR_ENABLED and "news_senti" in expr:
+            continue
         if not any(w in t for w in words):
             continue
         # 更具体的规则已命中时，跳过被其涵盖的宽泛规则

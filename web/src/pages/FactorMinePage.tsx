@@ -13,6 +13,14 @@ const DIRECTION_CN: Record<string, string> = {
   quality: "质量成长", reversal: "均值回归",
 };
 
+/**
+ * 非结构化（文本/新闻）因子总开关 —— 与后端 `ns_vars.TEXT_FACTOR_ENABLED` 对应。
+ * 个股新闻情绪数据尚未就绪（news_stock_daily 平均每日仅约 11 只有数据，相对
+ * 核心池 1805 只 ≈ 0.6%），暂不展示相关入口与检验卡片，也不再自动拉取时序。
+ * 后端数据补齐并把开关翻回 true 后，这里同步改成 true 即可恢复全部 UI。
+ */
+const TEXT_FACTOR_ENABLED = false;
+
 /** 因子挖掘：自定义表达式 → IC/ICIR/分组单调/多空/相关性检验报告。 */
 export default function FactorMinePage() {
   const { colors } = useTheme();
@@ -66,7 +74,10 @@ export default function FactorMinePage() {
   useEffect(() => {
     api.factorFunctions().then(setFns).catch(() => {});
     api.factorGpDirections().then(setGpDirs).catch(() => {});
-    api.factorNewsDaily(600).then(setNewsSeries).catch(() => {});
+    // 文本因子关闭时不拉新闻情绪时序，避免每次进页面白跑一次查询
+    if (TEXT_FACTOR_ENABLED) {
+      api.factorNewsDaily(600).then(setNewsSeries).catch(() => {});
+    }
     loadAiStatus();
     loadHistory();
   }, [loadAiStatus, loadHistory]);
@@ -435,7 +446,8 @@ lsof -ti:8000 -sTCP:LISTEN | xargs kill
         </Card>
       </div>
 
-      {/* —— 新闻情绪择时因子 —— */}
+      {/* —— 新闻情绪择时因子（文本数据未就绪，开关关闭时整体不渲染）—— */}
+      {TEXT_FACTOR_ENABLED && (
       <div style={{ marginBottom: 16 }}>
         <Card
           title="新闻情绪择时因子（文本管道 · 94 公众号语料）"
@@ -486,6 +498,7 @@ lsof -ti:8000 -sTCP:LISTEN | xargs kill
           </div>
         </Card>
       </div>
+      )}
 
       {/* —— GP 自动挖掘 —— */}
       <div style={{ marginBottom: 16 }}>

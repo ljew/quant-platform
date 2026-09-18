@@ -14,6 +14,7 @@ from datetime import date, datetime, timedelta
 import pandas as pd
 from sqlalchemy import func, select
 
+from app.datahub.ns_vars import TEXT_FACTOR_ENABLED
 from app.datahub.registry import write_bronze
 from app.datahub.source_config import get_source
 from app.database import SessionLocal, init_db
@@ -498,13 +499,15 @@ def step_compute_mined_factors(db) -> int:
             seg = [amap.get(d2) for d2 in snap_slice[-126:] if d2 in amap]
             mkt_b = [bench_map.get(d2) for d2 in snap_slice[-len(seg):]]
             try:
+                # 文本变量按总开关注入（关闭时该键不存在，用到它的表达式会被静默跳过）
                 v = eval_factor(fac.expr, {"c_m": seg, "c_r": seg, "c_v": seg,
                                            "c_b": seg, "c_t": seg, "mkt_b": mkt_b,
                                            "pe_ttm": None, "pb": None,
                                            "market_cap": None, "roe": None,
                                            "revenue_yoy": None, "profit_yoy": None,
                                            "earnings_surprise": None,
-                                           "news_senti": _news_lookup(sym2)})
+                                           **({"news_senti": _news_lookup(sym2)}
+                                              if TEXT_FACTOR_ENABLED else {})})
             except Exception:  # noqa: BLE001
                 v = None
             if v is not None:

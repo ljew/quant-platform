@@ -37,6 +37,15 @@ from typing import Callable, Iterable
 # stocks.market_cap 单位为亿元，财务量为元 → 换算系数
 MCAP_UNIT = 1e8
 
+# —— 非结构化（文本）因子总开关 ——
+# 个股新闻情绪变量 `news_senti` 依赖 news_stock_daily，该表当前仅 443 天 × 1943 只
+# 共 5110 行（平均每日 ~11 只有数据，相对核心池 1805 只 ≈ 0.6%），稀疏截面会让 IC
+# 充满噪声、分组单调性失真，不足以支撑截面因子。
+# 关闭时：make_ns 不输出该变量 → var_names() 白名单不含它 → 表达式校验直接拒绝，
+# 挖掘 / GP / 变量参考表 / LLM 提示词契约全链路自动剔除（它们都从本模块派生）。
+# 数据补齐后把本开关翻回 True 即可整体恢复，无需改动其它任何文件。
+TEXT_FACTOR_ENABLED = False
+
 
 def make_ns(seg: list[float], mkt_all: list[float], attrs: dict,
             news: float | None = None, esv=None,
@@ -89,9 +98,11 @@ def make_ns(seg: list[float], mkt_all: list[float], attrs: dict,
         "revenue_yoy": attrs.get("revenue_yoy"),
         "profit_yoy": attrs.get("profit_yoy"),
         "earnings_surprise": esv if esv is not None else attrs.get("_es"),
-        "news_senti": news,
         "industry": attrs.get("industry"),
     }
+    # 文本类变量按开关决定是否进入命名空间（同时决定是否进入 var_names 白名单）
+    if TEXT_FACTOR_ENABLED:
+        ns["news_senti"] = news
     ns.update(fin_vars(fin, attrs.get("market_cap")))
     return ns
 
@@ -145,7 +156,9 @@ VAR_DOC: dict[str, str] = {
     "mkt_b": "基准(中证800)对齐序列",
     "pe_ttm": "市盈率", "pb": "市净率", "market_cap": "总市值(亿元)",
     "roe": "净资产收益率(%)", "revenue_yoy": "营收增速(%)", "profit_yoy": "利润增速(%)",
-    "earnings_surprise": "盈余惊喜(PEAD)", "news_senti": "个股新闻情绪(-1~1)",
+    "earnings_surprise": "盈余惊喜(PEAD)",
+    # 仅在 TEXT_FACTOR_ENABLED=True（文本数据就绪）时才进入白名单，见文件头开关说明
+    "news_senti": "个股新闻情绪(-1~1)",
     "industry": "行业",
     "ocf": "经营现金流净额(元)", "capex": "资本开支(元)", "total_assets": "总资产(元)",
     "fcf_yield": "自由现金流收益率=(ocf-|capex|)/总市值",
