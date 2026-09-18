@@ -81,8 +81,7 @@ _LOCAL_RULES: list[tuple[tuple[str, ...], str, str, str]] = [
     (("经营现金流", "现金流质量", "现金流健康", "现金流稳定"), "ocf_to_assets", "现金流质量", "经营现金流/总资产"),
     (("自由现金流", "fcf", "现金牛", "现金流"), "fcf_yield", "自由现金流收益率", "自由现金流/总市值，越高越便宜"),
     (("资本开支", "扩张", "重资产", "capex"), "capex_intensity", "资本开支强度", "资本开支/总资产，衡量投入强度"),
-    # —— 情绪 / 市值 ——
-    (("情绪", "舆情", "消息面", "新闻"), "news_senti", "新闻情绪", "个股新闻情绪越正面越好"),
+    # —— 市值 ——
     (("小市值", "小盘"), "-market_cap", "小市值", "总市值越小越好"),
     (("大市值", "大盘", "蓝筹", "龙头"), "market_cap", "大市值", "总市值越大越好"),
 ]
@@ -99,7 +98,6 @@ def local_generate(text: str) -> dict:
     多个说法同时命中时按命中顺序取前 3 条相加 —— 权重未做优化，只用于快速试跑。
     生成的表达式同样要过 validate_expr，保证与手写路径同一道闸。
     """
-    from app.datahub.ns_vars import TEXT_FACTOR_ENABLED
     from app.services.factor_mining import validate_expr
 
     t = (text or "").strip()
@@ -108,9 +106,6 @@ def local_generate(text: str) -> dict:
 
     hits: list[tuple[str, str, str]] = []
     for words, expr, name, logic in _LOCAL_RULES:
-        # 文本数据未就绪时跳过文本类规则，避免生成必然过不了校验的表达式
-        if not TEXT_FACTOR_ENABLED and "news_senti" in expr:
-            continue
         if not any(w in t for w in words):
             continue
         # 更具体的规则已命中时，跳过被其涵盖的宽泛规则
@@ -122,7 +117,7 @@ def local_generate(text: str) -> dict:
             "ok": False,
             "source": "local",
             "error": "本地规则未命中这个描述",
-            "hint": "试用模式只覆盖常见表述（估值/成长/波动/量能/动量/现金流/情绪/市值）；"
+            "hint": "试用模式只覆盖常见表述（估值/成长/波动/量能/动量/现金流/市值）；"
                     "配置 QUANT_LLM_API_KEY 后即可理解任意自然语言",
             "matched": [],
         }

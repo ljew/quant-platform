@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 from sqlalchemy import select, func
 
@@ -22,7 +22,6 @@ from app.models import (
     IndexKlineDaily,
     IndexMembership,
     KlineDaily,
-    NewsMarketDaily,
     PipelineRun,
 )
 
@@ -30,7 +29,7 @@ from app.models import (
 
 def _latest_date_days(db, table: str, column: str = "trade_date") -> tuple[float, str]:
     model = {"kline_daily": KlineDaily, "index_kline_daily": IndexKlineDaily,
-             "factor_daily": FactorDaily, "news_market_daily": NewsMarketDaily,
+             "factor_daily": FactorDaily,
              "index_membership": IndexMembership}[table]
     d = db.execute(select(getattr(model, column)).order_by(getattr(model, column).desc()).limit(1)).scalar()
     if not d:
@@ -40,22 +39,9 @@ def _latest_date_days(db, table: str, column: str = "trade_date") -> tuple[float
 
 
 def _table_rows(db, table: str) -> tuple[float, str]:
-    model = {"kline_daily": KlineDaily, "factor_daily": FactorDaily,
-             "news_market_daily": NewsMarketDaily,
-             "news_stock_daily": __import__("app.models", fromlist=["NewsStockDaily"]).NewsStockDaily}[table]
+    model = {"kline_daily": KlineDaily, "factor_daily": FactorDaily}[table]
     n = db.execute(select(func.count()).select_from(model)).scalar() or 0
     return float(n), f"{n:,} 行"
-
-
-def _news_coverage(db, params) -> tuple[float, str]:
-    days = int(params.get("window_days", 14))
-    min_fin = int(params.get("min_articles", 1))
-    from_date = date.today() - timedelta(days=days)
-    n = db.execute(
-        select(func.count()).select_from(NewsMarketDaily)
-        .where(NewsMarketDaily.date >= from_date, NewsMarketDaily.n_finance >= min_fin)
-    ).scalar() or 0
-    return float(n), f"{days} 天内 {n} 天有数据"
 
 
 def _pipeline_fail_count(db, params) -> tuple[float, str]:
@@ -108,7 +94,6 @@ def _component_snapshot(db, params) -> tuple[float, str]:
 METRICS = {
     "freshness": lambda db, p: _latest_date_days(db, p.get("table"), p.get("column", "trade_date")),
     "table_rows": lambda db, p: _table_rows(db, p.get("table")),
-    "news_coverage": _news_coverage,
     "pipeline_fail_count": _pipeline_fail_count,
     "pipeline_last_status": _pipeline_last_status,
     "bronze_files": _bronze_files,
@@ -119,7 +104,6 @@ METRICS = {
 METRIC_DOCS = {
     "freshness": "数据新鲜度：某表最新日期距今天数（params: table, max_days）",
     "table_rows": "表行数下限（params: table）",
-    "news_coverage": "新闻情绪覆盖：近 N 天有数据天数（params: window_days, min_articles）",
     "pipeline_fail_count": "管道失败次数上限（params: recent_runs）",
     "pipeline_last_status": "管道最近一次运行须成功",
     "bronze_files": "Bronze 分区 Parquet 文件数（params: dataset）",
@@ -146,7 +130,6 @@ DEFAULT_RULES = [
     ("collect", "数据管道最近运行", "pipeline_last_status", {}, "==", 1, "error"),
     ("process", "因子覆盖率", "table_rows", {"table": "factor_daily"}, ">=", 1000, "error"),
     ("process", "成分快照月更", "component_snapshot", {}, "==", 1, "warn"),
-    ("process", "新闻情绪覆盖", "news_coverage", {"window_days": 14, "min_articles": 1}, ">=", 6, "warn"),
     ("process", "管道近期失败数", "pipeline_fail_count", {"recent_runs": 10}, "==", 0, "warn"),
     ("process", "Silver 质检报告", "quality_report_age", {}, "<=", 7, "warn"),
 ]

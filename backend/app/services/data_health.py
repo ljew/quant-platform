@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 from sqlalchemy import select, func
 
@@ -16,7 +16,6 @@ from app.models import (
     IndexKlineDaily,
     IndexMembership,
     KlineDaily,
-    NewsMarketDaily,
     PipelineRun,
 )
 
@@ -71,6 +70,9 @@ def health_report(db=None) -> dict:
         if run:
             ago = ""
             if run.started_at:
+                # 注意：PipelineRun.started_at 由模型默认 datetime.utcnow 写入（UTC），
+                # 只能用 utcnow 相减。别被「时间看着像本地」误导改成 datetime.now()，
+                # 那会凭空多算 8 小时（东八区）。
                 mins = int((datetime.utcnow() - run.started_at).total_seconds() / 60)
                 ago = f"({mins} 分钟前)"
             collect_checks.append(_mk(
@@ -100,15 +102,6 @@ def health_report(db=None) -> dict:
         process_checks.append(_mk("成分快照月更",
                                   mem_latest is not None and mem_latest >= this_month,
                                   str(mem_latest), f"≥{this_month}"))
-
-        # 新闻情绪近 14 天覆盖
-        from_date = date.today() - timedelta(days=14)
-        news_days = db.execute(
-            select(func.count()).select_from(NewsMarketDaily)
-            .where(NewsMarketDaily.date >= from_date, NewsMarketDaily.n_finance > 0)
-        ).scalar() or 0
-        process_checks.append(_mk("新闻情绪连续性", news_days >= 6,
-                                  f"14 天内 {news_days} 天", "≥6 天"))
 
         # 最近质检报告（Silver 层）
         try:

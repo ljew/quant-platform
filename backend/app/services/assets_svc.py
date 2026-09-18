@@ -5,14 +5,12 @@
 """
 from __future__ import annotations
 
-import os
 import time
 from datetime import date, datetime, timedelta
 
 from sqlalchemy import func, select
 
 from app.core.trading_calendar import is_trading_day
-from app.datahub.registry import RAW_DIR, SILVER_DIR
 from app.models import (
     FactorDaily,
     FactorMinedDaily,
@@ -21,8 +19,6 @@ from app.models import (
     IndexKlineDaily,
     IndexMembership,
     KlineDaily,
-    NewsMarketDaily,
-    NewsStockDaily,
     Stock,
 )
 
@@ -35,8 +31,6 @@ _DATASETS = [
     ("index_kline_daily", "行情", "指数日K", IndexKlineDaily, IndexKlineDaily.trade_date, IndexKlineDaily.symbol, 1, "8 个核心指数"),
     ("factor_daily", "因子", "基础因子", FactorDaily, FactorDaily.trade_date, FactorDaily.symbol, 1, "ETL 截面 14 因子"),
     ("factor_mined_daily", "因子", "挖掘因子（GP）", FactorMinedDaily, FactorMinedDaily.date, FactorMinedDaily.symbol, 3, "因子表达式引擎产出"),
-    ("news_market_daily", "文本", "市场情绪（日）", NewsMarketDaily, NewsMarketDaily.date, None, 1, "全市场新闻/公告打分"),
-    ("news_stock_daily", "文本", "个股情绪（日）", NewsStockDaily, NewsStockDaily.date, NewsStockDaily.symbol, 3, "个股提及与情绪"),
     ("stocks", "元数据", "股票列表与属性", Stock, Stock.updated_at, Stock.symbol, 7, "名称/行业/市值/估值"),
     # 财报按季度披露：一个季度约 65 个交易日 + 披露延迟缓冲
     ("fundamentals_history", "元数据", "财报历史", FundamentalsHistory, FundamentalsHistory.report_date, FundamentalsHistory.symbol, 75, "ROE/营收/净利同比"),
@@ -46,32 +40,17 @@ _DATASETS = [
 _GROUPS = [
     ("行情", "行情数据", "日K 与指数，策略回测的主粮"),
     ("因子", "因子数据", "选股与归因的输入"),
-    ("文本", "文本情绪", "新闻/公告/公众号情绪打分"),
     ("元数据", "元数据", "标的属性、财报、指数成分"),
 ]
 
 # 数据源 → 其产出的落点数据集（用于在源卡片上显示「存量」）
+# 说明：文本类数据源（eastmoney_news / eastmoney_announcements / wechat_articles）
+# 仍在后台采集并累积，但暂不纳入资产清单与告警（非结构化因子暂时下线）。
 _SOURCE_BIND = {
     "core_index_kline": "index_kline_daily",
     "stock_kline_core": "kline_daily",
     "stock_attributes": "stocks",
-    "eastmoney_announcements": "news_stock_daily",
-    "eastmoney_news": "news_market_daily",
-    "wechat_articles": "__bronze_text__",
 }
-
-
-def _dir_stat(path: str) -> dict:
-    files, size, latest = 0, 0, 0.0
-    for root, _d, fs in os.walk(path):
-        for f in fs:
-            if f.endswith(".parquet"):
-                fp = os.path.join(root, f)
-                files += 1
-                size += os.path.getsize(fp)
-                latest = max(latest, os.path.getmtime(fp))
-    return {"files": files, "size_mb": round(size / 1048576, 1),
-            "latest": datetime.fromtimestamp(latest).isoformat(timespec="seconds") if latest else None}
 
 
 def _to_date(v) -> date | None:
@@ -300,36 +279,6 @@ def assets_report(db, force: bool = False) -> dict:
         "status": "ok" if enabled_reg else "empty",
     }
 
-    # —— Bronze 原始语料（目录统计）——
-    bronze_text = _dir_stat(os.path.join(RAW_DIR, "text"))
-    bronze_market = _dir_stat(os.path.join(RAW_DIR, "market"))
-    bronze_latest = max([x for x in [bronze_text["latest"], bronze_market["latest"]] if x] or [None])
-    bt_dt = _to_date(bronze_latest)
-    bronze_lag = _lag_trading_days(bt_dt, base) if bt_dt else None
-    items["__bronze_text__"] = {
-        "key": "__bronze_text__", "group": "文本", "label": "原始语料快照（Bronze）",
-        "rows": bronze_text["files"] + bronze_market["files"],
-        "symbols": None, "start": None,
-        "latest": (bt_dt.isoformat() if bt_dt else None),
-        "lag_trading_days": bronze_lag,
-        "lag_calendar_days": ((base - bt_dt).days if bt_dt else None),
-        "max_lag": 3,
-        "note": f"Parquet 文件 · 文本 {bronze_text['size_mb']}MB / 行情 {bronze_market['size_mb']}MB",
-        "status": _judge(bronze_text["files"] + bronze_market["files"], bronze_lag, 3, True),
-    }
-    silver = _dir_stat(SILVER_DIR)
-    items["__silver__"] = {
-        "key": "__silver__", "group": "文本", "label": "清洗后文本（Silver）",
-        "rows": silver["files"], "symbols": None, "start": None,
-        "latest": (_to_date(silver["latest"]).isoformat() if silver["latest"] else None),
-        "lag_trading_days": (_lag_trading_days(_to_date(silver["latest"]), base)
-                             if silver["latest"] else None),
-        "lag_calendar_days": ((base - _to_date(silver["latest"])).days if silver["latest"] else None),
-        "max_lag": 3, "note": f"清洗并打分后的 Parquet，共 {silver['size_mb']}MB",
-        "status": _judge(silver["files"], _lag_trading_days(_to_date(silver["latest"]), base)
-                         if silver["latest"] else None, 3, True),
-    }
-
     # —— 分组输出 ——
     groups = []
     for key, label, desc in _GROUPS:
@@ -349,7 +298,6 @@ def assets_report(db, force: bool = False) -> dict:
 
     # —— 顶层结论 ——
     kline = items["kline_daily"]
-    news = items["news_market_daily"]
     # 财报的滞后是按季披露的结构性结果，不应占据「最滞后」位置
     dated = [v for v in items.values()
              if v.get("lag_trading_days") is not None and not v.get("by_period")]
@@ -381,10 +329,8 @@ def assets_report(db, force: bool = False) -> dict:
 
     summary = {
         "latest_trade_date": kline["latest"],
-        "latest_news_date": news["latest"],
         "lag_trading_days": kline["lag_trading_days"],
         "lag_calendar_days": kline["lag_calendar_days"],
-        "news_lag_trading_days": news["lag_trading_days"],
         "total_rows": sum(v["rows"] for v in items.values() if v["rows"] > 0),
         "symbols": kline["symbols"],
         "n_stale": n_stale, "n_warn": n_warn, "n_empty": n_empty,

@@ -31,11 +31,12 @@ const STEP_DESC: Record<string, string> = {
   extract_stock_kline: "核心池个股前复权日K（增量）→ kline_daily + Bronze 快照",
   extract_attributes: "全市场截面属性 daily_basic → stocks（估值/市值/行业）",
   clean_bars: "K线清洗：去重、异常值剔除 → 输出质检报告",
-  extract_eastmoney_news: "东财全市场新闻流 → Bronze/text + 市场情绪",
-  extract_announcements: "上市公司公告（按 codes 精确关联，去重）→ 个股情绪",
+  // 文本类步骤仍在采集（数据累积中），说明保持中性描述，不挂情绪/因子口径
+  extract_eastmoney_news: "东财全市场新闻流 → Bronze/text 快照",
+  extract_announcements: "上市公司公告（按 codes 精确关联，去重）→ Bronze/text",
   extract_wechat_articles: "公众号财经语料 → Bronze/text",
   clean_text: "文本清洗：分段、匹配个股提及 → Silver",
-  score_sentiment: "情绪打分（多空词典 / LLM）→ 市场与个股情绪日表",
+  score_sentiment: "文本打分 → Silver 文本日表（暂未接入因子）",
   compute_mined_factors: "按因子注册表计算 GP 挖掘因子 → factor_mined_daily",
   compute_factors: "截面基础因子计算（14 因子）→ factor_daily",
   sync_duckdb: "同步 SQLite → DuckDB 分析库（回测/研究读取）",
@@ -393,7 +394,7 @@ export default function DataPipelinePage() {
             </span>
             <span style={{ width: 190, fontSize: 12.5, fontFamily: "ui-monospace,Menlo,monospace" }}>{s.name}</span>
             <span style={{ flex: 1, fontSize: 11.5, color: colors.muted }}>
-              {STEP_DESC[s.name] || s.name}
+              {STEP_DESC[s.name] || "—"}
             </span>
             <span className="num" style={{ fontSize: 11.5, color: colors.muted, width: 78, textAlign: "right" }}>
               {s.rows > 0 ? `+${s.rows.toLocaleString()} 行` : "无新增"}
@@ -780,7 +781,7 @@ function LineageGraph({ lin, assets, colors }: { lin: LineageReport; assets: Ass
   return (
     <div style={{ overflowX: "auto" }}>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ minWidth: 860 }}>
-        {["数据源", "Bronze 原始层", "Silver 清洗/打分", "Gold 因子与情绪", "应用"].map((t, i) => (
+        {["数据源", "Bronze 原始层", "Silver 清洗/打分", "Gold 因子", "应用"].map((t, i) => (
           <text key={t} x={[x1, x2, x3, x4, x5][i]} y={14} fill={c.muted} fontSize={10.5} fontWeight={600}>{t}</text>
         ))}
 
@@ -805,25 +806,22 @@ function LineageGraph({ lin, assets, colors }: { lin: LineageReport; assets: Ass
         {link(x2 + colW, midY, x3, midY, "l-b")}
 
         {/* Silver */}
-        {box(x3, bY, colW, boxH, "清洗 + 情绪打分",
+        {box(x3, bY, colW, boxH, "清洗 + 打分",
           `${silverN} 文件 · 质检${lin.layers.silver.quality ? "已出" : "无"}`, c.accent, "s")}
         {link(x3 + colW, midY, x4, midY, "l-s")}
 
         {/* Gold */}
         <g key="gold">
           <rect x={x4} y={bY - 24} width={colW} height={boxH + 48} rx={8} fill={c.card} stroke={c.accent} strokeWidth={1.2} />
-          <text x={x4 + 10} y={bY - 6} fill={c.text} fontSize={11.5} fontWeight={600}>因子与情绪表</text>
+          <text x={x4 + 10} y={bY - 6} fill={c.text} fontSize={11.5} fontWeight={600}>因子表</text>
           <text x={x4 + 10} y={bY + 11} fill={c.muted} fontSize={10}>
             个股K线 {(g.tables.kline_daily ?? 0).toLocaleString()} 行
           </text>
           <text x={x4 + 10} y={bY + 27} fill={c.muted} fontSize={10}>
             基础因子 {(g.tables.factor_daily ?? 0).toLocaleString()} · 挖掘 {(g.tables.factor_mined_daily ?? 0).toLocaleString()}
           </text>
-          <text x={x4 + 10} y={bY + 43} fill={c.muted} fontSize={10}>
-            市场情绪 {g.tables.news_market_daily ?? 0} 天 · 个股情绪 {(g.tables.news_stock_daily ?? 0).toLocaleString()} 行
-          </text>
-          <text x={x4 + 10} y={bY + 59} fill={c.up} fontSize={10}>
-            K线至 {fmtDate(g.latest.kline)} / 情绪至 {fmtDate(g.latest.news)}
+          <text x={x4 + 10} y={bY + 43} fill={c.up} fontSize={10}>
+            K线至 {fmtDate(g.latest.kline)}
           </text>
         </g>
         {link(x4 + colW, midY, x5, midY, "l-g")}

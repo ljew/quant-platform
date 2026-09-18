@@ -247,18 +247,14 @@ def pipeline_run_now():
 # ——— 一键修复：把「资产清单里的异常项」翻译成可执行的修复动作 ———
 
 # 数据集 → 需要重跑的管道步骤（执行时按 STEPS 原始顺序排序，保证依赖）
+# 说明：文本类数据集已从资产清单摘除（非结构化因子暂时下线），对应映射一并移除。
 _DATASET_STEPS: dict[str, list[str]] = {
     # 日K 补齐后因子与 DuckDB 也要跟着补，否则页面仍显示因子滞后
     "kline_daily": ["extract_stock_kline", "clean_bars", "compute_factors", "sync_duckdb"],
     "index_kline_daily": ["extract_index_kline", "sync_duckdb"],
     "factor_daily": ["compute_factors", "sync_duckdb"],
     "factor_mined_daily": ["compute_mined_factors", "sync_duckdb"],
-    "news_market_daily": ["extract_eastmoney_news", "clean_text", "score_sentiment"],
-    "news_stock_daily": ["extract_announcements", "extract_wechat_articles", "clean_text", "score_sentiment"],
     "stocks": ["extract_attributes"],
-    "__bronze_text__": ["extract_eastmoney_news", "extract_announcements",
-                        "extract_wechat_articles", "clean_text"],
-    "__silver__": ["clean_text", "score_sentiment"],
 }
 
 # 没有对应管道步骤的数据集 → 走独立脚本（均为幂等补缺脚本）

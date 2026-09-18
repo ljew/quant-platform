@@ -215,7 +215,6 @@ export default function MonitorPage() {
             <FlowCol title="④ Gold 因子层（最新数据）" colors={colors}>
               <LayerRow label="个股K线" v={`${(dataflow.gold.kline_daily as number).toLocaleString()} 行 @${dataflow.gold.kline_latest}`} colors={colors} />
               <LayerRow label="因子截面" v={`${(dataflow.gold.factor_daily as number).toLocaleString()} 行 @${dataflow.gold.factor_latest}`} colors={colors} />
-              <LayerRow label="新闻情绪" v={`市场 ${dataflow.gold.news_market_daily} 天 / 个股 ${(dataflow.gold.news_stock_daily as number).toLocaleString()} 行`} colors={colors} />
               <LayerRow label="注册因子" v={`${dataflow.gold.registry_enabled} 启用 · ${(dataflow.gold.mined_rows as number).toLocaleString()} 行`} colors={colors} />
             </FlowCol>
           </div>
@@ -241,10 +240,9 @@ function FreshGrid({ dataflow, colors }: { dataflow: DataflowReport | null; colo
   const items = [
     { k: "行情K线", latest: dataflow.gold.kline_latest as string },
     { k: "因子截面", latest: dataflow.gold.factor_latest as string },
-    { k: "新闻情绪", latest: dataflow.gold.news_latest as string },
   ];
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 10 }}>
       {items.map((it) => {
         const ago = daysAgo(it.latest);
         const toneColor = ago <= 1 ? colors.down : ago <= 3 ? "#e8a520" : colors.up;
