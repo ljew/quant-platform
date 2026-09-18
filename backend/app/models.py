@@ -36,6 +36,11 @@ class Stock(Base):
     raw_code: Mapped[str] = mapped_column(String(16))
     industry: Mapped[str | None] = mapped_column(String(64), nullable=True)
     list_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # ---- 上市生命周期（PIT 成分重建的依据，缺失会导致幸存者偏差）----
+    # 全A 没有官方成分快照，只能靠 list_date / delist_date 逐月重建「当时可交易的股票」。
+    # 若不记录退市日，2019 年的池子会包含当年尚未上市的公司（未来函数）。
+    delist_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    list_status: Mapped[str | None] = mapped_column(String(2), nullable=True)  # L上市/D退市/P暂停
     # 基本面截面快照（来自 tushare daily_basic，回测期初就近交易日，用于行业/市值中性化与估值因子）
     market_cap: Mapped[float | None] = mapped_column(Float, nullable=True)  # 总市值（亿元）
     pe_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -75,11 +80,53 @@ class FundamentalsHistory(Base):
         return f"<FundamentalsHistory {self.symbol} {self.report_date}>"
 
 
+class FinancialsRaw(Base):
+    """财务原始三表（按公告日 ann_date 存原始字段）—— 支撑现金流类因子。
+
+    为什么另建表而不是扩 fundamentals_history：
+    后者只有 roe / revenue_yoy / profit_yoy 三个加工后的比率，而策略的核心因子
+    FCF/OE = (经营活动现金流净额 − 资本开支) / 总资产，需要**绝对额**字段才能算。
+    三个字段分别来自 fina_indicator(roe) / cashflow(现金流+资本开支) / balancesheet(总资产)。
+
+    按 ann_date 而非 end_date 存储：回测在 t 日只能知道 t 之前已公告的财报。
+    用 end_date 会引入前视（如 2020 年报的实际公布日是 2021-04-28，
+    若按 end_date=2020-12-31 对齐，等于提前 4 个月看到数据）。
+
+    唯一键取 (symbol, end_date) 而非 (symbol, ann_date)：财务数据的天然主键是
+    「哪家公司哪一期」；公告日只是属性。同一公告日可能同时更正多期，按 ann_date
+    去重会静默丢数据。
+    """
+
+    __tablename__ = "financials_raw"
+    __table_args__ = (
+        UniqueConstraint("symbol", "end_date", name="uq_fin_symbol_end"),
+        Index("ix_fin_symbol_ann", "symbol", "ann_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(16), nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)        # 报告期（主键组成）
+    ann_date: Mapped[date] = mapped_column(Date, nullable=False)        # 公告日（对齐基准）
+    roe: Mapped[float | None] = mapped_column(Float, nullable=True)             # 净资产收益率(%)
+    n_cashflow_act: Mapped[float | None] = mapped_column(Float, nullable=True)  # 经营活动现金流净额
+    capex: Mapped[float | None] = mapped_column(Float, nullable=True)           # 资本开支（购建固定/无形/其他长期资产）
+    total_assets: Mapped[float | None] = mapped_column(Float, nullable=True)    # 总资产
+
+    def __repr__(self):
+        return f"<FinancialsRaw {self.symbol} {self.ann_date}>"
+
+
 class KlineDaily(Base):
     """日K线表。
 
     生产环境 TimescaleDB 会将此表转为 Hypertable（按 trade_date 分区），
     索引 (symbol, trade_date) 保证回测时按标的+时间范围的高速查询。
+
+    价格口径（2026-09 起）：**存未复权原始价**，`adj='none'`。
+    复权因子单独存 adj_factor_daily，取价时由 utils.price 按需构造前复权/后复权。
+    为什么要改：原先直接存前复权价，历史价会随新的分红送股事件**回溯变动**
+    —— 同一个 2020 年的日期，在 2024 年和 2026 年查到的价格不同，
+    跨期结果不可复现，且严格来说含有前视。存原始价 + 因子则完全可复现。
     """
 
     __tablename__ = "kline_daily"
@@ -96,9 +143,9 @@ class KlineDaily(Base):
     low: Mapped[float] = mapped_column(Float, nullable=False)
     close: Mapped[float] = mapped_column(Float, nullable=False)
     volume: Mapped[int] = mapped_column(Integer, default=0)
-    amount: Mapped[float] = mapped_column(Float, default=0.0)  # 成交额（元）
-    # 复权类型：qfq 前复权 / hfq 后复权 / None 不复权
-    adj: Mapped[str] = mapped_column(String(4), default="qfq")
+    amount: Mapped[float] = mapped_column(Float, default=0.0)  # 成交额（千元，tushare 原单位）
+    # 复权类型：all-a 建仓后统一为 none（存原始价）；qfq/hfq 为历史遗留口径
+    adj: Mapped[str] = mapped_column(String(4), default="none")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     def __repr__(self):

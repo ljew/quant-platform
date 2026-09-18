@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, and_
 from sqlalchemy.orm import Session
 
 from app.core.engine.factor_expr import eval_factor
@@ -27,6 +27,7 @@ from app.models import (
     FundamentalsHistory,
     Stock,
 )
+from app.services.adjust import apply_adjust_series
 
 # 截面抽样间隔（交易日）：20 ≈ 每月一次
 DEFAULT_STEP = 20
@@ -196,19 +197,31 @@ def _es_map(db: Session, syms: list[str]) -> dict:
 
 
 def _closes_for(db: Session, syms: list[str], sd: date, ed: date) -> dict[str, list[float]]:
-    """批量加载区间收盘序列（内存复用，避免逐期查库）。"""
-    from app.models import KlineDaily
+    """批量加载区间**复权后**收盘序列（内存复用，避免逐期查库）。
 
-    out: dict[str, list[float]] = {}
+    库内 kline_daily 存的是未复权原价，这里折算成后复权后再交给因子引擎 ——
+    动量/反转/波动率这类因子依赖于价格序列的连续性，直接用原始价会把除权
+    跳变当成真实涨跌（实测含除权窗口约 1/10 的动量方向会翻转）。
+    """
+    from app.models import AdjFactorDaily, KlineDaily
+
     rows = db.execute(
-        select(KlineDaily.symbol, KlineDaily.close)
-        .where(KlineDaily.symbol.in_(syms), KlineDaily.adj == "qfq",
+        select(KlineDaily.symbol, KlineDaily.trade_date, KlineDaily.close,
+               AdjFactorDaily.adj_factor)
+        .outerjoin(AdjFactorDaily, and_(
+            AdjFactorDaily.symbol == KlineDaily.symbol,
+            AdjFactorDaily.trade_date == KlineDaily.trade_date))
+        .where(KlineDaily.symbol.in_(syms), KlineDaily.adj == "none",
                KlineDaily.trade_date >= sd, KlineDaily.trade_date <= ed)
-        .order_by(KlineDaily.trade_date)
+        .order_by(KlineDaily.symbol, KlineDaily.trade_date)
     ).all()
-    for sym, close in rows:
-        out.setdefault(sym, []).append(float(close))
-    return out
+
+    raw: dict[str, list[float]] = {}
+    fac: dict[str, list] = {}
+    for sym, _td, close, f in rows:
+        raw.setdefault(sym, []).append(float(close))
+        fac.setdefault(sym, []).append(f)
+    return {s: apply_adjust_series(v, fac[s], "hfq") for s, v in raw.items()}
 
 
 def _bench_closes(db: Session, sd: date, ed: date) -> list[float]:
@@ -314,7 +327,7 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
         return {"ok": False, "error": "区间内有效截面不足（建议拉长区间或缩短 forward）"}
 
     # —— 统一日期轴对齐（K线 + 基准）——
-    from app.models import KlineDaily
+    from app.models import AdjFactorDaily, KlineDaily
 
     axis = _dates_in_range(db, sd - timedelta(days=300), ed)
     aligned: dict[str, dict[date, float]] = {}
@@ -322,16 +335,31 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
     amt_aligned: dict[str, dict[date, float]] = {}
     rows = db.execute(
         select(KlineDaily.symbol, KlineDaily.trade_date, KlineDaily.close,
-               KlineDaily.volume, KlineDaily.amount)
+               KlineDaily.volume, KlineDaily.amount, AdjFactorDaily.adj_factor)
+        .outerjoin(AdjFactorDaily, and_(
+            AdjFactorDaily.symbol == KlineDaily.symbol,
+            AdjFactorDaily.trade_date == KlineDaily.trade_date))
         .where(KlineDaily.symbol.in_(syms), KlineDaily.adj == "none",
                KlineDaily.trade_date >= sd - timedelta(days=300), KlineDaily.trade_date <= ed)
+        .order_by(KlineDaily.symbol, KlineDaily.trade_date)
     ).all()
-    for sym, td, close, vol, amt in rows:
-        aligned.setdefault(sym, {})[td] = float(close)
-        if vol is not None:
-            vol_aligned.setdefault(sym, {})[td] = float(vol)
-        if amt is not None:
-            amt_aligned.setdefault(sym, {})[td] = float(amt)
+    # 先按标的分组折算成后复权（因子必须基于连续价格序列），再回填对齐映射。
+    # 量额保持原始值：量能因子取的是相对变化，常数比例折算不影响结果。
+    _raw: dict[str, list[float]] = {}
+    _fac: dict[str, list] = {}
+    _meta: dict[str, list] = {}
+    for sym, td, close, vol, amt, f in rows:
+        _raw.setdefault(sym, []).append(float(close))
+        _fac.setdefault(sym, []).append(f)
+        _meta.setdefault(sym, []).append((td, vol, amt))
+    for sym, seq in _raw.items():
+        for (td, vol, amt), c in zip(_meta[sym],
+                                     apply_adjust_series(seq, _fac[sym], "hfq")):
+            aligned.setdefault(sym, {})[td] = float(c)
+            if vol is not None:
+                vol_aligned.setdefault(sym, {})[td] = float(vol)
+            if amt is not None:
+                amt_aligned.setdefault(sym, {})[td] = float(amt)
     bench_map = {d: c for d, c in zip(
         _dates_in_range(db, sd - timedelta(days=300), ed),
         _bench_closes(db, sd - timedelta(days=300), ed),

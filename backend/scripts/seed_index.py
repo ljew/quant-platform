@@ -1,4 +1,4 @@
-"""预拉取任意指数成分股日K（前复权）入库。
+"""预拉取任意指数成分股日K（未复权原始价）入库。
 
 用途：指数增强回测需要全股票池的历史数据。直接回测时若本地无数据会逐只回源，
 较慢；本脚本把指定指数的成分股日K批量拉取并落地到本地库（断点续传、并发加速）。
@@ -46,15 +46,16 @@ def worker(symbol: str, since: int):
     try:
         Kline = KlineDaily
         latest = db.query(Kline).filter(
-            Kline.symbol == symbol, Kline.adj == "qfq",
+            Kline.symbol == symbol, Kline.adj == "none",
         ).order_by(Kline.trade_date.desc()).first()
         if latest and latest.trade_date >= date(date.today().year, 1, 1):
             return symbol, 0, "skip"
         sd = date(since, 1, 1)
-        rows = data_source.get_stock_daily_qfq(symbol, sd)
+        rows = data_source.get_daily_kline(symbol, sd, None, adj="none")
         if not rows:
             return symbol, 0, "empty"
-        ingestion.upsert_kline(db, rows, symbol, "qfq")
+        # 库内单一口径：未复权原始价（复权在读取时由 adj_factor 折算）
+        ingestion.upsert_kline(db, rows, symbol, "none")
         db.commit()
         return symbol, len(rows), "ok"
     except Exception as e:

@@ -1,4 +1,4 @@
-"""预拉取中证800成分股日K（前复权）入库。
+"""预拉取中证800成分股日K（未复权原始价）入库。
 
 用途：指数增强回测需要全股票池的历史数据。直接回测时若本地无数据会逐只回源，
 较慢；本脚本一次性把 800 只成分股的日K批量拉取并落地到本地库（断点续传、并发加速），
@@ -27,6 +27,7 @@ os.environ.setdefault("QUANT_DATABASE_URL",
                       f"sqlite:///{os.path.join(ROOT, 'data', 'quant_dev.db')}")
 
 from app.database import SessionLocal  # noqa: E402
+from app.models import KlineDaily  # noqa: E402
 from app.services import data_source, ingestion  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -46,16 +47,17 @@ def worker(symbol: str, since: int):
     try:
         sd = date(since, 1, 1)
         # 断点续传：已有足够数据则跳过
-        latest = db.query(__import__("app.models", fromlist=["KlineDaily"]).KlineDaily).filter(
-            __import__("app.models", fromlist=["KlineDaily"]).KlineDaily.symbol == symbol,
-            __import__("app.models", fromlist=["KlineDaily"]).KlineDaily.adj == "qfq",
-        ).order_by(__import__("app.models", fromlist=["KlineDaily"]).KlineDaily.trade_date.desc()).first()
+        latest = db.query(KlineDaily).filter(
+            KlineDaily.symbol == symbol,
+            KlineDaily.adj == "none",
+        ).order_by(KlineDaily.trade_date.desc()).first()
         if latest and latest.trade_date >= date(date.today().year, 1, 1):
             return symbol, 0, "skip"
-        rows = data_source.get_stock_daily_qfq(symbol, sd)
+        rows = data_source.get_daily_kline(symbol, sd, None, adj="none")
         if not rows:
             return symbol, 0, "empty"
-        ingestion.upsert_kline(db, rows, symbol, "qfq")
+        # 库内单一口径：未复权原始价（复权在读取时由 adj_factor 折算）
+        ingestion.upsert_kline(db, rows, symbol, "none")
         db.commit()
         return symbol, len(rows), "ok"
     except Exception as e:

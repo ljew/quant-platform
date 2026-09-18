@@ -17,12 +17,14 @@ import random
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, and_
 from sqlalchemy.orm import Session
 
 from app.core.engine.factor_expr import eval_factor
 from app.datahub.ns_vars import fin_asof, fin_hist_map, make_ns
-from app.models import FinancialsRaw, FundamentalsHistory, IndexKlineDaily, KlineDaily, Stock
+from app.models import (AdjFactorDaily, FinancialsRaw, FundamentalsHistory,
+                        IndexKlineDaily, KlineDaily, Stock)
+from app.services.adjust import apply_adjust_series
 from app.services.factor_mining import (
     _collect_seg,
     _spearman,
@@ -186,16 +188,30 @@ def build_context(db: Session, start: str, end: str, forward: int, step: int,
     amt_aligned: dict[str, dict[date, float]] = {}
     rows = db.execute(
         select(KlineDaily.symbol, KlineDaily.trade_date, KlineDaily.close,
-               KlineDaily.volume, KlineDaily.amount)
+               KlineDaily.volume, KlineDaily.amount, AdjFactorDaily.adj_factor)
+        .outerjoin(AdjFactorDaily, and_(
+            AdjFactorDaily.symbol == KlineDaily.symbol,
+            AdjFactorDaily.trade_date == KlineDaily.trade_date))
         .where(KlineDaily.symbol.in_(syms), KlineDaily.adj == "none",
                KlineDaily.trade_date >= load_from, KlineDaily.trade_date <= ed)
+        .order_by(KlineDaily.symbol, KlineDaily.trade_date)
     ).all()
-    for sym, td, close, vol, amt in rows:
-        aligned.setdefault(sym, {})[td] = float(close)
-        if vol is not None:
-            vol_aligned.setdefault(sym, {})[td] = float(vol)
-        if amt is not None:
-            amt_aligned.setdefault(sym, {})[td] = float(amt)
+    # 折算成后复权：GP 的适应度是 IC，价格序列含除权跳变会直接污染因子值。
+    _raw: dict[str, list[float]] = {}
+    _fac: dict[str, list] = {}
+    _meta: dict[str, list] = {}
+    for sym, td, close, vol, amt, f in rows:
+        _raw.setdefault(sym, []).append(float(close))
+        _fac.setdefault(sym, []).append(f)
+        _meta.setdefault(sym, []).append((td, vol, amt))
+    for sym, seq in _raw.items():
+        for (td, vol, amt), c in zip(_meta[sym],
+                                     apply_adjust_series(seq, _fac[sym], "hfq")):
+            aligned.setdefault(sym, {})[td] = float(c)
+            if vol is not None:
+                vol_aligned.setdefault(sym, {})[td] = float(vol)
+            if amt is not None:
+                amt_aligned.setdefault(sym, {})[td] = float(amt)
     bench_rows = db.execute(
         select(IndexKlineDaily.trade_date, IndexKlineDaily.close)
         .where(IndexKlineDaily.symbol == "sh000906",

@@ -63,7 +63,7 @@ def get_kline(
     db: Session = Depends(get_db),
 ):
     stmt = select(KlineDaily).where(
-        KlineDaily.symbol == symbol, KlineDaily.adj == adj
+        KlineDaily.symbol == symbol, KlineDaily.adj == "none"
     )
     if start:
         stmt = stmt.where(KlineDaily.trade_date >= date.fromisoformat(start))
@@ -71,7 +71,9 @@ def get_kline(
         stmt = stmt.where(KlineDaily.trade_date <= date.fromisoformat(end))
     stmt = stmt.order_by(KlineDaily.trade_date.desc()).limit(limit)
     rows = db.execute(stmt).scalars().all()
-    # 本地无数据 → 自动从数据源实时回源并落地，保证任意标的都能看行情
+    # 本地无数据 → 自动从数据源实时回源，保证任意标的都能看行情。
+    # 注意：在线源返回的是**前复权**价，因此只返回不写库 —— 库内保持
+    # 「只存未复权原价」这一单一口径，否则同一 (symbol, date) 会互相覆盖。
     if not rows:
         try:
             from datetime import date as _date
@@ -80,19 +82,45 @@ def get_kline(
                 end_date=None, adj=adj, limit=limit,
             )
             if fetched:
-                ingestion.upsert_kline(db, fetched, symbol, adj)
-                db.commit()
-                rows = db.execute(stmt).scalars().all()
+                return [
+                    KlinePoint(
+                        date=str(b.get("trade_date") or b.get("date"))[:10],
+                        open=b["open"], high=b["high"], low=b["low"], close=b["close"],
+                        volume=b.get("volume", 0), amount=b.get("amount", 0.0),
+                    )
+                    for b in fetched
+                ]
         except Exception:  # noqa: BLE001
             pass  # 回源失败则保持空，由前端提示
+
+    if not rows:
+        return []  # 库内与在线均无数据：直接返回空，避免下面 rows[0] 越界
     rows.reverse()  # 时间升序返回，便于画图
-    return [
-        KlinePoint(
-            date=r.trade_date.isoformat(),
-            open=r.open, high=r.high, low=r.low, close=r.close,
-            volume=r.volume, amount=r.amount,
-        )
+
+    # 库内存未复权原价，按请求的 adj 实时折算
+    bars = [
+        {"date": r.trade_date.isoformat(), "open": r.open, "high": r.high,
+         "low": r.low, "close": r.close, "volume": r.volume, "amount": r.amount}
         for r in rows
+    ]
+    if adj not in (None, "", "none"):
+        from app.models import AdjFactorDaily
+        from app.services.adjust import apply_adjust_bars
+
+        lo, hi = rows[0].trade_date, rows[-1].trade_date
+        facs = {r.trade_date: r.adj_factor for r in db.execute(
+            select(AdjFactorDaily).where(
+                AdjFactorDaily.symbol == symbol,
+                AdjFactorDaily.trade_date >= lo,
+                AdjFactorDaily.trade_date <= hi,
+            )).scalars().all()}
+        for b, r in zip(bars, rows):
+            b["_f"] = facs.get(r.trade_date)
+        bars = apply_adjust_bars(bars, adj)
+    return [
+        KlinePoint(date=b["date"], open=b["open"], high=b["high"], low=b["low"],
+                   close=b["close"], volume=b["volume"], amount=b["amount"])
+        for b in bars
     ]
 
 

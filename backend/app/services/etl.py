@@ -1,24 +1,25 @@
 """ETL 数据管道（设计 v1.0：tushare 采集 → 增量入库 → 因子计算落库）。
 
-调度：每晚 17:00（data_scheduler 触发 scripts/etl_daily.py）。
+调度：每晚 19:00（data_scheduler 触发 scripts/etl_daily.py）。
 
 阶段：
-  Extract   tushare：个股日K（前复权，增量）/ 指数日K（增量）/ 股票属性（daily_basic）
-            / 指数成分快照（index_weight）
-  Transform 核心池全市场最新交易日截面：14 因子（factor_library 表达式引擎，
+  Extract   tushare：个股日K（全A，未复权原始价，增量）/ 指数日K（增量）/
+            股票属性（daily_basic）/ 指数成分快照（index_weight）
+  Transform 核心池最新交易日截面：14 因子（factor_library 表达式引擎，
             与回测引擎同一套计算口径，ns 构造对齐 multi_factor）
   Load      SQLite（kline_daily / index_kline_daily / stocks / factor_daily）
             → DuckDB 同步（duckdb_sync.sync_after_seed）
 
-每日增量池 = 核心指数成分并集（中证800/沪深300/中证500/中证1000/上证50/创业板指），
-tushare 每日调用量 ~2000 次以内，免费 token 额度安全。
+日K 增量域 = 全A 在市股票（stocks 表非退市，见 get_kline_universe），按 trade_date
+批量拉全市场（1 次调用/天，不限速），与库内全A 历史口径一致。
+因子仍只算核心池截面（选股域，见因子库），两者不是一回事，勿混。
 """
 from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_, and_
 from sqlalchemy.orm import Session
 
 from app.database import init_db, SessionLocal
@@ -30,6 +31,7 @@ from app.models import (
     FundamentalsHistory,
     FACTOR_COLUMNS,
 )
+from app.services.adjust import apply_adjust_series
 from app.services.data_source import _require_tushare_pro, to_ts_code, normalize_symbol
 from app.core.engine.factor_library import FACTORS
 from app.core.engine.factor_expr import eval_factor
@@ -96,6 +98,36 @@ def _get_universe(db: Session) -> list[str]:
         rows = db.execute(select(Stock.symbol).limit(6000)).all()
         union = {r[0] for r in rows}
     return sorted(union)
+
+
+def get_kline_universe(db: Session) -> list[str]:
+    """日K 抽取域：**全A 在市股票**（不含已退市）。
+
+    库内 kline_daily 的主口径是「全A 未复权原始价」（`adj='none'`，2019 年起
+    全历史）。日常增量必须用同一口径 —— 若仍按核心池（约 1800 只）补，会出现
+    「全A 一次性回填到某日、之后每天只补核心池」的断崖缺口，后果有两个：
+
+      1. 资产清单把那些日子判为「残缺」（少数日 1800 vs 常态 5550）；
+      2. 因子步骤**拒绝计算**：compute_factors 的覆盖度基准取全表峰值（5550），
+         1800 达不到 90% 门槛，于是整个交易日被跳过 —— 表现为「因子永远滞后
+         2 个交易日，点一键修复没反应」（修复动作跑了，但每步都是 0 行空转）。
+
+    已退市股票（list_status='D'）剔除：退市后没有行情，留在 want 里只会把
+    _gap_dates 的分母抬高，制造「永远覆盖不足」的假告警。
+
+    北交所（bj）剔除（2026-09-18 定论）：与 Bronze（`fetch_alla_bronze.py`）/
+    Silver 口径保持一致。北交所的流动性、涨跌幅与整手规则和主板差异过大，
+    不纳入策略池。库内历史 bj 行已一并清理。
+    """
+    rows = db.execute(
+        select(Stock.symbol).where(
+            or_(Stock.list_status.is_(None), Stock.list_status != "D")
+        )
+    ).all()
+    # stocks.symbol 未必是规范前缀（历史把北交所存成 sh920xxx），统一过 _plat_symbol
+    # 归一 —— 否则补数会写入与 kline_daily 历史不同的 symbol，同一只股票分裂成两条。
+    syms = {s for s in (_plat_symbol(r[0]) for r in rows if r[0]) if s}
+    return sorted(s for s in syms if not s.startswith("bj"))
 
 
 def _last_kline_date(db: Session, symbol: str) -> date | None:
@@ -197,7 +229,13 @@ def _plat_symbol(raw: str) -> str:
     if not s:
         return ""
     if len(s) == 8 and s[:2].lower() in ("sh", "sz", "bj") and s[2:].isdigit():
-        return s.lower()
+        pre, code = s[:2].lower(), s[2:]
+        # 历史遗留把北交所存成 sh920xxx（normalize_symbol 的 "9" 前缀误判），
+        # 这里纠正回 bj —— 库内 kline_daily 历史用的是 bj920xxx，不纠正就会
+        # 同一只股票补出两套 symbol（2026-09-18 修）。
+        if code.startswith(("920", "83", "87", "88")):
+            return "bj" + code
+        return pre + code
     if "." in s:
         code = s.split(".")[0].zfill(6)
         return normalize_symbol(code)[0]
@@ -217,8 +255,13 @@ def _em_secid(symbol: str) -> str | None:
     return None
 
 
-def _em_qfq(symbol: str, sd: date, ed: date) -> list[dict]:
-    """东财前复权日K（逐股调用，无频率限制）。失败返回 []。
+def _em_raw(symbol: str, sd: date, ed: date) -> list[dict]:
+    """东财**不复权**日K（逐股调用，无频率限制）。失败返回 []。
+
+    fqt 参数：0=不复权 / 1=前复权 / 2=后复权。这里取 0 —— 全A 建仓后
+    kline_daily 统一存未复权原始价，复权由 adj_factor_daily 在读取时折算。
+    若此处仍取前复权，同一 (symbol, trade_date) 会与原始价互相覆盖
+    （表上唯一约束是 (symbol, trade_date)，容不下两套口径）。
 
     注意：环境代理（沙箱 HTTP_PROXY 等）常会拦截行情域名，这里一律直连；
     并发过高也会被服务端断连，因此重试采用递增退避，且并发由调用方控制。
@@ -234,7 +277,7 @@ def _em_qfq(symbol: str, sd: date, ed: date) -> list[dict]:
         "fields1": "f1,f2,f3,f4,f5,f6",
         "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
         "ut": "7eea3edcaed734bea9cbfc24409ed989",
-        "klt": "101", "fqt": "1",           # 101=日线, fqt=1 前复权
+        "klt": "101", "fqt": "0",           # 101=日线, fqt=0 不复权（与库内口径一致）
         "secid": secid,
         "beg": sd.strftime("%Y%m%d"), "end": ed.strftime("%Y%m%d"),
         "lmt": "1000",
@@ -268,9 +311,9 @@ def _em_qfq(symbol: str, sd: date, ed: date) -> list[dict]:
 
 def _backfill_eastmoney(db: Session, symbols: set[str], dates: list[date],
                         stats: dict, workers: int = 4) -> int:
-    """用东财前复权补指定交易日的数据（tushare 复权因子不可用时兜底）。
+    """用东财不复权数据补指定交易日（tushare 复权因子不可用时兜底）。
 
-    只写入 dates 范围内的数据，不覆盖已有历史，避免复权基准漂移。
+    只写入 dates 范围内的数据，不覆盖已有历史。
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -285,7 +328,7 @@ def _backfill_eastmoney(db: Session, symbols: set[str], dates: list[date],
         return 0
 
     def fetch(sym: str) -> tuple[str, list[dict]]:
-        bars = _em_qfq(sym, lo, hi)
+        bars = _em_raw(sym, lo, hi)
         return sym, [b for b in bars if b["trade_date"] in want]
 
     total, failed = 0, 0
@@ -295,7 +338,7 @@ def _backfill_eastmoney(db: Session, symbols: set[str], dates: list[date],
                 failed += 1
                 continue
             try:
-                ingestion.upsert_kline(db, bars, sym, "qfq")
+                ingestion.upsert_kline(db, bars, sym, "none")
                 total += len(bars)
             except Exception as e:  # noqa: BLE001
                 failed += 1
@@ -526,7 +569,8 @@ def _backfill_tushare_raw(db: Session, symbols: set[str], dates: list[date],
 
         for sym, bars in bars_by_sym.items():
             try:
-                ingestion.upsert_kline(db, bars, sym, "qfq")
+                # 统一写未复权原价（全A 建仓后库内单一口径）
+                ingestion.upsert_kline(db, bars, sym, "none")
                 total += len(bars)
             except Exception as e:  # noqa: BLE001
                 stats["errors"].append(f"raw upsert {sym}: {str(e)[:80]}")
@@ -556,19 +600,18 @@ def _existing_pairs(db: Session, dates: list[date]) -> set:
 
 def extract_kline_incremental(db: Session, symbols: list[str], sd: date, ed: date,
                               progress=None, stats: dict | None = None) -> int:
-    """增量拉个股日K（tushare 前复权）→ upsert kline_daily。返回新增行数。
+    """增量拉个股日K（tushare daily，**未复权原价**）→ upsert kline_daily(none)。
 
-    批量模式：按交易日一次拉全市场 daily（1 次调用/天），复权因子走 adj_factor_daily
-    缓存表（缺失时按天批量补，串行节流）。彻底规避 tushare 逐股限速导致的静默断供。
+    批量模式：按交易日一次拉全市场 daily（1 次调用/天且不限速），彻底规避逐股限速
+    导致的静默断供。复权因子另存 adj_factor_daily（缺失时按天批量补，串行节流），
+    供回测读取时折算；**本步骤只写原始价**，与全A 历史导入口径一致。
 
-    三级兜底链（任一环成功即不留缺口）：
-      ① adj_factor 批量 + 缓存 → 标准前复权
-      ② 东财前复权（免费无限速，但部分网络出口不可达）
-      ③ daily 未复权价直写（不限速，按涨跌停上限剔除除权股）
+    兜底：daily 批量漏抓的日期由 _backfill_tushare_raw 收尾补齐 —— 同一通道、
+    同样按 trade_date 批量，并按涨跌停上限剔除除权跳空，绝不写错价。
+
     stats 用于收集失败原因（调用方写入管道日志）。
     """
     from app.core.trading_calendar import trading_days
-    from app.models import AdjFactorDaily
     from app.services import ingestion
 
     if stats is None:
@@ -594,19 +637,17 @@ def extract_kline_incremental(db: Session, symbols: list[str], sd: date, ed: dat
         return 0
     stats["need_dates"] = [d.isoformat() for d in need_dates]
 
-    # ② 复权因子：仅补缺失日期，批量 + 缓存复用
-    adj_dates = _ensure_adj_factors(db, need_dates, stats=stats)
-
-    # ②-b 因子拿不到的日期（tushare 限速），改用东财前复权兜底，避免静默断供
-    em_dates = [d for d in need_dates if d not in adj_dates]
+    # ② 复权因子：仅补缺失日期（缓存供回测按未复权原价折算取价用）。
+    #    本步骤**不再**用它折算价格 —— 库内统一存未复权原价（adj='none'），
+    #    与 import_alla_gold 的历史导入、_backfill_tushare_raw 收尾兜底同一口径。
+    #    此前遗留的 k=f/b 折算会把当日价格写成「以区间最新因子为基准的前复权价」，
+    #    与库内历史口径不一致（除权股偏差 0.5%~2.5%）。
+    _ensure_adj_factors(db, need_dates, stats=stats)
 
     # ③ 已入库组合，幂等跳过
     have = _existing_pairs(db, need_dates)
 
     total = 0
-    if em_dates:
-        total += _backfill_eastmoney(db, want, em_dates, stats)
-        need_dates = [d for d in need_dates if d in adj_dates]
     for i, d in enumerate(need_dates):
         try:
             df = _fetch_daily_batch(d)
@@ -617,53 +658,25 @@ def extract_kline_incremental(db: Session, symbols: list[str], sd: date, ed: dat
         if df is None or df.empty:
             continue
 
-        # 该日的复权因子 + 基准因子（区间内最新已就绪日）
-        fac: dict[str, float] = {}
-        if d in adj_dates:
-            rows = db.execute(
-                select(AdjFactorDaily.symbol, AdjFactorDaily.adj_factor)
-                .where(AdjFactorDaily.trade_date == d)
-            ).all()
-            fac = {s: f for s, f in rows}
-        base_d = max(adj_dates) if adj_dates else None
-        base_fac: dict[str, float] = {}
-        if base_d:
-            rows = db.execute(
-                select(AdjFactorDaily.symbol, AdjFactorDaily.adj_factor)
-                .where(AdjFactorDaily.trade_date == base_d)
-            ).all()
-            base_fac = {s: f for s, f in rows}
-
         bars_by_sym: dict[str, list[dict]] = {}
-        skipped_no_adj = 0
         for _, r in df.iterrows():
             sym = _plat_symbol(str(r["ts_code"]))
-            if sym not in want:
+            if sym not in want or (sym, d) in have:
                 continue
-            if (sym, d) in have:
-                continue
-            td = date.fromisoformat(str(r["trade_date"]))
-            f = fac.get(sym)
-            b = base_fac.get(sym)
-            if not f or not b:
-                skipped_no_adj += 1
-                continue
-            k = f / b  # 前复权：以区间最新因子为基准归一
             bars_by_sym.setdefault(sym, []).append({
-                "trade_date": td,
-                "open": round(float(r["open"]) * k, 3),
-                "high": round(float(r["high"]) * k, 3),
-                "low": round(float(r["low"]) * k, 3),
-                "close": round(float(r["close"]) * k, 3),
-                "volume": int(float(r["vol"]) / k) if k else int(float(r["vol"])),
-                "amount": float(r["amount"]),
+                "trade_date": d,
+                "open": round(float(r["open"]), 3),
+                "high": round(float(r["high"]), 3),
+                "low": round(float(r["low"]), 3),
+                "close": round(float(r["close"]), 3),
+                "volume": int(float(r["vol"] or 0)),
+                "amount": float(r["amount"] or 0.0),
             })
-        if skipped_no_adj:
-            stats["skipped_no_adj"] = stats.get("skipped_no_adj", 0) + skipped_no_adj
 
         for sym, bars in bars_by_sym.items():
             try:
-                ingestion.upsert_kline(db, bars, sym, "qfq")
+                # 统一写未复权原价（全A 建仓后库内单一口径）
+                ingestion.upsert_kline(db, bars, sym, "none")
                 total += len(bars)
             except Exception as e:  # noqa: BLE001
                 stats["errors"].append(f"upsert {sym}: {str(e)[:80]}")
@@ -840,7 +853,7 @@ def compute_factor_cross_section(db: Session, syms: list[str], trade_date: date)
 
     # 财务（PIT）：全量预载一次，逐股按「公告日 ≤ 交易日」选取，避免前视
     from app.datahub.ns_vars import fin_asof, fin_hist_map
-    from app.models import FinancialsRaw
+    from app.models import FinancialsRaw, AdjFactorDaily
 
     fin_hist = fin_hist_map(db.execute(
         select(FinancialsRaw.symbol, FinancialsRaw.ann_date,
@@ -860,12 +873,21 @@ def compute_factor_cross_section(db: Session, syms: list[str], trade_date: date)
             continue
         bars = db.execute(
             select(KlineDaily.trade_date, KlineDaily.close,
-                   KlineDaily.volume, KlineDaily.amount).where(
+                   KlineDaily.volume, KlineDaily.amount,
+                   AdjFactorDaily.adj_factor)
+            .outerjoin(AdjFactorDaily, and_(
+                AdjFactorDaily.symbol == KlineDaily.symbol,
+                AdjFactorDaily.trade_date == KlineDaily.trade_date))
+            .where(
                 KlineDaily.symbol == sym, KlineDaily.adj == "none",
                 KlineDaily.trade_date >= sd, KlineDaily.trade_date <= trade_date,
             ).order_by(KlineDaily.trade_date)
         ).all()
-        closes = [float(b[1]) for b in bars]
+        # ⚠️ 库内是未复权原价，因子必须用**复权价**算：除权日原始价会跳变，
+        # 直接拿去算动量/波动率等于把「10 送 10」当成真实下跌。实测含除权窗口
+        # 约 1/10 的动量方向会因此翻转。口径统一走 app.services.adjust。
+        closes = apply_adjust_series(
+            [float(b[1]) for b in bars], [b[4] for b in bars], "hfq")
         if len(closes) < LOOKBACK:
             continue
         mkt_b = bench[-len(closes):]

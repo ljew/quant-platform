@@ -31,7 +31,7 @@ _cache: dict = {"ts": 0.0, "data": None}
 
 # 数据集定义：key → (分组, 中文名, 模型, 日期列, 标的列, 允许的滞后交易日, 备注)
 _DATASETS = [
-    ("kline_daily", "行情", "个股日K（前复权）", KlineDaily, KlineDaily.trade_date, KlineDaily.symbol, 1, "核心池成分并集"),
+    ("kline_daily", "行情", "个股日K（未复权）", KlineDaily, KlineDaily.trade_date, KlineDaily.symbol, 1, "全A 在市股票，未复权原始价"),
     ("index_kline_daily", "行情", "指数日K", IndexKlineDaily, IndexKlineDaily.trade_date, IndexKlineDaily.symbol, 1, "8 个核心指数"),
     ("factor_daily", "因子", "基础因子", FactorDaily, FactorDaily.trade_date, FactorDaily.symbol, 1, "ETL 截面 14 因子"),
     ("factor_mined_daily", "因子", "挖掘因子（GP）", FactorMinedDaily, FactorMinedDaily.date, FactorMinedDaily.symbol, 3, "因子表达式引擎产出"),
