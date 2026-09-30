@@ -134,6 +134,23 @@ def data_health_endpoint():
     return run_rules(SessionLocal())
 
 
+@router.get("/holiday-mode")
+def holiday_mode_get():
+    """节假日静默状态：auto=非交易日自动静默，on/off=手动覆盖。"""
+    from app.services import holiday_mode
+    return holiday_mode.state()
+
+
+@router.put("/holiday-mode")
+def holiday_mode_put(payload: dict):
+    from app.services import holiday_mode
+    try:
+        return holiday_mode.set_mode(str(payload.get("mode", "auto")))
+    except ValueError as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(e))
+
+
 @router.get("/health/rules")
 def health_rules():
     ensure_default_rules()

@@ -169,6 +169,9 @@ export const api = {
     post<LlmTestResult>("/llm/test", p),
   // 数据健康度 + 数据流全景
   monitorHealth: () => get<HealthReport>(`/monitor/health-report`),
+  holidayMode: () => get<HolidayMode>(`/monitor/holiday-mode`),
+  setHolidayMode: (mode: "auto" | "on" | "off") =>
+    put<HolidayMode>(`/monitor/holiday-mode`, { mode }),
   monitorDataflow: () => get<DataflowReport>(`/monitor/dataflow`),
   monitorLineage: () => get<LineageReport>(`/monitor/lineage`),
   monitorAssets: (force = false) => get<AssetsReport>(`/monitor/assets?force=${force}`),
@@ -310,6 +313,7 @@ export interface HealthCheck {
   status: "ok" | "warn" | "error";
   value: string;
   expect: string;
+  muted?: boolean;
 }
 export interface HealthLayer {
   label: string;
@@ -320,11 +324,19 @@ export interface HealthLayer {
 export interface HealthAlert {
   level: string; layer: string; check: string; detail: string; expect: string;
 }
+export interface HolidayMode {
+  mode: "auto" | "on" | "off";
+  active: boolean;
+  today: string;
+  trading_day: boolean;
+  next_trading_day: string | null;
+}
 export interface HealthReport {
   overall_score: number;
   overall_status: "healthy" | "warn" | "error";
   layers: Record<string, HealthLayer>;
   alerts: HealthAlert[];
+  holiday?: Pick<HolidayMode, "mode" | "active" | "trading_day" | "next_trading_day">;
   generated_at: string;
 }
 

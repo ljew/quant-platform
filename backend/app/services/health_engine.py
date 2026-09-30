@@ -167,6 +167,9 @@ def run_rules(db=None) -> dict:
         }
         alerts = []
         now = datetime.utcnow()
+        from app.services import holiday_mode
+        holiday = holiday_mode.state()
+        muted = holiday["active"]
         for r in rules:
             fn = METRICS.get(r.metric)
             check = {"name": r.name, "metric": r.metric, "rule_id": r.id,
@@ -181,7 +184,13 @@ def run_rules(db=None) -> dict:
                     value, display = fn(db, p)
                     check["value"] = display
                     passed = _compare(value, r.comparator, r.threshold)
-                    check["status"] = "ok" if passed else r.level
+                    if not passed and muted and r.metric in holiday_mode.MUTE_METRICS:
+                        # 节假日静默：停更类指标失败属预期，记 ok + muted，不进告警
+                        check["status"] = "ok"
+                        check["muted"] = True
+                        check["value"] = f"{display}（节假日静默）"
+                    else:
+                        check["status"] = "ok" if passed else r.level
                 except Exception as e:  # noqa: BLE001
                     check.update(status="warn", value=f"执行异常: {str(e)[:80]}")
             r.last_value = check["value"]
@@ -237,6 +246,7 @@ def run_rules(db=None) -> dict:
             "overall_status": "healthy" if overall >= 85 else "warn" if overall >= 60 else "error",
             "layers": result_layers,
             "alerts": alerts,
+            "holiday": {k: holiday[k] for k in ("mode", "active", "trading_day", "next_trading_day")},
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "rule_based": True,
         }
