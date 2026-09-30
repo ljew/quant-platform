@@ -394,16 +394,9 @@ def _step_publish(db: Session, run_id: int) -> None:
     latest = db.scalars(
         select(SignalAction.date).order_by(SignalAction.date.desc()).limit(1)
     ).first()
-    items = db.scalars(
-        select(SignalAction).where(SignalAction.date == latest)
-        .order_by(SignalAction.action, SignalAction.streak.desc())
-    ).all() if latest else []
-    lines = [f"{i.action} {i.name or ''} {i.symbol}（连续 {i.streak} 天）"
-             for i in items[:15]]
+    # 飞书通道按 2026-09-30 决策移除（不用飞书）；mailer.send_feishu 保留备用
     mailer.send_email_html(db, title, html, dedup_key=f"signal|{latest}")
-    mailer.send_feishu(db, title, lines or ["今日无重点信号"],
-                       dedup_key=f"signal|{latest}")
-    _event(db, run_id, "publish", f"发布完成：邮件 + 飞书（{title}）",
+    _event(db, run_id, "publish", f"发布完成：邮件（{title}）",
            step="publish", status="ok")
     db.commit()
 

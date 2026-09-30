@@ -315,6 +315,30 @@ def _run_verify(strategies: str) -> tuple[bool, str]:
     return True, (proc.stdout or "")[-300:]
 
 
+def _orchestrator_ran_today() -> bool:
+    """研究流水线（Orchestrator）今天是否已成功跑过（P4 去重判据）。"""
+    try:
+        from datetime import date as _date
+
+        from sqlalchemy import select
+
+        from app.database import SessionLocal
+        from app.models import ResearchRun
+
+        with SessionLocal() as db:
+            row = db.execute(
+                select(ResearchRun).where(
+                    ResearchRun.status == "SUCCESS",
+                    ResearchRun.finished_at >= datetime.combine(
+                        _date.today(), datetime.min.time()),
+                ).order_by(ResearchRun.id.desc()).limit(1)
+            ).scalars().first()
+            return row is not None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("查询 Orchestrator 运行记录失败（按未跑处理）: %s", e)
+        return False
+
+
 def _loop(enabled: bool) -> None:
     last_run_date = ""
     while True:
@@ -326,12 +350,20 @@ def _loop(enabled: bool) -> None:
                        and (now.hour, now.minute) >= (RUN_HOUR, RUN_MIN))
                 stale = _is_stale(now)
                 if (due or stale) and last_run_date != _today_str():
-                    _status["catch_up"] = bool(stale and not due)
-                    logger.info("触发每日数据更新 %s（%s）", _today_str(),
-                                "断供自愈" if (stale and not due) else "定时")
-                    _status["last_run_at"] = now.isoformat(timespec="seconds")
-                    _status["runs_total"] += 1
-                    _run_update()  # 数据日更（失败已内部降级并记录）
+                    # P4 去重（2026-09-30）：研究流水线（Orchestrator，17:30）已包含
+                    # 完整数据管道；若其今天已 SUCCESS 则 19:00 这轮数据日更跳过
+                    # （策略验证仍照常），避免同一份数据一天跑两遍。
+                    if _orchestrator_ran_today():
+                        last_run_date = _today_str()
+                        _status["last_run_at"] = now.isoformat(timespec="seconds")
+                        logger.info("研究流水线今日已跑，跳过 19:00 数据日更（策略验证照常）")
+                    else:
+                        _status["catch_up"] = bool(stale and not due)
+                        logger.info("触发每日数据更新 %s（%s）", _today_str(),
+                                    "断供自愈" if (stale and not due) else "定时")
+                        _status["last_run_at"] = now.isoformat(timespec="seconds")
+                        _status["runs_total"] += 1
+                        _run_update()  # 数据日更（失败已内部降级并记录）
                     # 指数成分(PIT)月度快照：当日更成功后巡检当月是否缺快照（幂等，月频）
                     try:
                         _refresh_membership_if_due(now)

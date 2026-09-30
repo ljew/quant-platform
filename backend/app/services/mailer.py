@@ -1,12 +1,14 @@
-"""信号发布通道：邮件（HTML）+ 飞书 webhook 双通道。
+"""信号发布通道：邮件（HTML）。
 
 凭据迁移（2026-09-30 老刘拍板「复用」）：
 - SMTP：quantdesk notify.config.json（smtp.163.com:465，levitt.liu@163.com）
-- 飞书：Sequoia-X .env 的 FEISHU_WEBHOOK_URL
-首次调用时自动从两个旧项目导入到 ``data/notify_channels.json``（data/ 已 gitignore，
+首次调用时自动从旧项目导入到 ``data/notify_channels.json``（data/ 已 gitignore，
 凭据不入库不进 git）。之后以该文件为准；老刘后续应轮换 SMTP 授权码。
 
-所有发送写 NotifyLog（dedup_key 去重，同 key 只发一次）。
+飞书通道按 2026-09-30 决策移除（不用飞书）；send_feishu 保留备用，
+重新启用时需在配置里补 feishu.webhook_url。
+
+所有发送写 NotifyLog（dedup_key 去重，同渠道同 key 只发一次）。
 """
 
 from __future__ import annotations
@@ -30,9 +32,6 @@ CONFIG_PATH = Path(DATA_DIR) / "notify_channels.json"
 _QUANTDESK_NOTIFY = Path(
     "/Users/happyljew/Workbuddy/2026-08-11-16-10-38/chanlun-site/notify.config.json"
 )
-_SEQUOIA_ENV = Path(
-    "/Users/happyljew/Workbuddy/2026-09-16-15-41-08/Sequoia-X/.env"
-)
 
 
 def load_config() -> dict:
@@ -40,7 +39,7 @@ def load_config() -> dict:
     if CONFIG_PATH.exists():
         return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
-    cfg: dict = {"email": {"enabled": False}, "feishu": {"enabled": False}}
+    cfg: dict = {"email": {"enabled": False}}
     try:
         qd = json.loads(_QUANTDESK_NOTIFY.read_text(encoding="utf-8"))
         em = qd.get("email", {})
@@ -54,15 +53,6 @@ def load_config() -> dict:
                 "from_addr": em.get("from", em.get("user", "")),
                 "to": em.get("to", []),
             }
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        for line in _SEQUOIA_ENV.read_text(encoding="utf-8").splitlines():
-            if line.startswith("FEISHU_WEBHOOK_URL="):
-                url = line.split("=", 1)[1].strip()
-                if url:
-                    cfg["feishu"] = {"enabled": True, "webhook_url": url}
-                break
     except Exception:  # noqa: BLE001
         pass
 

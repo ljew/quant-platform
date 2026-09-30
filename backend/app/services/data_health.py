@@ -17,6 +17,7 @@ from app.models import (
     IndexMembership,
     KlineDaily,
     PipelineRun,
+    ResearchRun,
 )
 
 _WEIGHTS = {"collect": 0.35, "process": 0.35, "apply": 0.30}
@@ -81,6 +82,29 @@ def health_report(db=None) -> dict:
                 f"#{run.id} {run.status} {ago}", "SUCCESS/RUNNING"))
         else:
             collect_checks.append(_mk("数据管道最近运行", None, "从未运行", "有记录"))
+
+        # 研究流水线（Orchestrator）最近一次运行（P4 监控整合）
+        try:
+            res_run = db.execute(
+                select(ResearchRun).order_by(ResearchRun.id.desc()).limit(1)
+            ).scalars().first()
+        except Exception:  # noqa: BLE001
+            res_run = None
+        if res_run:
+            ok = res_run.status in ("SUCCESS", "RUNNING")
+            # 今日已跑过（无论成败与否都说明调度活着）；检查调度是否停摆超 3 天
+            sched_alive = bool(res_run.started_at) and (
+                # ResearchRun.started_at 为 UTC（模型默认 utcnow），必须用 utcnow 相减
+                datetime.utcnow() - res_run.started_at).days < 3
+            mins = (int((datetime.utcnow() - res_run.started_at).total_seconds() // 60)
+                    if res_run.started_at else -1)
+            collect_checks.append(_mk(
+                "研究流水线最近运行",
+                ok and sched_alive,
+                f"#{res_run.id} {res_run.status} ({mins} 分钟前)",
+                "SUCCESS 且 3 天内"))
+        else:
+            collect_checks.append(_mk("研究流水线最近运行", None, "从未运行", "有记录"))
 
         from app.datahub.registry import RAW_DIR as bronze_dir
         n_bronze = 0
