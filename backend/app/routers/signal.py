@@ -115,6 +115,14 @@ def _bg_backfill(run_id: int, days: int, as_of: date | None) -> None:
         )[-days:]
         if as_of is not None:
             trade_dates = [d for d in trade_dates if d <= as_of]
+        # 断点续跑：已有信号事实的日期视为完成（进程被杀/重启后可无损续跑）
+        from app.models import SignalDaily
+
+        existing = {
+            r[0] for r in db.execute(
+                select(SignalDaily.date).distinct()).all()
+        }
+        trade_dates = [d for d in trade_dates if d not in existing]
         _backfill_state["total"] = len(trade_dates)
         db.add(AgentEvent(run_id=run_id, agent="research", step="backfill",
                           status="running",

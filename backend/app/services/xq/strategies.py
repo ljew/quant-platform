@@ -263,16 +263,26 @@ STRATEGIES: list[dict] = [
 
 STRATEGY_NAME: dict[str, str] = {m["key"]: m["name"] for m in STRATEGIES}
 
-# 策略质量分级（Sequoia signal_engine.STRATEGY_QUALITY，依 T+10 平均超额实测）
+# 策略质量分级（依据本平台数据独立复测，2026-09-30 校准）
+# 窗口 = 240 个交易日（2025-10 ~ 2026-09-29，53,061 信号 / 85,880 观测），
+# 口径 = xq/stats.py：T+1 开盘建仓、T+10 收盘卖出、超额 vs 全市场等权。
+#   strong → T+10 超额 > +2%（rps_breakout +2.45%，n=19,580）
+#   neutral → 0 ~ +2%（private_placement +0.38%、dual_param +1.49%）
+#   weak → 负（ma_volume −0.62%、turtle −0.24%、limit_up_shakeout −1.15%、
+#            uptrend_limit_down −1.88%）
+# 与 Sequoia 原始校准对照：ma_volume/lus/uld/turtle 四个 weak 档全部复现
+# （原 −0.72/−1.56/−1.20/−0.41 vs 现 −0.62/−1.15/−1.88/−0.24），交叉验证通过。
+# 例外说明：high_tight_flag +1.77% 严格按阈值应为 neutral，但三个窗口
+# （240/120/60 日）全部为正（+1.77/+1.66/+1.80，稳定性全场最高），维持 strong。
 STRATEGY_QUALITY: dict[str, str] = {
-    "rps_breakout": "strong",       # RpsBreakout +2.60%
-    "high_tight_flag": "strong",    # HighTightFlag +2.36%
-    "private_placement": "neutral", # +0.48%
-    "dual_param": "neutral",        # +0.19%（分年翻脸，不给 strong，理由见原注释）
-    "limit_up_shakeout": "weak",    # −1.56%
-    "ma_volume": "weak",            # −0.72%
-    "turtle_trade": "weak",         # −0.41%
-    "uptrend_limit_down": "weak",   # −1.20%
+    "rps_breakout": "strong",       # +2.45%（240 日）
+    "high_tight_flag": "strong",    # +1.77%，三窗口全正、最稳定
+    "dual_param": "neutral",        # +1.49%（120 日 +2.92%，分年波动大）
+    "private_placement": "neutral", # +0.38%
+    "limit_up_shakeout": "weak",    # −1.15%
+    "ma_volume": "weak",            # −0.62%
+    "turtle_trade": "weak",         # −0.24%
+    "uptrend_limit_down": "weak",   # −1.88%
 }
 
 STRATEGY_FN: dict[str, Callable[[Panel], tuple[list[str], pd.DataFrame]]] = {

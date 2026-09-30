@@ -108,6 +108,9 @@ def load_panel(
     df["h_hfq"] = df["high"] * df["adj_factor"]
     df["l_hfq"] = df["low"] * df["adj_factor"]
     df["c_hfq"] = df["close"] * df["adj_factor"]
+    # ⚠️ kline_daily.amount 单位是**千元**（tushare daily 原样入库），这里统一换算成元，
+    # 否则「成交额 > 1 亿」这类阈值永远不触发（turtle 曾因此 240 天 0 命中）
+    df["amount"] = df["amount"] * 1000.0
 
     # 股票名称（SQLite，跨库不能 join）
     import sqlite3
