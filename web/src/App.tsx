@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import TodayPage from "./pages/TodayPage";
 import MarketPage from "./pages/MarketPage";
 import BacktestPage from "./pages/BacktestPage";
 import PaperPage from "./pages/PaperPage";
@@ -9,43 +10,91 @@ import FactorMinePage from "./pages/FactorMinePage";
 import ResearchPage from "./pages/ResearchPage";
 import SignalPage from "./pages/SignalPage";
 import AttributionPage from "./pages/AttributionPage";
-import NewsPage from "./pages/NewsPage";
+import { Hub } from "./components/Hub";
 import { sidebarTheme, useTheme } from "./theme";
 
-type Tab = "market" | "backtest" | "paper" | "optimize" | "monitor" | "factor" | "pipeline" | "research" | "signal" | "attribution" | "news";
+/**
+ * 重构 v2.0：11 个平级页面 → 4 个一级入口，按「每日使用路径」组织。
+ * 今日观点（默认页，打开即有观点）/ 策略研究（回测·寻优·因子一个工作台）/
+ * 组合跟踪（模拟盘·信号组合·归因）/ 数据中心（管道·监控·驾驶舱，退居后台）。
+ * 旧页面组件全部保留为二级 Tab；旧 quant-nav tab 名自动映射到新位置。
+ */
 
-const NAV: { key: Tab; label: string; icon: string }[] = [
-  { key: "market", label: "行情看板", icon: "▤" },
-  { key: "backtest", label: "策略回测", icon: "≋" },
-  { key: "optimize", label: "参数寻优", icon: "◎" },
-  { key: "factor", label: "因子挖掘", icon: "∴" },
-  { key: "signal", label: "信号中心", icon: "⚡" },
-  { key: "attribution", label: "归因分析", icon: "⌗" },
-  { key: "news", label: "资讯中心", icon: "☰" },
-  { key: "paper", label: "模拟盘", icon: "◷" },
-  { key: "research", label: "研究驾驶舱", icon: "✦" },
-  { key: "pipeline", label: "数据管道", icon: "⇉" },
-  { key: "monitor", label: "系统监控", icon: "◈" },
+type HubKey = "today" | "research" | "track" | "data";
+
+const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; label: string }[] }[] = [
+  { key: "today", label: "今日观点", icon: "☀", tabs: [
+    { key: "today", label: "今日观点" },
+    { key: "market", label: "行情看板" },
+  ] },
+  { key: "research", label: "策略研究", icon: "⚗", tabs: [
+    { key: "backtest", label: "回测" },
+    { key: "optimize", label: "参数寻优" },
+    { key: "factor", label: "因子检验" },
+  ] },
+  { key: "track", label: "组合跟踪", icon: "◷", tabs: [
+    { key: "paper", label: "模拟盘" },
+    { key: "signal", label: "信号组合" },
+    { key: "attribution", label: "归因分析" },
+  ] },
+  { key: "data", label: "数据中心", icon: "⇉", tabs: [
+    { key: "pipeline", label: "数据管道" },
+    { key: "monitor", label: "系统监控" },
+    { key: "cockpit", label: "研究驾驶舱" },
+  ] },
 ];
 
-/** 跨页跳转：任意页面 dispatch(new CustomEvent("quant-nav", { detail: { tab } })) 即可切换。 */
-function useCrossPageNav(setTab: (t: Tab) => void) {
+/** 旧 tab 名 → 新二级 tab（兼容各处 dispatch 的 quant-nav 跳转）。 */
+const LEGACY_TAB_MAP: Record<string, string> = {
+  news: "today",          // 资讯中心 → 今日观点（已收编为快讯栏）
+  cockpit: "cockpit",
+};
+
+function findHub(sub: string): { hub: HubKey; sub: string } | null {
+  const mapped = LEGACY_TAB_MAP[sub] ?? sub;
+  for (const h of HUBS) {
+    if (h.tabs.some((t) => t.key === mapped)) return { hub: h.key, sub: mapped };
+  }
+  return null;
+}
+
+function HubContent({ sub }: { sub: string }) {
+  switch (sub) {
+    case "today": return <TodayPage />;
+    case "market": return <MarketPage />;
+    case "backtest": return <BacktestPage />;
+    case "optimize": return <OptimizePage />;
+    case "factor": return <FactorMinePage />;
+    case "paper": return <PaperPage />;
+    case "signal": return <SignalPage />;
+    case "attribution": return <AttributionPage />;
+    case "pipeline": return <DataPipelinePage />;
+    case "monitor": return <MonitorPage />;
+    case "cockpit": return <ResearchPage />;
+    default: return null;
+  }
+}
+
+/** 应用骨架：左侧 4 入口导航 + 枢纽页（二级 Tab）。 */
+export default function App() {
+  const [hub, setHub] = useState<HubKey>("today");
+  const [sub, setSub] = useState<string>("today");
+  const { mode, colors, toggle } = useTheme();
+  const sb = sidebarTheme;
+
+  // 跨页跳转：dispatch(new CustomEvent("quant-nav", { detail: { tab } }))，tab 可为新旧任意 tab 名
   useEffect(() => {
     const onNav = (e: Event) => {
-      const t = (e as CustomEvent<{ tab?: Tab }>).detail?.tab;
-      if (t && NAV.some((n) => n.key === t)) setTab(t);
+      const t = (e as CustomEvent<{ tab?: string }>).detail?.tab;
+      if (!t) return;
+      const hit = findHub(t);
+      if (hit) { setHub(hit.hub); setSub(hit.sub); }
     };
     window.addEventListener("quant-nav", onNav as EventListener);
     return () => window.removeEventListener("quant-nav", onNav as EventListener);
-  }, [setTab]);
-}
+  }, []);
 
-/** 应用骨架：左侧终端式导航 + 主内容区。 */
-export default function App() {
-  const [tab, setTab] = useState<Tab>("market");
-  const { mode, colors, toggle } = useTheme();
-  const sb = sidebarTheme;
-  useCrossPageNav(setTab);
+  const activeHub = HUBS.find((h) => h.key === hub)!;
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: colors.bg, color: colors.text }}>
@@ -69,14 +118,14 @@ export default function App() {
           <div style={{ color: sb.brand, fontWeight: 700, fontSize: 15.5, letterSpacing: 1 }}>QUANT·DESK</div>
           <div style={{ color: sb.text, fontSize: 11, marginTop: 3, letterSpacing: 2 }}>个人投研平台</div>
         </div>
-        {/* 导航 */}
+        {/* 导航：4 个一级入口 */}
         <nav style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1 }}>
-          {NAV.map((n) => {
-            const active = tab === n.key;
+          {HUBS.map((n) => {
+            const active = hub === n.key;
             return (
               <button
                 key={n.key}
-                onClick={() => setTab(n.key)}
+                onClick={() => { setHub(n.key); setSub(n.tabs[0].key); }}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -120,23 +169,19 @@ export default function App() {
             <span style={{ marginRight: 8 }}>{mode === "dark" ? "☀" : "☾"}</span>
             {mode === "dark" ? "浅色模式" : "暗色模式"}
           </button>
-          <div style={{ color: sb.text, fontSize: 10.5, padding: "6px 12px", opacity: 0.6 }}>v1.0 · 三合一 · 本机</div>
+          <div style={{ color: sb.text, fontSize: 10.5, padding: "6px 12px", opacity: 0.6 }}>v2.0 · 四入口 · 本机</div>
         </div>
       </aside>
 
       {/* —— 主内容区 —— */}
       <main style={{ flex: 1, minWidth: 0, padding: "22px 26px 40px" }}>
-        {tab === "market" && <MarketPage />}
-        {tab === "backtest" && <BacktestPage />}
-        {tab === "optimize" && <OptimizePage />}
-        {tab === "factor" && <FactorMinePage />}
-        {tab === "paper" && <PaperPage />}
-        {tab === "pipeline" && <DataPipelinePage />}
-        {tab === "research" && <ResearchPage />}
-        {tab === "signal" && <SignalPage />}
-        {tab === "attribution" && <AttributionPage />}
-        {tab === "news" && <NewsPage />}
-        {tab === "monitor" && <MonitorPage />}
+        <Hub
+          tabs={activeHub.tabs}
+          active={sub}
+          onChange={setSub}
+        >
+          <HubContent sub={sub} />
+        </Hub>
       </main>
     </div>
   );
