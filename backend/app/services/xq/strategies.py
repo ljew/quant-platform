@@ -309,17 +309,18 @@ STRATEGY_NAME: dict[str, str] = {m["key"]: m["name"] for m in STRATEGIES}
 # 例外说明：high_tight_flag +1.77% 严格按阈值应为 neutral，但三个窗口
 # （240/120/60 日）全部为正（+1.77/+1.66/+1.80，稳定性全场最高），维持 strong。
 STRATEGY_QUALITY: dict[str, str] = {
-    "rps_breakout": "strong",       # +2.45%（240 日）
-    "high_tight_flag": "strong",    # +1.77%，三窗口全正、最稳定
-    "dual_param": "neutral",        # +1.49%（120 日 +2.92%，分年波动大）
-    "private_placement": "neutral", # +0.38%
-    "limit_up_shakeout": "weak",    # −1.15%
-    "ma_volume": "weak",            # −0.62%
-    "turtle_trade": "weak",         # −0.24%
-    "uptrend_limit_down": "weak",   # −1.88%
-    # 缠论买点（2026-09-30 新增）：样本尚不足，先给 neutral——
-    # 有效性与其它策略同口径，等积累足够信号后在归因页复核再定档。
-    "chan_buy": "neutral",
+    "high_tight_flag": "strong",    # 90 日 +2.14%（n=349），三窗口全正、最稳定，维持 strong
+    "chan_buy": "neutral",          # 90 日 +0.75%（n=17,274），样本积累中，维持 neutral
+    # —— 2026-09-30 自动复盘降级（90 日窗口 T+10 超额全负，降为 weak=仅观察不建仓）——
+    # 与上方 240 日校准对照阅读：长期正、近期负 =  regime 走弱，先撤下建仓资格；
+    # 每周复盘会持续跟踪，窗口重新转正后可人工升回。
+    "rps_breakout": "weak",         # 90 日 −1.21%（n=8,994）；240 日 +2.45% 仍为正，下轮复盘重点复核
+    "dual_param": "weak",           # 90 日 −0.69%（n=3,607）
+    "private_placement": "weak",    # 90 日 −0.38%（n=421）
+    "limit_up_shakeout": "weak",    # 90 日 −0.63%（n=132）
+    "ma_volume": "weak",            # 90 日 −0.93%（n=2,857）
+    "turtle_trade": "weak",         # 90 日 −2.66%（n=11,908），全场最弱
+    "uptrend_limit_down": "weak",   # 90 日 −0.34%（n=236）
 }
 
 STRATEGY_FN: dict[str, Callable[[Panel], tuple[list[str], pd.DataFrame]]] = {
