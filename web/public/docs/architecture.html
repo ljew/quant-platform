@@ -215,14 +215,18 @@
 <h2 id="s10">10. 关键设计决策记录</h2>
 <table>
 <tr><th>日期</th><th>决策</th><th>理由</th></tr>
+<!-- DECISIONS:BEGIN -->
+<tr><td>更早</td><td>成分快照 PIT 月更</td><td>回测股票池 point-in-time，杜绝未来函数</td></tr>
+<tr><td>更早</td><td>组合镜像 T+1 开盘成交</td><td>防前视偏差</td></tr>
 <tr><td>2026-09-30</td><td>摘除实盘路由（live.py 保留代码不挂载）</td><td>平台范围明确为投研+模拟盘，不含实盘</td></tr>
 <tr><td>2026-09-30</td><td>前端 11 平级页面 → 四入口枢纽</td><td>按每日使用路径组织，打开即有观点</td></tr>
 <tr><td>2026-09-30</td><td>7 个走弱信号策略降 weak</td><td>90 日窗口 T+10 超额全负；weak = 不建仓仅观察</td></tr>
 <tr><td>2026-09-30</td><td>自动研究闭环上线，策略降级仅建议</td><td>自动化到因子层为止，策略层留人工闸门</td></tr>
 <tr><td>2026-09-30</td><td>节假日静默 auto 模式</td><td>消除周末/长假「数据停更」误报，狼来了效应</td></tr>
-<tr><td>更早</td><td>成分快照 PIT 月更</td><td>回测股票池 point-in-time，杜绝未来函数</td></tr>
-<tr><td>更早</td><td>组合镜像 T+1 开盘成交</td><td>防前视偏差</td></tr>
+<tr><td>2026-09-30</td><td>决策记录活文档化</td><td>重大变更自动/半自动追加到架构文档，防止文档腐烂</td></tr>
+<!-- DECISIONS:END -->
 </table>
+<p class="muted" style="font-size:12.8px">本表由 <code>docs/decisions.json</code> 自动生成：策略档位变化由每周复盘自动留痕；其他重大变更运行 <code>python scripts/render_decisions.py --add "决策" --reason "理由"</code> 追加。</p>
 
 <div class="foot">QUANT·DESK · 系统架构设计 · 本机文档，随系统演进更新 · <a href="manual.html" style="color:var(--accent)">→ 使用说明书</a></div>
 </div>

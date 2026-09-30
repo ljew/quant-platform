@@ -260,6 +260,18 @@ def _review_body(db: Session, run_id: int, cfg: dict) -> tuple[dict, str]:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     path = REPORT_DIR / f"auto_review_{date.today().strftime('%Y%m%d')}.html"
     path.write_text(html, encoding="utf-8")
+
+    # 6) 决策留痕：策略档位与上周快照比对，变化自动记入架构文档第 10 章
+    try:
+        from app.services import decisions_log
+        from app.services.xq.strategies import STRATEGY_QUALITY
+        ctx = {r["strategy"]: {"exc_10": r.get("exc_10"), "n": r.get("n_10", 0)}
+               for r in strat_rows}
+        changes = decisions_log.record_tier_changes(STRATEGY_QUALITY, context=ctx)
+        if changes:
+            summary["decisions_logged"] = changes
+    except Exception as e:  # noqa: BLE001
+        logger.warning("决策留痕失败（不影响复盘）: %s", e)
     return summary, str(path)
 
 
