@@ -468,10 +468,12 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
 
 
 # ———————————————— xq 选股信号回测策略（Sequoia 迁移，2026-09-30）————————————————
-# 这 9 个选股器的规则在 app/services/xq/strategies.py（每日信号写入 signal_daily），
+# 这 5 个选股器的规则在 app/services/xq/strategies.py（每日信号写入 signal_daily），
 # 本处把它们适配成「组合回测策略」：调仓日按 signal_daily 的时点选股等权持有，
 # 从而能用净值/回撤/夏普/基准对比/参数寻优这套标准设施评估它们。
 # 质量分级取自 xq/strategies.STRATEGY_QUALITY（本平台 240 日独立复测校准）。
+# v2.0 重构：剔除 4 个校准为「弱」的回测入口（ma_volume/turtle_trade/
+# limit_up_shakeout/uptrend_limit_down），信号流水线不受影响（规则在 xq/strategies.py）。
 _XQ_STRATEGIES: list[tuple[str, str, str, str]] = [
     # (signal_key, 中文名, 校准分级, 选股逻辑一句话)
     ("rps_breakout", "RPS强度突破", "strong", "120 日相对强度居前、均线多头且放量突破"),
@@ -479,10 +481,6 @@ _XQ_STRATEGIES: list[tuple[str, str, str, str]] = [
     ("dual_param", "双参数趋势波动", "neutral", "趋势与波动双参数同时达标的标的"),
     ("private_placement", "定增公告", "neutral", "近期发布定增公告的事件驱动标的"),
     ("chan_buy", "缠论买点", "neutral", "最近 3 根 K 线内出现一/二/三类买点"),
-    ("ma_volume", "均线量能", "weak", "均线多头且量能放大"),
-    ("turtle_trade", "海龟突破", "weak", "20 日唐奇安通道突破且成交额达标"),
-    ("limit_up_shakeout", "涨停洗盘", "weak", "涨停后次日大幅震荡洗盘"),
-    ("uptrend_limit_down", "上升趋势跌停", "weak", "上升趋势中出现跌停的错杀标的"),
 ]
 _TIER_CN = {"strong": "强", "neutral": "中性", "weak": "弱"}
 

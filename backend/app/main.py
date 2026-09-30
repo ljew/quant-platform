@@ -69,10 +69,13 @@ def health():
 
 
 # —— 前端静态页面托管 ——
-# 默认 Vite React 完整平台（web/dist，QUANT·DESK 左侧导航）；
-# 构建产物缺失时退回 Phase1 原生 HTML 原型目录（frontend/）。
+# v2.0 起只托管 Vite React 完整平台（web/dist，QUANT·DESK 四入口导航）；
+# Phase1 原生 HTML 原型目录（frontend/）已删除，构建产物缺失时请先在 web/ 下 npm run build。
 _front_dir = settings.frontend_dir
-if not (os.path.isdir(_front_dir) and os.path.exists(os.path.join(_front_dir, "index.html"))):
-    _front_dir = str(BASE_DIR / "frontend")
 if os.path.isdir(_front_dir) and os.path.exists(os.path.join(_front_dir, "index.html")):
     app.mount("/", StaticFiles(directory=_front_dir, html=True), name="frontend")
+else:
+    import logging
+    logging.getLogger(__name__).warning(
+        "前端构建产物缺失：%s/index.html 不存在，仅提供 API（/docs）。"
+        "请执行 cd web && npm run build", _front_dir)

@@ -54,9 +54,10 @@ PYTHONPATH=$(pwd) uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 - 健康检查：http://localhost:8000/health
 
 ### 3. 打开前端
-浏览器访问 http://localhost:8000/ （由后端直接托管 `frontend/index.html`）
+浏览器访问 http://localhost:8000/ （由后端直接托管 `web/dist`，即 React 完整平台 QUANT·DESK）
 
-> 无需单独构建前端——Phase 1 原型为单页应用，修改 `frontend/index.html` 刷新即生效。
+> 前端源码在 `web/`（React + Vite，四入口：今日观点 / 策略研究 / 组合跟踪 / 数据中心）。
+> 改动后执行 `cd web && npm run build` 重新构建；开发调试用 `npm run dev`（端口 5173，代理 /api 到 8000）。
 
 ---
 
@@ -116,7 +117,7 @@ PYTHONPATH=$(pwd) python scripts/seed_attributes.py
 ## 策略回测（Phase 2）
 
 ### 前端可视化
-浏览器打开 http://localhost:8000/backtest.html ：
+浏览器打开 http://localhost:8000/ → 「策略研究 · 回测」页签：
 1. 输入标的（代码或名称，自动联想）→ 选择回测区间与初始资金
 2. 选择策略：
    - 单标的：双均线趋势 / 均线金叉死叉 / 动量突破，填写参数
@@ -205,15 +206,15 @@ quant-platform/
 │   │   └── core/
 │   │       ├── engine/        # 策略 SDK + 回测引擎（indicators / backtest_engine / base_strategy / portfolio_backtest / hedge_engine / paper_engine / factor_expr）
 │   │       └── strategies/    # 策略模板（dual_ma / ma_cross / momentum / chan / multi_factor / enhanced_factor）+ registry
-│   ├── scripts/               # 数据管道（seed_stocks / seed_fundamentals / seed_index_kline / migrate_to_duckdb）
+│   ├── scripts/               # 数据管道（seed_index / seed_attributes / seed_fundamentals / seed_index_kline / update_daily / migrate_to_duckdb / verify_strategy）
 │   ├── requirements.txt
 │   └── run.py
-├── frontend/
-│   ├── index.html             # 行情看板原型（ECharts）
-│   ├── backtest.html          # 回测页（参数 / 权益曲线 / 绩效 / 历史 / 因子研究 / 风险硬上限）
-│   ├── paper.html             # 模拟盘（任务 / 净值 / 持仓 / 因子面板）
-│   └── echarts.min.js        # 本地 ECharts（不依赖外网 CDN）
-├── data/                      # SQLite（业务写表）+ quant.duckdb（分析读表，自动生成）
+├── web/                     # React + Vite 前端（QUANT·DESK v2.0，四入口导航）
+│   ├── src/pages/           # TodayPage(今日观点) / Backtest / Optimize / FactorMine / Paper / Signal / Attribution / DataPipeline / Monitor / Research
+│   ├── src/App.tsx          # 4 个一级入口 + 二级 Tab 容器
+│   └── dist/                # 构建产物（npm run build，由后端托管）
+├── prototype/               # 重构演示原型（纯静态 HTML，独立于主应用）
+├── data/                    # SQLite（业务写表）+ quant.duckdb（分析读表，自动生成）+ raw/silver（数据分层）
 └── README.md
 ```
 
