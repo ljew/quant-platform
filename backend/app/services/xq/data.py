@@ -34,6 +34,16 @@ class Panel:
         self.latest: date | None = (
             mx.date() if isinstance(mx, pd.Timestamp) else mx
         )
+        self._dates_cache: list | None = None
+
+    def date_index(self) -> list:
+        """升序唯一交易日（缓存）。
+
+        回填按日切片时会被反复调用，逐次对百万行面板做 unique() 是纯浪费。
+        """
+        if self._dates_cache is None:
+            self._dates_cache = sorted(self.df["date"].unique().tolist())
+        return self._dates_cache
 
     @property
     def latest_df(self) -> pd.DataFrame:

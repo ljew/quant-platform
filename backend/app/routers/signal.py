@@ -36,6 +36,12 @@ DUCKDB_PATH = str(DATA_DIR / "quant.duckdb")
 class ScanPayload(BaseModel):
     as_of: str = Field("", description="数据日期 YYYY-MM-DD；空=最新已收盘日")
     days: int = Field(60, ge=1, le=250, description="backfill：回填交易日数")
+    force: bool = Field(False, description="backfill：忽略断点续跑，强制重算全部日期")
+    # 回填专用面板回看窗口。必须显著大于选股器的最长预热需求（RPS 需 120 日
+    # 相对强度 + 250 日高点，海龟/缠论需 120 根 K 线），否则早期日期的信号会因为
+    # 「截至该日的历史不足」被静默跳过 —— 表现为该策略的历史只有后半段。
+    lookback: int = Field(560, ge=260, le=1200,
+                          description="backfill：面板回看交易日数（影响早期日期的预热充足度）")
 
 
 @router.post("/scan")
@@ -85,7 +91,10 @@ def backfill(payload: ScanPayload, db: Session = Depends(get_db)):
     db.refresh(run)
 
     threading.Thread(
-        target=_bg_backfill, args=(run.id, payload.days or 60, as_of), daemon=True
+        target=_bg_backfill,
+        args=(run.id, payload.days or 60, as_of, payload.force,
+              max(payload.lookback, (payload.days or 60) + _BACKFILL_KEEP_DAYS + 20)),
+        daemon=True,
     ).start()
     return {"ok": True, "run_id": run.id, "note": "后台执行中，用 /signal/backfill/status 查进度"}
 
@@ -93,9 +102,20 @@ def backfill(payload: ScanPayload, db: Session = Depends(get_db)):
 _backfill_state: dict = {"running": False, "run_id": None, "done": 0, "total": 0,
                          "current": None, "finished_at": None, "error": None}
 
+# 回填时每个「截至日视图」保留的交易日数。必须 ≥ 选股器的最长预热：
+# RPS 需 120 日涨幅+120 日高点、缠论需 120 根 K 线、高旗形需 40 日（+前期涨幅）。
+# 取 260 留一倍余量；再长只会线性拖慢回填而不会改变结果。
+_BACKFILL_KEEP_DAYS = 260
 
-def _bg_backfill(run_id: int, days: int, as_of: date | None) -> None:
-    """回填工作线程：面板一次载入，逐日切片重演（每日独立 session，崩溃安全）。"""
+
+def _bg_backfill(run_id: int, days: int, as_of: date | None,
+                 force: bool = False, lookback: int = 520) -> None:
+    """回填工作线程：面板一次载入，逐日切片重演（每日独立 session，崩溃安全）。
+
+    lookback 是**面板**的回看窗口（不是回填天数）：它决定「早期日期能用多少
+    历史」，因此必须覆盖选股器的最长预热 —— 曾用 260 导致 RPS/海龟/缠论这类
+    需要 120~250 根 K 线的策略，历史信号只剩最近 140 天。
+    """
     from datetime import datetime
 
     from app.database import SessionLocal
@@ -106,7 +126,7 @@ def _bg_backfill(run_id: int, days: int, as_of: date | None) -> None:
                            current=None, finished_at=None, error=None)
     db = SessionLocal()
     try:
-        panel = load_panel(DUCKDB_PATH, lookback=260)
+        panel = load_panel(DUCKDB_PATH, lookback=lookback)
         latest = panel.as_of or panel.latest
         trade_dates = sorted(
             d for d in {
@@ -115,10 +135,11 @@ def _bg_backfill(run_id: int, days: int, as_of: date | None) -> None:
         )[-days:]
         if as_of is not None:
             trade_dates = [d for d in trade_dates if d <= as_of]
-        # 断点续跑：已有信号事实的日期视为完成（进程被杀/重启后可无损续跑）
+        # 断点续跑：已有信号事实的日期视为完成（进程被杀/重启后可无损续跑）。
+        # force=True 时忽略该判据，整段重算（用于修复预热窗口不足导致的历史缺口）。
         from app.models import SignalDaily
 
-        existing = {
+        existing = set() if force else {
             r[0] for r in db.execute(
                 select(SignalDaily.date).distinct()).all()
         }
@@ -130,7 +151,8 @@ def _bg_backfill(run_id: int, days: int, as_of: date | None) -> None:
         db.commit()
         for i, d in enumerate(trade_dates, 1):
             _backfill_state["current"] = d.isoformat()
-            r = run_from_panel(db, panel_asof(panel, d), run_id=run_id)
+            r = run_from_panel(db, panel_asof(panel, d, keep_days=_BACKFILL_KEEP_DAYS),
+                               run_id=run_id)
             _backfill_state["done"] = i
             if not r.get("ok"):
                 db.add(AgentEvent(run_id=run_id, agent="research", step="backfill",

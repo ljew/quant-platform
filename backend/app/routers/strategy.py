@@ -34,7 +34,15 @@ from sqlalchemy.orm import Session
 
 from app.config import DATA_DIR, settings
 from app.database import get_db
-from app.models import Backtest, Stock, KlineDaily, IndexKlineDaily, FundamentalsHistory, FinancialsRaw
+from app.models import (
+    Backtest,
+    FinancialsRaw,
+    FundamentalsHistory,
+    IndexKlineDaily,
+    KlineDaily,
+    SignalDaily,
+    Stock,
+)
 from app.schemas import (
     BacktestRequest,
     BacktestResult,
@@ -238,6 +246,27 @@ def _run_portfolio(db, req, meta, params, progress_cb=None):
         #    这里若给 date 对象，_members_on 比较时会抛 TypeError，
         #    异常被回测循环的 try/except 吞掉 → 表现为「0 成交、收益恒 0」的假空仓。
         membership = [(sd.isoformat(), set(all_syms))]
+    elif pool_mode == "signal_union":
+        # 选股信号回测：股票池 = 该选股器历史命中标的的并集（含已退出者）。
+        # 为什么不直接给全A：引擎只交易名单里的票，把 5000 只全喂进去纯属浪费
+        # （取数、内存、每日 hist 维护都成正比）。只加载信号涉及过的标的即可，
+        # 且与区间无关的命中一并纳入 —— 区间内先跌出榜单的也能正常建仓/止损。
+        sig_key = str(meta.get("signal_key") or params.get("signal_key") or "")
+        sig_syms = [
+            r[0] for r in db.execute(
+                select(SignalDaily.symbol).distinct().where(
+                    SignalDaily.strategy == sig_key,
+                    SignalDaily.date <= ed,
+                )
+            ).all()
+        ]
+        if not sig_syms:
+            raise HTTPException(
+                status_code=404,
+                detail=(f"选股器 {sig_key} 在 {ed} 之前没有任何历史信号，无法回测。"
+                        "可先执行一次信号回填（POST /signal/backfill）再试。"),
+            )
+        membership = [(sd.isoformat(), set(sig_syms))]
     else:
         try:
             membership = membership_store.get_membership(db, index_code, sd, ed)
@@ -260,12 +289,18 @@ def _run_portfolio(db, req, meta, params, progress_cb=None):
 
     # 2) 加载各标的日K：DuckDB 批量一次取全部（列式加速），缺失走 _load_bars 兜底
     data: dict[str, list[dict]] = {}
-    warmup_min = max(
-        int(params.get("momentum_lookback", 120)),
-        int(params.get("vol_lookback", 60)),
-        int(params.get("beta_lookback", 120)),
-        int(params.get("tail_lookback", 120)),
-    ) + 5
+    if meta.get("signal_key"):
+        # 信号回测：选股结果已在 signal_daily 里算好，策略不看本地技术指标，
+        # 无需按因子回看窗口预热（若沿用 120+5 会白丢半年净值曲线；
+        # 引擎随后会用 start_date 把 warmup 锚回请求起始日，这里给个小值即可）。
+        warmup_min = 5
+    else:
+        warmup_min = max(
+            int(params.get("momentum_lookback", 120)),
+            int(params.get("vol_lookback", 60)),
+            int(params.get("beta_lookback", 120)),
+            int(params.get("tail_lookback", 120)),
+        ) + 5
     cached = duckdb_store.get_stock_bars_batch(union_syms, req.adj, load_start, ed)
     for sym, bars in cached.items():
         if len(bars) >= warmup_min:

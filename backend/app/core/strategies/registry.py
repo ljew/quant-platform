@@ -24,6 +24,7 @@ from app.core.strategies.csi800_enhanced import Csi800EnhancedStrategy
 from app.core.strategies.multi_factor import EnhancedFactorStrategy
 from app.core.strategies.chan_strategy import ChanStrategy
 from app.core.strategies.jk_series import JKFactorStrategy
+from app.core.strategies.xq_signal import XqSignalStrategy
 
 
 def _int(key, label, default, mn, mx, step=1, group=None):
@@ -464,6 +465,66 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
         ],
     },
 }
+
+
+# ———————————————— xq 选股信号回测策略（Sequoia 迁移，2026-09-30）————————————————
+# 这 9 个选股器的规则在 app/services/xq/strategies.py（每日信号写入 signal_daily），
+# 本处把它们适配成「组合回测策略」：调仓日按 signal_daily 的时点选股等权持有，
+# 从而能用净值/回撤/夏普/基准对比/参数寻优这套标准设施评估它们。
+# 质量分级取自 xq/strategies.STRATEGY_QUALITY（本平台 240 日独立复测校准）。
+_XQ_STRATEGIES: list[tuple[str, str, str, str]] = [
+    # (signal_key, 中文名, 校准分级, 选股逻辑一句话)
+    ("rps_breakout", "RPS强度突破", "strong", "120 日相对强度居前、均线多头且放量突破"),
+    ("high_tight_flag", "高旗形整理", "strong", "前期大涨后窄幅缩量整理、突破前高"),
+    ("dual_param", "双参数趋势波动", "neutral", "趋势与波动双参数同时达标的标的"),
+    ("private_placement", "定增公告", "neutral", "近期发布定增公告的事件驱动标的"),
+    ("chan_buy", "缠论买点", "neutral", "最近 3 根 K 线内出现一/二/三类买点"),
+    ("ma_volume", "均线量能", "weak", "均线多头且量能放大"),
+    ("turtle_trade", "海龟突破", "weak", "20 日唐奇安通道突破且成交额达标"),
+    ("limit_up_shakeout", "涨停洗盘", "weak", "涨停后次日大幅震荡洗盘"),
+    ("uptrend_limit_down", "上升趋势跌停", "weak", "上升趋势中出现跌停的错杀标的"),
+]
+_TIER_CN = {"strong": "强", "neutral": "中性", "weak": "弱"}
+
+
+def _xq_entry(sig_key: str, cname: str, tier: str, logic: str) -> dict:
+    return {
+        "key": f"xq_{sig_key}",
+        "name": f"选股信号回测 · {cname}",
+        "description": (
+            f"{logic}。本条目把该选股器的历史信号（signal_daily 时点事实）接进组合回测："
+            f"调仓日取最近一期信号等权建仓、不在名单里的离场，用于评估「一直跟着这个选股器做」"
+            f"的净值表现。近 240 日校准分级：{_TIER_CN[tier]}（{tier}）。"
+        ),
+        "cls": XqSignalStrategy,
+        "multi_asset": True,
+        "index_code": "399317",
+        "index_symbol": "sz399317",
+        "index_name": "国证A指",
+        # 装配层据此确定股票池（= 该策略历史命中标的的并集）与数据加载范围
+        "pool_mode": "signal_union",
+        "signal_key": sig_key,
+        "default_params": {
+            "signal_key": sig_key,
+            "rebalance_period": 5,
+            "max_holdings": 20,
+            "signal_max_age": 10,
+            "gross_exposure": 1.0,
+            "pool_mode": "signal_union",
+            "warmup_days": 20,
+        },
+        "param_schema": [
+            _int("rebalance_period", "调仓周期(交易日)", 5, 1, 60, 1, group="组合构建"),
+            _int("max_holdings", "单期最多持有(只)", 20, 1, 100, 1, group="组合构建"),
+            _float("gross_exposure", "总仓位", 1.0, 0.1, 1.0, 0.05, group="组合构建"),
+            _int("signal_max_age", "信号有效期(自然日)", 10, 1, 30, 1, group="信号参数"),
+        ],
+    }
+
+
+for _sig, _cn, _tier, _logic in _XQ_STRATEGIES:
+    _e = _xq_entry(_sig, _cn, _tier, _logic)
+    STRATEGY_REGISTRY[_e["key"]] = _e
 
 
 # ———————————————— 参数分组（前端左栏折叠面板用） ————————————————
