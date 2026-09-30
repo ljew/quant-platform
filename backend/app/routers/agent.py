@@ -51,6 +51,7 @@ def state():
         db.close()
     return {
         "orchestrator": {k: v for k, v in orchestrator.STATE.items()},
+        "scheduler": orchestrator.scheduler_state(),
         "gate_countdown_sec": orchestrator.GATE_COUNTDOWN_SEC,
         "latest_run": _run_dict(last) if last else None,
         "recent_runs": [_run_dict(r) for r in recent],

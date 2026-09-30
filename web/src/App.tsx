@@ -118,7 +118,7 @@ export default function App() {
             <span style={{ marginRight: 8 }}>{mode === "dark" ? "☀" : "☾"}</span>
             {mode === "dark" ? "浅色模式" : "暗色模式"}
           </button>
-          <div style={{ color: sb.text, fontSize: 10.5, padding: "6px 12px", opacity: 0.6 }}>v0.5 · Docker</div>
+          <div style={{ color: sb.text, fontSize: 10.5, padding: "6px 12px", opacity: 0.6 }}>v1.0 · 三合一 · 本机</div>
         </div>
       </aside>
 

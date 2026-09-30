@@ -440,6 +440,22 @@ DAILY_MINUTE = int(os.getenv("QUANT_ORCHESTRATOR_MINUTE", "30"))
 _daily_state: dict = {"last_run_date": "", "last_success": None, "last_error": None}
 
 
+def scheduler_state() -> dict:
+    """每日调度器的可观测状态（驾驶舱/监控页展示，判断 17:30 是否会跑）。"""
+    now = datetime.now()
+    nxt = now.replace(hour=DAILY_HOUR, minute=DAILY_MINUTE, second=0, microsecond=0)
+    if nxt <= now:
+        nxt = nxt + timedelta(days=1)
+    return {
+        "enabled": True,
+        "run_at": f"{DAILY_HOUR:02d}:{DAILY_MINUTE:02d}",
+        "last_run_date": _daily_state["last_run_date"] or None,
+        "last_error": _daily_state["last_error"],
+        "next_run": nxt.isoformat(timespec="seconds"),
+        "gate_countdown_sec": GATE_COUNTDOWN_SEC,
+    }
+
+
 def start_daily_scheduler() -> None:
     """启动每日定时线程（守护线程，60s 一跳）。
 

@@ -138,7 +138,10 @@ export default function ResearchPage() {
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <PageHeader
         title="研究驾驶舱"
-        desc="多 Agent 流水线 · 数据 → 质检 → 选股 → 信号 → 审查 → 发布"
+        desc={`多 Agent 流水线 · 数据 → 质检 → 选股 → 信号 → 审查 → 发布${
+          state?.scheduler
+            ? `　|　每日 ${state.scheduler.run_at} 自动运行（下次 ${state.scheduler.next_run.slice(5, 16).replace("T", " ")}）`
+            : ""}`}
         actions={
           <Btn onClick={start} disabled={busy || running}>
             {running ? "流水线运行中…" : "▶ 启动研究流水线"}

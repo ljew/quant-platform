@@ -231,6 +231,39 @@ def private_placement(
     return symbols, pd.DataFrame()
 
 
+# ────────────────────────── 9. 缠论买点（quantdesk chanlun.js 移植版）──────────────────────────
+def chan_buy(p: Panel, recent_bars: int = 3, min_score: int = 55) -> tuple[list[str], pd.DataFrame]:
+    """缠论买点：最近 N 根 K 线内出现一/二/三类买点（评分 ≥ min_score）。
+
+    这是 quantdesk chanlun.js 移植引擎（app/services/xq/chanlun.py）的**生产接入点**：
+    逐股跑完整分解（包含合并→分型→笔→线段→中枢→背驰→买卖点），只取系统信号。
+    引擎与原版 JS 的一致性由 verify_against_js 保证（20 只随机股 20/20 一致）。
+
+    性能：逐股 ~250 根样本，全市场 5000+ 只约 20~40s；只在每日流水线跑一次。
+    """
+    from app.services.xq.chanlun import Candle, analyze_chanlun
+
+    df = p.df
+    hits: list[str] = []
+    for sym, g in df.groupby("symbol", sort=False):
+        if len(g) < 120:
+            continue
+        candles = [
+            Candle(high=float(r.h_hfq), low=float(r.l_hfq), open=float(r.o_hfq),
+                   close=float(r.c_hfq), time=str(r.date), ts=i)
+            for i, r in enumerate(g.itertuples())
+        ]
+        res = analyze_chanlun(candles)
+        n = len(candles)
+        for s in res["signals"]:
+            if s.kind != "buy" or s.score < min_score:
+                continue
+            if s.index >= n - recent_bars:  # 买点落在最近 N 根内
+                hits.append(sym)
+                break
+    return hits, pd.DataFrame()
+
+
 def _to_platform(code: str) -> str:
     """6 位纯数字 → 平台 symbol（sh/sz 前缀；6 开头沪市，其余深市；北交所剔除）。"""
     if len(code) != 6 or not code.isdigit():
@@ -259,6 +292,7 @@ STRATEGIES: list[dict] = [
     {"key": "turtle_trade", "name": "海龟突破", "fn": turtle_trade},
     {"key": "dual_param", "name": "双参数趋势波动", "fn": dual_param},
     {"key": "private_placement", "name": "定增公告", "fn": private_placement},
+    {"key": "chan_buy", "name": "缠论买点", "fn": chan_buy},
 ]
 
 STRATEGY_NAME: dict[str, str] = {m["key"]: m["name"] for m in STRATEGIES}
@@ -283,6 +317,9 @@ STRATEGY_QUALITY: dict[str, str] = {
     "ma_volume": "weak",            # −0.62%
     "turtle_trade": "weak",         # −0.24%
     "uptrend_limit_down": "weak",   # −1.88%
+    # 缠论买点（2026-09-30 新增）：样本尚不足，先给 neutral——
+    # 有效性与其它策略同口径，等积累足够信号后在归因页复核再定档。
+    "chan_buy": "neutral",
 }
 
 STRATEGY_FN: dict[str, Callable[[Panel], tuple[list[str], pd.DataFrame]]] = {

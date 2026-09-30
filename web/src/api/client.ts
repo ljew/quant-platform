@@ -592,6 +592,8 @@ export interface ResearchRunItem {
 export interface AgentState {
   orchestrator: { running: boolean; run_id: number | null; step: string | null;
     started_at: string | null; finished_at: string | null };
+  scheduler: { enabled: boolean; run_at: string; last_run_date: string | null;
+    last_error: string | null; next_run: string; gate_countdown_sec: number };
   gate_countdown_sec: number;
   latest_run: ResearchRunItem | null;
   recent_runs: ResearchRunItem[];
