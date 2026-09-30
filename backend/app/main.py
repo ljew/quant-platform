@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings, BASE_DIR
 from app.database import init_db
-from app.routers import data, market, strategy, paper, hedge, monitor, factor, llm, signal, agent, news
+from app.routers import data, market, strategy, paper, hedge, monitor, factor, llm, signal, agent, news, auto
 from app.schemas import HealthResponse
 
 import os
@@ -37,6 +37,7 @@ app.include_router(llm.router, prefix=settings.api_prefix)
 app.include_router(signal.router, prefix=settings.api_prefix)
 app.include_router(agent.router, prefix=settings.api_prefix)
 app.include_router(news.router, prefix=settings.api_prefix)
+app.include_router(auto.router, prefix=settings.api_prefix)
 
 
 @app.on_event("startup")
@@ -55,6 +56,9 @@ def on_startup():
     # 每交易日 19:00 ETL 自动日更 + 断供自愈 + 指数成分(PIT)月度快照自动刷新）
     from app.core.data_scheduler import start_data_scheduler
     start_data_scheduler(settings.data_schedule)
+    # 自动研究闭环：每日挖矿（交易日 20:47）+ 每周复盘（周六 10:15），均幂等可补跑
+    from app.services.auto_research import start_auto_scheduler
+    start_auto_scheduler()
 
 
 @app.get("/health", response_model=HealthResponse, tags=["meta"])

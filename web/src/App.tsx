@@ -10,6 +10,7 @@ import FactorMinePage from "./pages/FactorMinePage";
 import ResearchPage from "./pages/ResearchPage";
 import SignalPage from "./pages/SignalPage";
 import AttributionPage from "./pages/AttributionPage";
+import AutoResearchPage from "./pages/AutoResearchPage";
 import { Hub } from "./components/Hub";
 import { sidebarTheme, useTheme } from "./theme";
 
@@ -38,6 +39,7 @@ const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; lab
     { key: "attribution", label: "归因分析" },
   ] },
   { key: "data", label: "数据中心", icon: "⇉", tabs: [
+    { key: "auto", label: "自动研究" },
     { key: "pipeline", label: "数据管道" },
     { key: "monitor", label: "系统监控" },
     { key: "cockpit", label: "研究驾驶舱" },
@@ -68,6 +70,7 @@ function HubContent({ sub }: { sub: string }) {
     case "paper": return <PaperPage />;
     case "signal": return <SignalPage />;
     case "attribution": return <AttributionPage />;
+    case "auto": return <AutoResearchPage />;
     case "pipeline": return <DataPipelinePage />;
     case "monitor": return <MonitorPage />;
     case "cockpit": return <ResearchPage />;

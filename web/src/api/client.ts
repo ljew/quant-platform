@@ -658,3 +658,41 @@ export const newsApi = {
   stock: (symbol: string) =>
     get<StockNews>(`/news/stock?symbol=${encodeURIComponent(symbol)}`),
 };
+
+// —— 自动研究闭环（/auto/*）——
+export interface AutoRunSummary {
+  evaluated?: number; elites?: number; best_ic?: number;
+  enabled?: { name: string; rating: string; ic: number | null; icir: number | null; status: string }[];
+  candidates?: { name: string; rating: string }[];
+  skipped?: { name: string; rating: string }[];
+  date?: string; best?: string | null; worst?: string | null;
+  weakening?: string[]; suggestions?: string[];
+  factors?: { enabled: number; total: number; new_this_week: number };
+  portfolio?: Record<string, number>;
+  strategies?: { name: string; exc_10: number; exc_5: number | null; n: number }[];
+}
+export interface AutoRun {
+  id: number; job: string; trigger: string; status: string;
+  summary: AutoRunSummary; report_path?: string | null; error?: string | null;
+  started_at: string | null; finished_at: string | null;
+}
+export interface AutoConfig {
+  mining_enabled: boolean; review_enabled: boolean;
+  auto_enable_excellent: boolean; email_review: boolean;
+  mining_time: string; review_weekday: number; review_time: string;
+  mining_pop: number; mining_gens: number; mining_top_k: number;
+}
+export interface AutoStatus {
+  config: AutoConfig;
+  mining_next: string; review_next: string; last_error: string | null;
+  last_mining: AutoRun | null; last_review: AutoRun | null; total_runs: number;
+}
+
+export const autoApi = {
+  status: () => get<AutoStatus>("/auto/status"),
+  runs: (limit = 20) => get<AutoRun[]>(`/auto/runs?limit=${limit}`),
+  runDetail: (id: number) => get<AutoRun & { report_html?: string | null }>(`/auto/runs/${id}`),
+  runJob: (job: "mining" | "review") => post<{ ok: boolean; run_id: number }>(`/auto/run/${job}`, {}),
+  saveConfig: (patch: Partial<AutoConfig>) =>
+    put<{ ok: boolean; config: AutoConfig }>("/auto/config", patch),
+};

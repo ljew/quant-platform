@@ -760,3 +760,23 @@ class PortfolioState(Base):
     holdings_json: Mapped[str] = mapped_column(Text, default="[]")
     trades_json: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AutoResearchRun(Base):
+    """自动研究闭环运行记录（每日自动挖矿 / 每周自动复盘）。
+
+    summary_json 存结构化摘要（挖掘：评级分布/入库名单；复盘：归因要点/建议），
+    report_path 指向 data/reports/ 下的完整 HTML 报告。
+    """
+
+    __tablename__ = "auto_research_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job: Mapped[str] = mapped_column(String(16))          # mining / review
+    trigger: Mapped[str] = mapped_column(String(16), default="manual")  # scheduler / manual
+    status: Mapped[str] = mapped_column(String(12), default="RUNNING")  # RUNNING/SUCCESS/FAILED
+    summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    report_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
