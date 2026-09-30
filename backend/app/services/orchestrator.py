@@ -85,10 +85,8 @@ def _run(run_id: int) -> None:
         _step_data(db, run_id)
         _step_quality(db, run_id)
         _step_research_signal(db, run_id)
-        _step_stub(db, run_id, "backtest", "BacktestAgent 组合回测刷新",
-                   "增量回测刷新（P3 接入 signal_stats 六维统计；当前仅校验信号引擎输出）")
-        _step_stub(db, run_id, "attribution", "AttributionAgent 归因统计",
-                   "六维有效性统计（P3 接入；当前信号事实已完整落 signal_daily/signal_actions）")
+        _step_backtest(db, run_id)
+        _step_attribution(db, run_id)
         if not _step_risk_gate(db, run_id):
             _finish(db, run_id, "REJECTED", "人工否决：信号不发布")
             return
@@ -167,9 +165,54 @@ def _step_research_signal(db: Session, run_id: int) -> None:
     xq_runner.run_signal_scan(db, str(DATA_DIR / "quant.duckdb"), run_id=run_id)
 
 
-def _action_distribution(db: Session) -> dict[str, int]:
-    from datetime import date as _date
+def _step_backtest(db: Session, run_id: int) -> None:
+    """BacktestAgent：信号有效性统计（组合回测的量化底座）。
 
+    口径 = Sequoia signal_stats：T+1 开盘建仓、持有 T+N、超额对全市场等权。
+    统计结果带缓存，归因页与发布报告共用。
+    """
+    from app.config import DATA_DIR
+    from app.services.xq import stats as xq_stats
+
+    t0 = time.time()
+    result = xq_stats.compute_stats(db, str(DATA_DIR / "quant.duckdb"))
+    if not result.get("ok"):
+        _event(db, run_id, "backtest", f"有效性统计不可用：{result.get('error')}",
+               step="backtest", status="warn", level="warn")
+        db.commit()
+        return
+    _event(db, run_id, "backtest",
+           f"有效性统计完成：{result['n_signals']} 信号 / {result['n_obs']} 观测 · "
+           f"{xq_stats.top_line(result)}",
+           step="backtest", status="ok", rows=result["n_obs"],
+           duration_ms=int((time.time() - t0) * 1000))
+    db.commit()
+
+
+def _step_attribution(db: Session, run_id: int) -> None:
+    """AttributionAgent：六维归因速览（明细由归因分析页展示）。"""
+    from app.config import DATA_DIR
+    from app.services.xq import stats as xq_stats
+
+    result = xq_stats.compute_stats(db, str(DATA_DIR / "quant.duckdb"))
+    if not result.get("ok"):
+        _event(db, run_id, "attribution", "归因统计不可用（样本不足）",
+               step="attribution", status="warn", level="warn")
+        db.commit()
+        return
+    strong = [r for r in result.get("by_strategy", []) if r.get("exc_10") is not None]
+    best = max(strong, key=lambda r: r["exc_10"]) if strong else None
+    worst = min(strong, key=lambda r: r["exc_10"]) if strong else None
+    _event(db, run_id, "attribution",
+           "六维归因完成：最强 {strategy} {exc_10:+.2f}% / 最弱 {w_strategy} {w_exc:+.2f}%"
+           "（T+10 超额，vs 全市场等权）".format(
+               **best, w_strategy=worst["strategy"], w_exc=worst["exc_10"])
+           if best and worst else "六维归因完成（样本不足）",
+           step="attribution", status="ok")
+    db.commit()
+
+
+def _action_distribution(db: Session) -> dict[str, int]:
     latest = db.scalars(
         select(SignalAction.date).order_by(SignalAction.date.desc()).limit(1)
     ).first()
@@ -182,11 +225,6 @@ def _action_distribution(db: Session) -> dict[str, int]:
     for r in rows:
         dist[r.action] = dist.get(r.action, 0) + 1
     return dist
-
-
-def _step_stub(db: Session, run_id: int, agent: str, title: str, note: str) -> None:
-    _event(db, run_id, agent, f"{title}：{note}", step=agent, status="ok")
-    db.commit()
 
 
 def _step_risk_gate(db: Session, run_id: int) -> bool:
@@ -226,41 +264,143 @@ def _step_risk_gate(db: Session, run_id: int) -> bool:
         time.sleep(5)
 
 
-def _step_publish(db: Session, run_id: int) -> None:
-    """信号发布：HTML 邮件 + 飞书（P3 会替换成完整报告模板）。"""
-    from app.services import mailer
+def build_report(db: Session) -> tuple[str, str]:
+    """渲染正式 HTML 报告，返回 (标题, html)。publish 步骤与 /agent/report 预览共用。"""
+    from app.config import DATA_DIR
+    from app.services.news_agg import eastmoney_headlines, global_quotes, xueqiu_hot
+    from app.services.xq import stats as xq_stats
 
     dist = _action_distribution(db)
     latest = db.scalars(
         select(SignalAction.date).order_by(SignalAction.date.desc()).limit(1)
     ).first()
     items = db.scalars(
-        select(SignalAction).where(
-            SignalAction.date == latest,
-            SignalAction.action.in_(("BUY_STRONG", "WATCH", "SELL", "REDUCE")),
-        ).order_by(SignalAction.action, SignalAction.streak.desc())
+        select(SignalAction).where(SignalAction.date == latest)
+        .order_by(SignalAction.action, SignalAction.streak.desc())
     ).all() if latest else []
 
-    rows_html = "".join(
-        f"<tr><td>{i.action}</td><td>{i.name or ''} {i.symbol}</td>"
-        f"<td>{i.streak}</td><td>{i.strategies}</td><td>{i.reason}</td></tr>"
-        for i in items[:50]
+    stats = xq_stats.compute_stats(db, str(DATA_DIR / "quant.duckdb"))
+    gq = global_quotes()
+    xq_hot = xueqiu_hot()
+    news = eastmoney_headlines(6)
+
+    up, dn = "#c0392b", "#1e8449"  # A 股配色：红涨绿跌
+
+    def _chg(v: float) -> str:
+        color = up if v >= 0 else dn
+        return f"<span style='color:{color}'>{v:+.2f}%</span>"
+
+    def _rows(action: str) -> str:
+        return "".join(
+            f"<tr>"
+            f"<td style='padding:5px 10px'>{i.name or ''} <b>{i.symbol}</b></td>"
+            f"<td style='padding:5px 10px'>{i.streak} 天</td>"
+            f"<td style='padding:5px 10px'>{i.strategies}</td>"
+            f"<td style='padding:5px 10px;color:#555'>{i.reason}</td>"
+            f"</tr>"
+            for i in items if i.action == action
+        ) or "<tr><td colspan='4' style='color:#999;padding:5px 10px'>无</td></tr>"
+
+    action_cn = {"BUY_STRONG": "重点买入", "WATCH": "关注（确认中）", "NEW": "新出现",
+                 "REDUCE": "减仓", "SELL": "卖出", "EXIT": "移出"}
+
+    def _section(title: str, action: str, color: str) -> str:
+        return (f"<h3 style='margin:18px 0 6px;color:{color}'>{action_cn[action]}"
+                f"（{dist.get(action, 0)}）</h3>"
+                "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
+                "<tr style='background:#f2f2f2'><th align='left' style='padding:5px 10px'>标的</th>"
+                "<th align='left' style='padding:5px 10px'>连续</th>"
+                "<th align='left' style='padding:5px 10px'>命中策略</th>"
+                "<th align='left' style='padding:5px 10px'>判定理由</th></tr>"
+                f"{_rows(action)}</table>")
+
+    strat_rows = "".join(
+        f"<tr><td style='padding:4px 10px'>{r['strategy']}</td>"
+        f"<td style='padding:4px 10px'>{r.get('n_10', 0)}</td>"
+        f"<td style='padding:4px 10px'>{_chg(r['exc_10'])}</td>"
+        f"<td style='padding:4px 10px'>{_chg(r['exc_5'])}</td></tr>"
+        for r in stats.get("by_strategy", []) if r.get("exc_10") is not None
     )
-    html = (
-        "<html><body style='font-family:-apple-system,Helvetica;margin:24px'>"
-        f"<h2>每日信号报告 · {latest}</h2>"
-        f"<p>动作分布：{dist}</p>"
-        "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse;font-size:13px'>"
-        "<tr style='background:#f5f5f5'><th>动作</th><th>标的</th><th>连续天数</th>"
-        "<th>命中策略</th><th>判定理由</th></tr>"
-        f"{rows_html}</table>"
-        "<p style='color:#888;font-size:12px'>由个人量化平台自动生成（研究结论仅供参考，不构成投资建议）</p>"
-        "</body></html>"
+    gq_rows = "".join(
+        f"<tr><td style='padding:4px 10px'>{q['name']}</td>"
+        f"<td style='padding:4px 10px'>{q['price']}</td>"
+        f"<td style='padding:4px 10px'>{_chg(q['change_pct'])}</td></tr>"
+        for q in gq
     )
+    xq_rows = "".join(
+        f"<tr><td style='padding:4px 10px'>{i+1}. {h['name']}</td>"
+        f"<td style='padding:4px 10px;color:#888'>热度 {int(h['heat'])}</td></tr>"
+        for i, h in enumerate(xq_hot[:10])
+    )
+    news_rows = "".join(
+        f"<li style='margin:3px 0'><a href='{n['url']}' style='color:#2471a3;text-decoration:none'>"
+        f"{n['title']}</a> <span style='color:#aaa;font-size:11px'>{n['time'][:16]}</span></li>"
+        for n in news
+    )
+
+    html = f"""<html><body style="font-family:-apple-system,'PingFang SC',Helvetica;margin:0;background:#fafafa">
+<div style="max-width:860px;margin:0 auto;padding:24px">
+  <div style="background:#1a1a2e;color:#fff;border-radius:12px 12px 0 0;padding:20px 28px">
+    <div style="font-size:22px;font-weight:700">每日信号报告</div>
+    <div style="opacity:.75;font-size:13px;margin-top:4px">{latest} · 个人量化投研平台自动生成 ·
+      动作分布 BUY_STRONG {dist.get('BUY_STRONG', 0)} / WATCH {dist.get('WATCH', 0)} / NEW {dist.get('NEW', 0)}</div>
+  </div>
+  <div style="background:#fff;border:1px solid #eee;border-top:none;padding:8px 28px 24px;border-radius:0 0 12px 12px">
+    <h2 style="font-size:16px;border-left:4px solid #c0392b;padding-left:10px">信号明细</h2>
+    {_section('重点买入', 'BUY_STRONG', up)}
+    {_section('关注', 'WATCH', '#b9770e')}
+    {_section('新出现', 'NEW', '#2471a3')}
+    {_section('减仓', 'REDUCE', dn)}
+    {_section('卖出', 'SELL', dn)}
+
+    <h2 style="font-size:16px;border-left:4px solid #8e44ad;padding-left:10px;margin-top:26px">策略归因速览（T+N 超额 vs 全市场等权）</h2>
+    <table style="border-collapse:collapse;width:100%;font-size:13px">
+      <tr style="background:#f2f2f2"><th align="left" style="padding:4px 10px">策略</th>
+      <th align="left" style="padding:4px 10px">样本</th>
+      <th align="left" style="padding:4px 10px">T+10 超额</th>
+      <th align="left" style="padding:4px 10px">T+5 超额</th></tr>
+      {strat_rows}
+    </table>
+
+    <div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:26px">
+      <div style="flex:1;min-width:240px">
+        <h2 style="font-size:15px;border-left:4px solid #2471a3;padding-left:10px">全球市场（腾讯）</h2>
+        <table style="border-collapse:collapse;width:100%;font-size:13px">{gq_rows}</table>
+      </div>
+      <div style="flex:1;min-width:240px">
+        <h2 style="font-size:15px;border-left:4px solid #2471a3;padding-left:10px">雪球热榜</h2>
+        <table style="border-collapse:collapse;width:100%;font-size:13px">{xq_rows}</table>
+      </div>
+    </div>
+
+    <h2 style="font-size:15px;border-left:4px solid #2471a3;padding-left:10px;margin-top:26px">东财要闻</h2>
+    <ul style="padding-left:18px;font-size:13px">{news_rows}</ul>
+
+    <p style="color:#999;font-size:11px;margin-top:26px;border-top:1px solid #eee;padding-top:12px">
+      本报告由个人量化投研平台 Orchestrator 自动生成（多 Agent 流水线：数据→质检→选股→信号→归因→发布）。
+      研究结论仅供参考，不构成投资建议。如需人工复核请前往平台「研究驾驶舱」。</p>
+  </div>
+</div></body></html>"""
+
     title = f"每日信号 · {latest}"
-    mailer.send_email_html(db, title, html, dedup_key=f"signal|{latest}")
+    return title, html
+
+
+def _step_publish(db: Session, run_id: int) -> None:
+    """信号发布：正式排版 HTML 报告（信号 + 归因 + 外盘 + 雪球热榜 + 要闻）。"""
+    from app.services import mailer
+
+    title, html = build_report(db)
+    latest = db.scalars(
+        select(SignalAction.date).order_by(SignalAction.date.desc()).limit(1)
+    ).first()
+    items = db.scalars(
+        select(SignalAction).where(SignalAction.date == latest)
+        .order_by(SignalAction.action, SignalAction.streak.desc())
+    ).all() if latest else []
     lines = [f"{i.action} {i.name or ''} {i.symbol}（连续 {i.streak} 天）"
              for i in items[:15]]
+    mailer.send_email_html(db, title, html, dedup_key=f"signal|{latest}")
     mailer.send_feishu(db, title, lines or ["今日无重点信号"],
                        dedup_key=f"signal|{latest}")
     _event(db, run_id, "publish", f"发布完成：邮件 + 飞书（{title}）",
@@ -281,3 +421,48 @@ def _finish(db: Session, run_id: int, status: str, error: str | None) -> None:
     db.commit()
     STATE.update(running=False, step=None,
                  finished_at=datetime.now().isoformat(timespec="seconds"))
+
+
+# ────────────────────────── 每日定时（17:30，交易日）──────────────────────────
+
+DAILY_HOUR = int(os.getenv("QUANT_ORCHESTRATOR_HOUR", "17"))
+DAILY_MINUTE = int(os.getenv("QUANT_ORCHESTRATOR_MINUTE", "30"))
+_daily_state: dict = {"last_run_date": "", "last_success": None, "last_error": None}
+
+
+def start_daily_scheduler() -> None:
+    """启动每日定时线程（守护线程，60s 一跳）。
+
+    幂等：每交易日只触发一次；错过的时点（如机器 17:30 未开机）在当天
+    之后检测到「今天还没跑」时立即补跑（catch-up），重启进程亦会补跑。
+    与 19:00 的 data_scheduler 不冲突（均幂等，管道步骤对已新数据快速跳过）。
+    """
+    def _loop() -> None:
+        while True:
+            try:
+                now = datetime.now()
+                today = now.date().isoformat()
+                due = (now.hour, now.minute) >= (DAILY_HOUR, DAILY_MINUTE)
+                if due and _daily_state["last_run_date"] != today and not STATE["running"]:
+                    from app.core.trading_calendar import is_trading_day
+
+                    if is_trading_day(now.date()):
+                        _daily_state["last_run_date"] = today
+                        db = SessionLocal()
+                        try:
+                            rid = start_run(db, trigger="scheduler")
+                            _daily_state["last_error"] = None
+                            _event(db, rid, "orchestrator",
+                                   f"每日定时触发（{DAILY_HOUR:02d}:{DAILY_MINUTE:02d}）",
+                                   step="schedule", status="ok")
+                            db.commit()
+                        finally:
+                            db.close()
+                    else:
+                        _daily_state["last_run_date"] = today  # 非交易日跳过
+            except Exception as exc:  # noqa: BLE001
+                _daily_state["last_error"] = str(exc)[:300]
+            time.sleep(60)
+
+    threading.Thread(target=_loop, daemon=True,
+                     name="orchestrator-daily").start()

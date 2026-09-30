@@ -47,6 +47,9 @@ def on_startup():
     ensure_env_provider()
     from app.core.engine.paper_scheduler import start_paper_scheduler
     start_paper_scheduler()
+    # 研究流水线每日定时（17:30 交易日，含补跑；与 data_scheduler 并存，均幂等）
+    from app.services.orchestrator import start_daily_scheduler
+    start_daily_scheduler()
     # 数据管道调度（settings.data_schedule ← .env/环境 QUANT_DATA_SCHEDULE=1：
     # 每交易日 19:00 ETL 自动日更 + 断供自愈 + 指数成分(PIT)月度快照自动刷新）
     from app.core.data_scheduler import start_data_scheduler

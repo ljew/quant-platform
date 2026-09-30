@@ -14,6 +14,7 @@ import threading
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -259,3 +260,20 @@ def events(run_id: int = 0, limit: int = 200, db: Session = Depends(get_db)):
             "created_at": r.created_at.isoformat() if r.created_at else None,
         } for r in reversed(rows)
     ]
+
+
+@router.get("/stats")
+def stats(days: int = 90, db: Session = Depends(get_db)):
+    """信号有效性六维统计（归因分析页数据源；10 分钟缓存）。"""
+    from app.services.xq import stats as xq_stats
+
+    return xq_stats.compute_stats(db, DUCKDB_PATH, days=days)
+
+
+@router.get("/report", response_class=PlainTextResponse)
+def report_preview(db: Session = Depends(get_db)):
+    """预览每日信号报告（与邮件正文同一份 HTML）。"""
+    from app.services.orchestrator import build_report
+
+    _title, html = build_report(db)
+    return PlainTextResponse(html, media_type="text/html")

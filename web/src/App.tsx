@@ -7,15 +7,19 @@ import MonitorPage from "./pages/MonitorPage";
 import DataPipelinePage from "./pages/DataPipelinePage";
 import FactorMinePage from "./pages/FactorMinePage";
 import ResearchPage from "./pages/ResearchPage";
+import SignalPage from "./pages/SignalPage";
+import AttributionPage from "./pages/AttributionPage";
 import { sidebarTheme, useTheme } from "./theme";
 
-type Tab = "market" | "backtest" | "paper" | "optimize" | "monitor" | "factor" | "pipeline" | "research";
+type Tab = "market" | "backtest" | "paper" | "optimize" | "monitor" | "factor" | "pipeline" | "research" | "signal" | "attribution";
 
 const NAV: { key: Tab; label: string; icon: string }[] = [
   { key: "market", label: "行情看板", icon: "▤" },
   { key: "backtest", label: "策略回测", icon: "≋" },
   { key: "optimize", label: "参数寻优", icon: "◎" },
   { key: "factor", label: "因子挖掘", icon: "∴" },
+  { key: "signal", label: "信号中心", icon: "⚡" },
+  { key: "attribution", label: "归因分析", icon: "⌗" },
   { key: "paper", label: "模拟盘", icon: "◷" },
   { key: "research", label: "研究驾驶舱", icon: "✦" },
   { key: "pipeline", label: "数据管道", icon: "⇉" },
@@ -127,6 +131,8 @@ export default function App() {
         {tab === "paper" && <PaperPage />}
         {tab === "pipeline" && <DataPipelinePage />}
         {tab === "research" && <ResearchPage />}
+        {tab === "signal" && <SignalPage />}
+        {tab === "attribution" && <AttributionPage />}
         {tab === "monitor" && <MonitorPage />}
       </main>
     </div>
