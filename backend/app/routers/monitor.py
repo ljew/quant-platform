@@ -98,7 +98,7 @@ def _latest(db, model, col) -> str | None:
 def _freshness(db) -> dict:
     today = date.today().isoformat()
 
-    def fresh(label: str, latest: str | None) -> dict:
+    def fresh(label: str, latest: str | None, max_days: int = 5) -> dict:
         days = None
         if latest:
             try:
@@ -106,13 +106,14 @@ def _freshness(db) -> dict:
             except Exception:  # noqa: BLE001
                 days = None
         return {"label": label, "latest": latest, "days_ago": days,
-                "stale": (days is not None and days > 5)}
+                "stale": (days is not None and days > max_days)}
 
     return {
         "kline": fresh("个股K线", _latest(db, KlineDaily, KlineDaily.trade_date)),
         "index": fresh("指数K线", _latest(db, IndexKlineDaily, IndexKlineDaily.trade_date)),
         "factor": fresh("因子截面", _latest(db, FactorDaily, FactorDaily.trade_date)),
-        "membership": fresh("成分快照", _latest(db, IndexMembership, IndexMembership.trade_date)),
+        # 成分快照为月度刷新（调度器月中自动跑），阈值放宽到 45 天，避免误报 stale
+        "membership": fresh("成分快照(月更)", _latest(db, IndexMembership, IndexMembership.trade_date), max_days=45),
         "today": today,
     }
 
