@@ -577,3 +577,31 @@ export interface HealthRuleRow {
   enabled: boolean; last_value: string | null; last_status: string | null;
   metric_doc: string;
 }
+
+// —— Agent 编排 / 研究驾驶舱（P2）——
+export interface AgentEventItem {
+  id: number; run_id: number; agent: string; step: string;
+  level: string; status: string | null; message: string;
+  rows: number | null; duration_ms: number | null; created_at: string | null;
+}
+export interface ResearchRunItem {
+  id: number; trigger: string; status: string; data_date: string | null;
+  gate_status: string; gate_note: string | null; gate_deadline: string | null;
+  started_at: string | null; finished_at: string | null; error: string | null;
+}
+export interface AgentState {
+  orchestrator: { running: boolean; run_id: number | null; step: string | null;
+    started_at: string | null; finished_at: string | null };
+  gate_countdown_sec: number;
+  latest_run: ResearchRunItem | null;
+  recent_runs: ResearchRunItem[];
+}
+
+// Agent 方法独立导出（api 对象字面量无法被 Object.assign 扩展类型）
+export const agentApi = {
+  state: () => get<AgentState>("/agent/state"),
+  run: (trigger: string = "manual") =>
+    post<{ ok: boolean; run_id: number }>("/agent/run", { trigger }),
+  gate: (rid: number, action: "approve" | "reject", note: string = "") =>
+    post<{ ok: boolean; gate_status: string }>(`/agent/runs/${rid}/gate`, { action, note }),
+};

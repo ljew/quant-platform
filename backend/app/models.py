@@ -720,6 +720,8 @@ class ResearchRun(Base):
     data_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # 本轮处理的数据日期
     gate_status: Mapped[str] = mapped_column(String(12), default="none")
     gate_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 闸门倒计时截止时刻：超过则自动放行（保证无人值守），人工放行/否决可提前
+    gate_deadline: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)

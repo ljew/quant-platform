@@ -101,6 +101,8 @@ def _migrate_sqlite() -> None:
     }
     # factor_mine_results 表：挖掘结果入参签名（用于重复表达式查重）
     factor_mine_expected = {"params_json": "TEXT DEFAULT ''"}
+    # research_runs 表：人工闸门倒计时（2026-09-30 P2）
+    research_runs_expected = {"gate_deadline": "TIMESTAMP"}
     try:
         with engine.connect() as conn:
             for table, expected in (
@@ -108,6 +110,7 @@ def _migrate_sqlite() -> None:
                 ("stocks", stocks_expected),
                 ("paper_tasks", paper_tasks_expected),
                 ("factor_mine_results", factor_mine_expected),
+                ("research_runs", research_runs_expected),
             ):
                 cols = {
                     r[1]

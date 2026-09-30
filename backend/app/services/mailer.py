@@ -73,9 +73,9 @@ def load_config() -> dict:
 
 def send_email_html(db: Session, subject: str, html: str,
                     dedup_key: str = "") -> dict:
-    """发送 HTML 邮件；dedup_key 非空时同 key 只发一次。"""
+    """发送 HTML 邮件；dedup_key 非空时同渠道同 key 只发一次。"""
     cfg = load_config().get("email", {})
-    if dedup_key and _already_sent(db, dedup_key):
+    if dedup_key and _already_sent(db, "email", dedup_key):
         return {"ok": True, "skipped": True, "reason": "dedup 命中"}
 
     if not cfg.get("enabled"):
@@ -99,7 +99,7 @@ def send_feishu(db: Session, title: str, lines: list[str],
                 dedup_key: str = "") -> dict:
     """发送飞书富文本消息（grouped post 格式，与 Sequoia 雷达一致）。"""
     cfg = load_config().get("feishu", {})
-    if dedup_key and _already_sent(db, dedup_key):
+    if dedup_key and _already_sent(db, "feishu", dedup_key):
         return {"ok": True, "skipped": True, "reason": "dedup 命中"}
     if not cfg.get("enabled"):
         return _log(db, "feishu", title, dedup_key, ok=False, error="飞书通道未配置")
@@ -125,11 +125,13 @@ def send_feishu(db: Session, title: str, lines: list[str],
         return _log(db, "feishu", title, dedup_key, ok=False, error=str(exc)[:300])
 
 
-def _already_sent(db: Session, dedup_key: str) -> bool:
+def _already_sent(db: Session, channel: str, dedup_key: str) -> bool:
+    """去重按「渠道 + key」：邮件已发不代表飞书已发（2026-09-30 实测踩坑）。"""
     from sqlalchemy import select
 
     row = db.scalars(
-        select(NotifyLog).where(NotifyLog.dedup_key == dedup_key,
+        select(NotifyLog).where(NotifyLog.channel == channel,
+                                NotifyLog.dedup_key == dedup_key,
                                 NotifyLog.status == "ok").limit(1)
     ).first()
     return row is not None
