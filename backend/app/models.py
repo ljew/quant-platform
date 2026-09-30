@@ -740,3 +740,23 @@ class NotifyLog(Base):
     status: Mapped[str] = mapped_column(String(12), default="ok")    # ok/fail/skip
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class PortfolioState(Base):
+    """镜像组合快照（Sequoia watchlist 迁移）：按信号自动模拟的真实成本组合。
+
+    每次 BacktestAgent 运行按数据日 upsert（同日覆盖）；equity/holdings/trades
+    均为 JSON 数组，前端直接渲染。
+    """
+
+    __tablename__ = "portfolio_state"
+    __table_args__ = (UniqueConstraint("as_of_date", name="uq_portfolio_state_d"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    as_of_date: Mapped[date] = mapped_column(Date)
+    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    equity_json: Mapped[str] = mapped_column(Text, default="[]")
+    holdings_json: Mapped[str] = mapped_column(Text, default="[]")
+    trades_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)

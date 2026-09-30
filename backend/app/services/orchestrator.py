@@ -188,6 +188,23 @@ def _step_backtest(db: Session, run_id: int) -> None:
            duration_ms=int((time.time() - t0) * 1000))
     db.commit()
 
+    # 镜像组合重演（真实成本：佣金/印花税/过户费/滑点；TP+30%/SL-10%）
+    from app.services.xq import portfolio as xq_portfolio
+
+    t1 = time.time()
+    pf = xq_portfolio.run_portfolio(db, str(DATA_DIR / "quant.duckdb"))
+    if pf.get("ok"):
+        s = pf["summary"]
+        _event(db, run_id, "backtest",
+               f"镜像组合重演：净值 {s['total']:,.0f}（{s['return_pct']:+.2f}%）"
+               f"· 最大回撤 {s['max_drawdown_pct']:.2f}% · {s['n_trades']} 笔 · "
+               f"持有 {s['n_holdings']} 只",
+               step="portfolio", status="ok", duration_ms=int((time.time() - t1) * 1000))
+    else:
+        _event(db, run_id, "backtest", f"镜像组合不可用：{pf.get('error')}",
+               step="portfolio", status="warn", level="warn")
+    db.commit()
+
 
 def _step_attribution(db: Session, run_id: int) -> None:
     """AttributionAgent：六维归因速览（明细由归因分析页展示）。"""

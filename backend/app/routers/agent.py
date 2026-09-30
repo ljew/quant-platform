@@ -153,3 +153,39 @@ def _event_dict(e: AgentEvent) -> dict:
         "rows": e.rows, "duration_ms": e.duration_ms,
         "created_at": e.created_at.isoformat() if e.created_at else None,
     }
+
+
+# ────────────────────────── 发布通道配置（SMTP 授权码轮换走这里）──────────────────────────
+
+class NotifyConfigPayload(BaseModel):
+    enabled: bool = True
+    smtp_host: str = "smtp.163.com"
+    smtp_port: int = 465
+    user: str = ""
+    password: str = ""   # 留空 = 不修改
+    from_addr: str = ""
+    to: list[str] = Field(default_factory=list)
+
+
+@router.get("/notify-config")
+def notify_config():
+    """发布通道配置（password 脱敏）。"""
+    from app.services import mailer
+
+    return mailer.get_config_masked()
+
+
+@router.put("/notify-config")
+def update_notify_config(payload: NotifyConfigPayload):
+    """更新发布通道配置（授权码留空 = 不修改）。"""
+    from app.services import mailer
+
+    return {"ok": True, "config": mailer.update_config(payload.model_dump())}
+
+
+@router.post("/notify-test")
+def notify_test(db: Session = Depends(get_db)):
+    """发送测试邮件（验证授权码/通道连通）。"""
+    from app.services import mailer
+
+    return mailer.send_test(db)

@@ -3,7 +3,8 @@
  */
 import { useEffect, useState } from "react";
 import { Badge, Btn, Card, PageHeader } from "../components/ui";
-import { get } from "../api/client";
+import EChart from "../components/EChart";
+import { get, signalApi, PortfolioSnapshot } from "../api/client";
 import { useTheme } from "../theme";
 
 interface ActionItem {
@@ -29,6 +30,11 @@ export default function SignalPage() {
   const [actions, setActions] = useState<ActionItem[]>([]);
   const [actionDate, setActionDate] = useState<string | null>(null);
   const [picks, setPicks] = useState<{ strategy: string; items: { symbol: string; name: string | null }[] }[]>([]);
+  const [pf, setPf] = useState<PortfolioSnapshot | null>(null);
+
+  useEffect(() => {
+    signalApi.portfolio().then((r) => { if (r.ok) setPf(r); }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     get<{ date: string; symbols: number }[]>("/signal/dates").then((d) => {
@@ -62,6 +68,45 @@ export default function SignalPage() {
           </select>
         }
       />
+
+      {/* —— 镜像组合（真实成本模拟）—— */}
+      {pf && (
+        <Card title={`镜像组合（截至 ${pf.as_of} · 真实成本模拟：佣金/印花税/滑点，T+1 开盘建仓）`}
+          colors={colors}>
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 10 }}>
+            {[
+              { k: "净值", v: `${pf.summary.total.toLocaleString()}` },
+              { k: "收益率", v: `${pf.summary.return_pct > 0 ? "+" : ""}${pf.summary.return_pct}%`,
+                color: pf.summary.return_pct >= 0 ? "#c0392b" : "#1e8449" },
+              { k: "最大回撤", v: `${pf.summary.max_drawdown_pct}%` },
+              { k: "成交笔数", v: `${pf.summary.n_trades}` },
+              { k: "当前持仓", v: `${pf.summary.n_holdings} 只` },
+            ].map((x) => (
+              <div key={x.k} style={{ minWidth: 110 }}>
+                <div style={{ fontSize: 11, color: colors.muted }}>{x.k}</div>
+                <div style={{ fontSize: 17, fontWeight: 700, color: x.color || colors.text }}>{x.v}</div>
+              </div>
+            ))}
+          </div>
+          <EChart height={220} option={{
+            tooltip: { trigger: "axis" },
+            grid: { left: 70, right: 20, top: 20, bottom: 30 },
+            xAxis: { type: "category", data: pf.equity.map((e) => e.date.slice(2)),
+              axisLabel: { fontSize: 10, interval: Math.ceil(pf.equity.length / 8) } },
+            yAxis: [{ type: "value", scale: true, axisLabel: { fontSize: 10,
+              formatter: (v: number) => `${(v / 10000).toFixed(0)}万` } }],
+            series: [{ name: "组合净值", type: "line", data: pf.equity.map((e) => e.total),
+              showSymbol: false, lineStyle: { width: 1.6, color: "#c0392b" },
+              areaStyle: { opacity: 0.08 } }],
+          } as never} />
+          {pf.holdings.length > 0 && (
+            <div style={{ fontSize: 12, color: colors.text, marginTop: 6 }}>
+              <b>当前持仓：</b>
+              {pf.holdings.map((h) => `${h.symbol}(${h.shares}股@${h.entry_price})`).join("、")}
+            </div>
+          )}
+        </Card>
+      )}
 
       {grouped.map((g) => {
         const meta = ACTION_META[g.action];

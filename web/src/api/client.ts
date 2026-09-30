@@ -605,3 +605,27 @@ export const agentApi = {
   gate: (rid: number, action: "approve" | "reject", note: string = "") =>
     post<{ ok: boolean; gate_status: string }>(`/agent/runs/${rid}/gate`, { action, note }),
 };
+
+// 信号组合 + 发布通道配置（P3/P4）
+export interface PortfolioSnapshot {
+  ok: boolean; error?: string; as_of: string;
+  summary: { capital: number; total: number; return_pct: number;
+    max_drawdown_pct: number; n_trades: number; n_holdings: number; days: number };
+  config: Record<string, number>;
+  equity: { date: string; total: number; cash: number; market_value: number; n_positions: number }[];
+  holdings: { symbol: string; shares: number; entry_price: number; entry_date: string }[];
+  trades: { date: string; symbol: string; side: string; shares: number;
+    price: number; reason: string; pnl_pct?: number }[];
+}
+export interface NotifyConfig {
+  enabled: boolean; smtp_host: string; smtp_port: number; user: string;
+  from_addr: string; to: string[]; has_password: boolean; password_hint: string;
+}
+
+export const signalApi = {
+  portfolio: () => get<PortfolioSnapshot>("/signal/portfolio"),
+  notifyConfig: () => get<NotifyConfig>("/agent/notify-config"),
+  updateNotifyConfig: (cfg: Record<string, unknown>) =>
+    put<{ ok: boolean; config: NotifyConfig }>("/agent/notify-config", cfg),
+  testNotify: () => post<{ ok: boolean; error?: string }>("/agent/notify-test", {}),
+};

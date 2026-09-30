@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge, Btn, Card, PageHeader } from "../components/ui";
 import {
-  AgentEventItem, AgentState, agentApi, ResearchRunItem,
+  AgentEventItem, AgentState, agentApi, NotifyConfig, ResearchRunItem,
 } from "../api/client";
 import { useTheme, ThemeColors } from "../theme";
 
@@ -221,6 +221,9 @@ export default function ResearchPage() {
         </div>
       </Card>
 
+      {/* —— 发布通道设置 —— */}
+      <NotifyConfigCard colors={colors} />
+
       {/* —— 运行历史 —— */}
       <Card title="最近运行" colors={colors}>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -236,8 +239,7 @@ export default function ResearchPage() {
   );
 }
 
-function RunRow({ run, colors }: { run: ResearchRunItem; colors: ThemeColors }) {
-  const tone = run.status === "SUCCESS" ? colors.down
+function RunRow({ run, colors }: { run: ResearchRunItem; colors: ThemeColors }) {  const tone = run.status === "SUCCESS" ? colors.down
     : run.status === "FAILED" ? colors.up : "#e8a520";
   return (
     <div style={{
@@ -254,5 +256,87 @@ function RunRow({ run, colors }: { run: ResearchRunItem; colors: ThemeColors }) 
       {run.gate_status === "rejected" && <span style={{ color: colors.up }}>已否决</span>}
       {run.error && <span style={{ color: colors.up, flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>{run.error}</span>}
     </div>
+  );
+}
+
+/** 发布通道设置卡：SMTP 授权码轮换在此页面完成（password 留空 = 不修改）。 */
+function NotifyConfigCard({ colors }: { colors: ThemeColors }) {
+  const [cfg, setCfg] = useState<NotifyConfig | null>(null);
+  const [pwd, setPwd] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    agentApi.state; // noop 保持依赖一致
+    import("../api/client").then(({ signalApi }) =>
+      signalApi.notifyConfig().then(setCfg).catch(() => {}));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const save = async () => {
+    if (!cfg) return;
+    setBusy(true); setMsg("");
+    try {
+      const { signalApi } = await import("../api/client");
+      const r = await signalApi.updateNotifyConfig({
+        enabled: cfg.enabled, smtp_host: cfg.smtp_host, smtp_port: cfg.smtp_port,
+        user: cfg.user, password: pwd, from_addr: cfg.from_addr, to: cfg.to,
+      });
+      setCfg(r.config); setPwd(""); setMsg("已保存");
+    } catch (e) { setMsg((e as Error).message); } finally { setBusy(false); }
+  };
+
+  const test = async () => {
+    setBusy(true); setMsg("");
+    try {
+      const { signalApi } = await import("../api/client");
+      const r = await signalApi.testNotify();
+      setMsg(r.ok ? "测试邮件已发送，请查收" : `发送失败：${r.error}`);
+    } catch (e) { setMsg((e as Error).message); } finally { setBusy(false); }
+  };
+
+  const inputStyle: React.CSSProperties = {
+    padding: "6px 8px", borderRadius: 8, border: `1px solid ${colors.border}`,
+    background: colors.card, color: colors.text, fontSize: 12.5,
+  };
+
+  return (
+    <Card title="发布通道设置（每日信号邮件）" colors={colors}>
+      {!cfg ? <div style={{ color: colors.muted, fontSize: 13 }}>加载中…</div> : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 12.5 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <label style={{ color: colors.muted }}>SMTP
+              <input value={cfg.smtp_host} style={{ ...inputStyle, width: 160, marginLeft: 6 }}
+                onChange={(e) => setCfg({ ...cfg, smtp_host: e.target.value })} />
+            </label>
+            <label style={{ color: colors.muted }}>端口
+              <input value={cfg.smtp_port} style={{ ...inputStyle, width: 64, marginLeft: 6 }}
+                onChange={(e) => setCfg({ ...cfg, smtp_port: Number(e.target.value) })} />
+            </label>
+            <label style={{ color: colors.muted }}>账号
+              <input value={cfg.user} style={{ ...inputStyle, width: 200, marginLeft: 6 }}
+                onChange={(e) => setCfg({ ...cfg, user: e.target.value })} />
+            </label>
+            <label style={{ color: colors.muted }}>授权码
+              <input type="password" value={pwd} placeholder={cfg.password_hint || "未设置"}
+                style={{ ...inputStyle, width: 160, marginLeft: 6 }}
+                onChange={(e) => setPwd(e.target.value)} />
+            </label>
+            <label style={{ color: colors.muted }}>收件人
+              <input value={cfg.to.join(",")} style={{ ...inputStyle, width: 220, marginLeft: 6 }}
+                onChange={(e) => setCfg({ ...cfg, to: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} />
+            </label>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <Btn small onClick={save} disabled={busy}>保存</Btn>
+            <Btn small kind="warning" onClick={test} disabled={busy}>发送测试邮件</Btn>
+            <span style={{ color: colors.muted, fontSize: 11.5 }}>
+              授权码留空 = 不修改（当前 {cfg.password_hint || "未设置"}）；163 邮箱在「设置 → POP3/IMAP/SMTP」里生成新授权码后填入保存即可完成轮换
+            </span>
+          </div>
+          {msg && <div style={{ color: colors.accent }}>{msg}</div>}
+        </div>
+      )}
+    </Card>
   );
 }

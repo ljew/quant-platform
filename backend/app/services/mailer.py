@@ -127,6 +127,52 @@ def _already_sent(db: Session, channel: str, dedup_key: str) -> bool:
     return row is not None
 
 
+# ────────────────────────── 配置维护（授权码轮换走这里）──────────────────────────
+
+def get_config_masked() -> dict:
+    """返回脱敏配置（password 只回长度与尾 4 位）。"""
+    cfg = load_config().get("email", {})
+    pwd = cfg.get("password", "")
+    return {
+        "enabled": cfg.get("enabled", False),
+        "smtp_host": cfg.get("smtp_host", ""),
+        "smtp_port": cfg.get("smtp_port", 465),
+        "user": cfg.get("user", ""),
+        "from_addr": cfg.get("from_addr", ""),
+        "to": cfg.get("to", []),
+        "has_password": bool(pwd),
+        "password_hint": f"***{pwd[-4:]}" if len(pwd) >= 4 else "",
+    }
+
+
+def update_config(email: dict) -> dict:
+    """更新邮件配置（password 留空 = 不修改；整文件落盘，data/ 已 gitignore）。"""
+    cfg = load_config()
+    cur = cfg.get("email", {})
+    new = {
+        "enabled": bool(email.get("enabled", cur.get("enabled", False))),
+        "smtp_host": email.get("smtp_host", cur.get("smtp_host", "smtp.163.com")),
+        "smtp_port": int(email.get("smtp_port", cur.get("smtp_port", 465))),
+        "user": email.get("user", cur.get("user", "")),
+        # 授权码留空 = 沿用旧值（页面上编辑 key 不必重输）
+        "password": email.get("password") or cur.get("password", ""),
+        "from_addr": email.get("from_addr", cur.get("from_addr", "")),
+        "to": email.get("to") or cur.get("to", []),
+    }
+    cfg["email"] = new
+    CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=1),
+                           encoding="utf-8")
+    return get_config_masked()
+
+
+def send_test(db: Session) -> dict:
+    """发送测试邮件（验证授权码/通道）。"""
+    html = ("<html><body style='font-family:-apple-system,Helvetica'>"
+            "<h3>量化平台测试邮件</h3><p>如果你收到这封邮件，说明发布通道配置正确。"
+            f"发送时间 {datetime.now().isoformat(timespec='seconds')}</p></body></html>")
+    return send_email_html(db, "量化平台 · 发布通道测试", html, dedup_key="")
+
+
 def _log(db: Session, channel: str, subject: str, dedup_key: str,
          ok: bool, error: str | None = None) -> dict:
     db.add(NotifyLog(channel=channel, subject=subject[:250], dedup_key=dedup_key,

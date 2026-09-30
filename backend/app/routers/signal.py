@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from datetime import date, timedelta
 
@@ -277,3 +278,25 @@ def report_preview(db: Session = Depends(get_db)):
 
     _title, html = build_report(db)
     return PlainTextResponse(html, media_type="text/html")
+
+
+@router.get("/portfolio")
+def portfolio(db: Session = Depends(get_db)):
+    """镜像组合最新快照（真实成本模拟：T+1 建仓/整手/佣金印花税/止盈止损）。"""
+    from sqlalchemy import select as _select
+
+    from app.models import PortfolioState
+
+    row = db.scalars(
+        _select(PortfolioState).order_by(PortfolioState.as_of_date.desc()).limit(1)
+    ).first()
+    if not row:
+        return {"ok": False, "error": "尚无组合快照（流水线运行后生成）"}
+    return {
+        "ok": True, "as_of": row.as_of_date.isoformat(),
+        "summary": json.loads(row.summary_json),
+        "config": json.loads(row.config_json),
+        "equity": json.loads(row.equity_json),
+        "holdings": json.loads(row.holdings_json),
+        "trades": json.loads(row.trades_json),
+    }
