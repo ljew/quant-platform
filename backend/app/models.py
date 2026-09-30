@@ -627,3 +627,114 @@ class LlmProvider(Base):
     last_test_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+# ────────────────────────── 信号中心（Sequoia-X 迁移，2026-09-30）──────────────────────────
+
+class SignalDaily(Base):
+    """每日选股明细：某交易日、某策略命中了哪些股票。
+
+    这是信号引擎的**原始事实层**——streak（连续出现天数）、共振数、动作判定
+    全部由它聚合而来，不做任何人工修正。UNIQUE(date, strategy, symbol) 保证
+    重跑幂等（同日同策略同股只留一行）。
+    """
+
+    __tablename__ = "signal_daily"
+    __table_args__ = (
+        UniqueConstraint("date", "strategy", "symbol", name="uq_signal_daily_dss"),
+        Index("ix_signal_daily_date", "date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    date: Mapped[date] = mapped_column(Date)            # 数据日期（= 交易日）
+    strategy: Mapped[str] = mapped_column(String(40))   # 策略 key，如 ma_volume
+    symbol: Mapped[str] = mapped_column(String(16))     # 平台格式，如 sz000001
+    name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON：命中时的关键指标
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class SignalAction(Base):
+    """每日买卖动作判定（signal_engine._judge 的输出）。
+
+    action ∈ BUY_STRONG / WATCH / NEW / REDUCE / SELL / EXIT（与 Sequoia 雷达口径一致）。
+    判定顺序风控优先：止损/止盈/超期 → MA 破位 → 信号强度。UNIQUE(date, symbol)。
+    """
+
+    __tablename__ = "signal_actions"
+    __table_args__ = (
+        UniqueConstraint("date", "symbol", name="uq_signal_actions_ds"),
+        Index("ix_signal_actions_date", "date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    date: Mapped[date] = mapped_column(Date)
+    symbol: Mapped[str] = mapped_column(String(16))
+    name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    action: Mapped[str] = mapped_column(String(16))
+    streak: Mapped[int] = mapped_column(Integer, default=0)       # 连续出现交易日数
+    resonance: Mapped[int] = mapped_column(Integer, default=0)    # 当日共振策略数
+    strategies: Mapped[str] = mapped_column(Text, default="")     # 命中策略名，顿号分隔
+    quality_tier: Mapped[str] = mapped_column(String(8), default="neutral")
+    close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ma10: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ma20: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AgentEvent(Base):
+    """Agent 事件流：研究过程的每一步动作都落这里，SSE 由此推送到驾驶舱。
+
+    run_id 关联 research_runs；level ∈ info/warn/error；status 用于步骤型事件
+    （running/ok/fail）。append-only，不做更新——事件流的历史就是研究过程的回放。
+    """
+
+    __tablename__ = "agent_events"
+    __table_args__ = (Index("ix_agent_events_run", "run_id", "id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    agent: Mapped[str] = mapped_column(String(24))     # data/quality/factor/research/...
+    step: Mapped[str] = mapped_column(String(64), default="")
+    level: Mapped[str] = mapped_column(String(8), default="info")
+    status: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    message: Mapped[str] = mapped_column(Text, default="")
+    rows: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class ResearchRun(Base):
+    """一次研究运行（每日流水线或手动触发）的顶层记录。
+
+    gate_status ∈ none/pending/approved/rejected —— RiskAgent 审查闸门状态，
+    pending 时流水线挂起等待人工（或倒计时自动放行）。
+    """
+
+    __tablename__ = "research_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trigger: Mapped[str] = mapped_column(String(16), default="manual")  # manual/scheduler
+    status: Mapped[str] = mapped_column(String(12), default="RUNNING")
+    data_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # 本轮处理的数据日期
+    gate_status: Mapped[str] = mapped_column(String(12), default="none")
+    gate_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class NotifyLog(Base):
+    """发布记录：每次邮件/飞书推送一条，便于追溯与去重。"""
+
+    __tablename__ = "notify_log"
+    __table_args__ = (Index("ix_notify_log_dedup", "dedup_key"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    channel: Mapped[str] = mapped_column(String(16))   # email/feishu
+    subject: Mapped[str] = mapped_column(String(255), default="")
+    dedup_key: Mapped[str] = mapped_column(String(128), default="")  # 如 signal|2026-09-30
+    status: Mapped[str] = mapped_column(String(12), default="ok")    # ok/fail/skip
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)

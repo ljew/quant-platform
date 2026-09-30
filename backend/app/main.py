@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings, BASE_DIR
 from app.database import init_db
-from app.routers import data, market, strategy, paper, hedge, live, monitor, factor, llm
+from app.routers import data, market, strategy, paper, hedge, monitor, factor, llm, signal
 from app.schemas import HealthResponse
 
 import os
@@ -28,10 +28,13 @@ app.include_router(data.router, prefix=settings.api_prefix)
 app.include_router(strategy.router, prefix=settings.api_prefix)
 app.include_router(paper.router, prefix=settings.api_prefix)
 app.include_router(hedge.router, prefix=settings.api_prefix)
-app.include_router(live.router, prefix=settings.api_prefix)
+# 实盘路由按 2026-09-30 决策摘除（合并设计中 P1-1）：平台范围不含实盘。
+# 代码保留在 app/routers/live.py，需要时恢复下面一行即可。
+# app.include_router(live.router, prefix=settings.api_prefix)
 app.include_router(monitor.router, prefix=settings.api_prefix)
 app.include_router(factor.router, prefix=settings.api_prefix)
 app.include_router(llm.router, prefix=settings.api_prefix)
+app.include_router(signal.router, prefix=settings.api_prefix)
 
 
 @app.on_event("startup")
