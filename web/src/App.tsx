@@ -153,8 +153,22 @@ export default function App() {
             );
           })}
         </nav>
-        {/* 底部：主题切换 + 版本 */}
+        {/* 底部：文档链接 + 主题切换 + 版本 */}
         <div style={{ borderTop: `1px solid ${sb.divider}`, paddingTop: 12, marginTop: 12 }}>
+          <div style={{ padding: "0 12px 8px", display: "flex", flexDirection: "column", gap: 2 }}>
+            <a href="/docs/architecture.html" target="_blank" rel="noreferrer"
+              style={{ color: sb.text, fontSize: 12.5, textDecoration: "none", padding: "4px 0" }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = sb.activeText)}
+              onMouseLeave={(e) => (e.currentTarget.style.color = sb.text)}>
+              <span style={{ marginRight: 8 }}>📐</span>系统架构设计
+            </a>
+            <a href="/docs/manual.html" target="_blank" rel="noreferrer"
+              style={{ color: sb.text, fontSize: 12.5, textDecoration: "none", padding: "4px 0" }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = sb.activeText)}
+              onMouseLeave={(e) => (e.currentTarget.style.color = sb.text)}>
+              <span style={{ marginRight: 8 }}>📖</span>使用说明书
+            </a>
+          </div>
           <button
             onClick={toggle}
             style={{
