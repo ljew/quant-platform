@@ -110,7 +110,10 @@ export default function PaperPage() {
 
   return (
     <div style={{ maxWidth: 1280, margin: "0 auto" }}>
-      <PageHeader title="模拟盘" desc="实时价撮合 · 组合日频调仓 · 风险截断" />
+      <PageHeader
+        title="模拟盘"
+        desc="手动建任务：自选策略与标的，实时价撮合 · 日频调仓 · 风险截断。与「信号中心 → 镜像组合」的区别：那边完全跟随每日选股信号自动进出，无需任何配置"
+      />
       {/* 创建表单 */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 12 }}>
         <label>任务名<input value={name} onChange={(e) => setName(e.target.value)} placeholder="自动命名" style={inputStyle(colors)} /></label>

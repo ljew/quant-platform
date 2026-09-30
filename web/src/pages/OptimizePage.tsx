@@ -354,7 +354,7 @@ export default function OptimizePage() {
 
   return (
     <div style={{ maxWidth: 1280, margin: "0 auto" }}>
-      <PageHeader title="参数寻优" desc="网格搜索 · 样本外验证 · 参数稳健性——防止挑出来的最优参数只是运气" />
+      <PageHeader title="参数寻优" desc="网格搜索 · 样本外验证 · 参数稳健性——防止挑出来的最优参数只是运气（暂只支持单标的策略；指数增强与「选股信号回测」类组合策略需逐参数手跑对比）" />
 
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
         {/* 左栏：参数取值（按语义分组折叠）——只填想扫的参数，留空 = 用默认值单点跑 */}

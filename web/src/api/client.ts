@@ -631,3 +631,30 @@ export const signalApi = {
     put<{ ok: boolean; config: NotifyConfig }>("/agent/notify-config", cfg),
   testNotify: () => post<{ ok: boolean; error?: string }>("/agent/notify-test", {}),
 };
+
+// —— 资讯中心（东财 / 新浪 / 腾讯 / 雪球） ——
+export interface NewsItem {
+  title: string; time: string; url: string; source: string;
+}
+export interface QuoteItem {
+  code: string; name: string; price: number; change_pct: number; source: string;
+}
+export interface HotItem {
+  symbol: string; name: string; heat: number; heat_increment: number;
+  rank_change: number; price: number; change_pct: number; source: string;
+}
+export interface NewsFeed {
+  generated_at: string; cached: boolean; age_sec: number; stale?: boolean;
+  headlines: NewsItem[]; sina_roll: NewsItem[];
+  global_quotes: QuoteItem[]; xueqiu_hot: HotItem[];
+  sources_ok: { eastmoney: boolean; sina: boolean; tencent: boolean; xueqiu: boolean };
+}
+export interface StockNews {
+  ok: boolean; error?: string; symbol?: string; items: NewsItem[]; cached?: boolean;
+}
+
+export const newsApi = {
+  feed: (refresh = false) => get<NewsFeed>(`/news/feed${refresh ? "?refresh=true" : ""}`),
+  stock: (symbol: string) =>
+    get<StockNews>(`/news/stock?symbol=${encodeURIComponent(symbol)}`),
+};

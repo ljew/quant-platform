@@ -71,8 +71,13 @@ export default function SignalPage() {
 
       {/* —— 镜像组合（真实成本模拟）—— */}
       {pf && (
-        <Card title={`镜像组合（截至 ${pf.as_of} · 真实成本模拟：佣金/印花税/滑点，T+1 开盘建仓）`}
+        <Card title={`镜像组合 · 按每日信号自动模拟（截至 ${pf.as_of}）`}
           colors={colors}>
+          <div style={{ fontSize: 11.5, color: colors.muted, marginBottom: 10 }}>
+            完全跟随信号判定的 BUY_STRONG / WATCH 白名单自动进出：T+1 开盘、等权、整手、
+            真实成本（佣金/印花税/滑点），并带止盈 +30% / 止损 −10%。无需任何配置 ——
+            与「模拟盘」页的手动建任务不同（那边由你自选策略与标的）。
+          </div>
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 10 }}>
             {[
               { k: "净值", v: `${pf.summary.total.toLocaleString()}` },

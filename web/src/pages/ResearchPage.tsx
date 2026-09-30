@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge, Btn, Card, PageHeader } from "../components/ui";
 import {
-  AgentEventItem, AgentState, agentApi, NotifyConfig, ResearchRunItem,
+  AgentEventItem, AgentState, agentApi, NotifyConfig, ResearchRunItem, signalApi,
 } from "../api/client";
 import { useTheme, ThemeColors } from "../theme";
 
@@ -270,9 +270,7 @@ function NotifyConfigCard({ colors }: { colors: ThemeColors }) {
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(() => {
-    agentApi.state; // noop 保持依赖一致
-    import("../api/client").then(({ signalApi }) =>
-      signalApi.notifyConfig().then(setCfg).catch(() => {}));
+    signalApi.notifyConfig().then(setCfg).catch(() => {});
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -280,7 +278,6 @@ function NotifyConfigCard({ colors }: { colors: ThemeColors }) {
     if (!cfg) return;
     setBusy(true); setMsg("");
     try {
-      const { signalApi } = await import("../api/client");
       const r = await signalApi.updateNotifyConfig({
         enabled: cfg.enabled, smtp_host: cfg.smtp_host, smtp_port: cfg.smtp_port,
         user: cfg.user, password: pwd, from_addr: cfg.from_addr, to: cfg.to,
@@ -292,7 +289,6 @@ function NotifyConfigCard({ colors }: { colors: ThemeColors }) {
   const test = async () => {
     setBusy(true); setMsg("");
     try {
-      const { signalApi } = await import("../api/client");
       const r = await signalApi.testNotify();
       setMsg(r.ok ? "测试邮件已发送，请查收" : `发送失败：${r.error}`);
     } catch (e) { setMsg((e as Error).message); } finally { setBusy(false); }
