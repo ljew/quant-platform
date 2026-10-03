@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.config import settings
 
@@ -14,12 +15,17 @@ from app.config import settings
 # 排队等待（而不是直接失败），这是多进程共享 SQLite 的必要配置。
 connect_args = {"check_same_thread": False, "timeout": 30} if settings.is_sqlite else {}
 
+# 2026-10-03 血泪教训：默认 QueuePool(5+10) 会被多个常驻调度线程（数据/模拟盘/
+# 流水线/自动研究）+ 请求线程池耗尽，表现为 /health 秒回、一切查库接口超时（"半死"，
+# 只能重启）。SQLite 本地库建连极廉价，用 NullPool（每会话新建连接）从根上消除
+# 连接池耗尽与泄漏级联；并发写由 busy_timeout 兜底（WAL 下读写本就不互斥）。
 engine = create_engine(
     settings.database_url,
     echo=settings.db_echo,
     future=True,
     connect_args=connect_args,
-    pool_pre_ping=True,
+    poolclass=NullPool if settings.is_sqlite else None,
+    pool_pre_ping=not settings.is_sqlite,
 )
 
 if settings.is_sqlite:

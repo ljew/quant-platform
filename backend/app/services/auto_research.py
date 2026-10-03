@@ -403,26 +403,6 @@ def _already_ran_today(job: str) -> bool:
         db.close()
 
 
-def _already_ran_week(job: str, now: datetime) -> bool:
-    """DB 级幂等：本周是否已有该任务的运行记录。"""
-    from app.database import SessionLocal
-    from app.models import AutoResearchRun
-
-    db = SessionLocal()
-    try:
-        monday = (now - timedelta(days=now.weekday())).date()
-        row = db.execute(
-            select(AutoResearchRun.id).where(
-                AutoResearchRun.job == job,
-                AutoResearchRun.started_at >= datetime.combine(monday, datetime.min.time()),
-            ).limit(1)).first()
-        return row is not None
-    except Exception:  # noqa: BLE001
-        return True
-    finally:
-        db.close()
-
-
 def start_auto_scheduler() -> None:
     """自动研究调度线程（60s 一跳，幂等 + 当日/当周补跑）。"""
     def _loop() -> None:
@@ -446,13 +426,16 @@ def start_auto_scheduler() -> None:
                                 run_mining(trigger="scheduler")
                                 logger.info("自动挖矿已触发（%s）", today)
 
-                # 每周复盘：设定 weekday，过了时点且本周没跑过（DB 级判重）
+                # 每周复盘：设定 weekday，过了时点且【今天】没跑过（DB 级判重）
+                # 2026-10-03 修复：原先按"本周已跑"判重，周三一次手动复盘导致周六
+                # 正式复盘被跳过。周级任务的正确判重粒度是"当天"——既防多进程/重启
+                # 重复触发，又不会误杀周末的正式运行。
                 week_key = f"{now.isocalendar().year}-W{now.isocalendar().week}"
                 if (cfg["review_enabled"] and _STATE["review_last"] != week_key
                         and now.weekday() == cfg["review_weekday"]):
                     hh, mm = _hm(cfg["review_time"])
                     if (now.hour, now.minute) >= (hh, mm):
-                        if _already_ran_week("review", now):
+                        if _already_ran_today("review"):
                             _STATE["review_last"] = week_key
                         else:
                             _STATE["review_last"] = week_key
