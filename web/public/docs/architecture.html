@@ -38,8 +38,19 @@
 <body>
 <div class="wrap">
 
+<div class="card" style="border-color:#e0605e55">
+<span class="tag t-r">重要</span><b>2026-10-08 已修复四个评估口径缺陷</b> —— 修复前平台输出的所有「策略表现」都不可信：
+<b>①</b> MA 用后复权而 close 用未复权（比值 3-13 倍）→ <b>MA 破位风控从未触发</b>；
+<b>②</b> 因子评级用 <code>abs(ic_mean)</code> 丢方向 → 26/37 因子负 IC，7 个被误判「可用」；
+<b>③</b> 主引擎零滑点、无印花税（与信号引擎两套口径）；<b>④</b> Sharpe 未减无风险利率。
+<br><br>
+修复后<b>夏普普遍下降 0.3-1.0，这是暴露真实水平，不是变差</b>。旧记录里夏普 0.9-1.2 的单标的回测
+多为单股反复调参（<code>is_tuning=true</code>），不代表策略有效性。
+完整证据与重构路线见 <code>docs/REBUILD-2026-10.md</code>。
+</div>
+
 <h1>QUANT·DESK 系统架构设计</h1>
-<div class="sub">个人量化投研平台 · 架构基线 v2.0 · 最后更新 2026-09-30 · 配套文档：<a href="manual.html" style="color:var(--accent)">使用说明书</a></div>
+<div class="sub">个人量化投研平台 · 架构基线 v2.1 · 最后更新 2026-10-08 · 配套文档：<a href="manual.html" style="color:var(--accent)">使用说明书</a></div>
 
 <div class="card toc">
 <b>目录</b>
@@ -47,9 +58,9 @@
   <li><a href="#s1">定位与设计原则</a></li>
   <li><a href="#s2">总体架构</a></li>
   <li><a href="#s3">数据层：Bronze → Silver → Gold</a></li>
-  <li><a href="#s4">研究流水线（每日 17:30）</a></li>
+  <li><a href="#s4">研究流水线（每日 19:00）</a></li>
   <li><a href="#s5">信号引擎 xq</a></li>
-  <li><a href="#s6">因子体系与 GP 自动挖掘</a></li>
+  <li><a href="#s6">因子体系与 GP（已熔断）</a></li>
   <li><a href="#s7">自动研究闭环</a></li>
   <li><a href="#s8">监控、健康度与节假日静默</a></li>
   <li><a href="#s9">部署与进程管理</a></li>
@@ -91,7 +102,7 @@
 │           ├─ holiday_mode   节假日静默                             │
 │           └─ factor_*       因子计算 / 检验 / GP 挖掘 / LLM 释义   │
 │                                                                 │
-│  调度层   data_scheduler(19:00 ETL)  orchestrator(17:30 流水线)  │
+│  调度层   data_scheduler(19:00 ETL)  orchestrator(19:00 流水线)  │
 │           auto_scheduler(20:47 挖矿 / 周六 10:15 复盘)            │
 │           paper_scheduler(模拟盘)                                 │
 └───────────────────────────┬────────────────────────────────────┘
@@ -133,12 +144,12 @@
   <li><b>交易日历</b>：<code>app/core/trading_calendar.py</code>，akshare 在线拉取并缓存 <code>data/trading_calendar.json</code>，内置 2020-2026 节假日表兜底。所有调度器据此判断「今天跑不跑」。</li>
 </ul>
 
-<h2 id="s4">4. 研究流水线（每日 17:30）</h2>
+<h2 id="s4">4. 研究流水线（每日 19:00）</h2>
 <p><code>orchestrator</code> 把每日研究编排成 8 个步骤，每步有事件日志，重活走 subprocess 隔离 + 硬超时：</p>
 <pre>data → quality → research → signal → backtest → attribution → risk(闸门) → publish
 数据就绪   数据质检    研究计算    信号生成    回测校验     归因分析      风险闸门      结果发布</pre>
 <ul>
-  <li>交易日 17:30 自动触发；错过则下次启动时补跑（幂等）。</li>
+  <li>交易日 19:00 自动触发；错过则下次启动时补跑（幂等）。</li>
   <li><b>risk 是闸门</b>：质检不过会阻断后续步骤并留事件记录，避免脏数据污染信号。</li>
   <li>与 19:00 的 ETL 并存：流水线用的数据若未到当日，会以最近可用交易日为准，两个调度器均幂等。</li>
 </ul>
@@ -164,11 +175,11 @@
 </table>
 <p>组合镜像严格 <b>T+1 开盘成交</b> 防前视：今日 BUY_STRONG → 次一交易日开盘买入。</p>
 
-<h2 id="s6">6. 因子体系与 GP 自动挖掘</h2>
+<h2 id="s6">6. 因子体系与 GP（已熔断）</h2>
 <ul>
   <li><b>因子注册表</b>（<code>factor_registry</code>）：只有 <code>enabled</code> 的因子进入每日生产计算。</li>
   <li><b>检验口径</b>：截面 Rank IC、分层收益、换手与容量，截面抽样约每月一次。</li>
-  <li><b>GP 挖掘</b>（<code>factor_gp.py</code>）：遗传规划在表达式空间进化，按方向偏好（动量/反转/质量/波动等）配置终端与权重；每代记录 best_ic 与适应度曲线。</li>
+  <li><b class="t-r">GP 挖掘（已熔断 2026-10-08）</b>（<code>factor_gp.py</code>）：遗传规划在表达式空间进化。<b>当前默认关闭</b>，<code>gp_search()</code> 直接返回 disabled，恢复需设 <code>QUANT_GP_ENABLED=1</code>（不推荐直接恢复）。<br><b>熔断原因</b>：实测 37 个输出全是 <code>roc(c,6)</code> 一类单变量变体、无任何交互项；fitness 与种群选择在<b>同一全样本</b>内完成（结构性过拟合）；26/37 为负 IC，其中 7 个曾被误判「可用」并进入注册表。<b>复活前置</b>：M3-1 样本外框架 + M3-2 IC 周频化 + 估值因子 PIT 修复。详见 <code>docs/REBUILD-2026-10.md</code> §1.3。</li>
   <li><b>评级四档</b>：优秀 / 可用 / 弱 / 无效——决定落库后的去向（见下节闭环）。</li>
   <li><b>LLM 释义</b>：对挖掘出的表达式生成人类可读解释，供应商在页面配置，改完即时生效。</li>
 </ul>
@@ -245,6 +256,7 @@
 <tr><td>2026-10-08</td><td>修复 xq/data.py 数据源断裂（DuckDB→SQLite 回退）</td><td>DuckDB 在双库改造后已不含 kline_daily（K线982万行全在SQLite），load_panel 硬编码读DuckDB导致信号回填链路完全不可用（Catalog Error）；改为缺表时 attach SQLite</td></tr>
 <tr><td>2026-10-08</td><td>研究卡机制第4步：前端研究卡页面上线</td><td>策略研究 hub 首个 Tab；状态机总览+卡片墙+证据柱+t值+负周数计数+决策历史折叠；数据实时取自 /research/cards；四步路线图全部完成</td></tr>
 <tr><td>2026-10-08</td><td>研究卡页面交互闭环：建议横幅+卡片详情+一键确认</td><td>建议读时派生（/research/suggestions 与周复盘同一套状态机条件）；人工迁移接口带理由留痕，下一次跑批生效；卡片点击看 8 字段完整档案；名词解释内置页面</td></tr>
+<tr><td>2026-10-08</td><td>导航精简 v2.1：13 Tab 收编为 9</td><td>回测+寻优、自动研究+驾驶舱、管道+监控三对重叠页面壳合并（MergedTabs 无损可拆）；因子检验改名因子实验室明确与研究卡分工；旧跳转全部映射；后端零改动</td></tr>
 <!-- DECISIONS:END -->
 </table>
 <p class="muted" style="font-size:12.8px">本表由 <code>docs/decisions.json</code> 自动生成：策略档位变化由每周复盘自动留痕；其他重大变更运行 <code>python scripts/render_decisions.py --add "决策" --reason "理由"</code> 追加。</p>

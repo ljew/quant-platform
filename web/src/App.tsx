@@ -1,25 +1,22 @@
 import { useEffect, useState } from "react";
 import TodayPage from "./pages/TodayPage";
 import MarketPage from "./pages/MarketPage";
-import BacktestPage from "./pages/BacktestPage";
+import BacktestOptimizePage from "./pages/BacktestOptimizePage";
 import PaperPage from "./pages/PaperPage";
-import OptimizePage from "./pages/OptimizePage";
-import MonitorPage from "./pages/MonitorPage";
-import DataPipelinePage from "./pages/DataPipelinePage";
 import FactorMinePage from "./pages/FactorMinePage";
 import ResearchCardsPage from "./pages/ResearchCardsPage";
-import ResearchPage from "./pages/ResearchPage";
 import SignalPage from "./pages/SignalPage";
 import AttributionPage from "./pages/AttributionPage";
-import AutoResearchPage from "./pages/AutoResearchPage";
+import AutoResearchHubPage from "./pages/AutoResearchHubPage";
+import DataSystemPage from "./pages/DataSystemPage";
 import { Hub } from "./components/Hub";
 import { sidebarTheme, useTheme } from "./theme";
 
 /**
- * 重构 v2.0：11 个平级页面 → 4 个一级入口，按「每日使用路径」组织。
- * 今日观点（默认页，打开即有观点）/ 策略研究（回测·寻优·因子一个工作台）/
- * 组合跟踪（模拟盘·信号组合·归因）/ 数据中心（管道·监控·驾驶舱，退居后台）。
- * 旧页面组件全部保留为二级 Tab；旧 quant-nav tab 名自动映射到新位置。
+ * 重构 v2.1：13 个二级 Tab → 9 个（2026-10-08 精简）。
+ * 回测+寻优、自动研究+驾驶舱、管道+监控 三对重叠页面壳合并（MergedTabs，
+ * 原组件未改可无损拆开）；因子检验改名「因子实验室」明确分工（实验室造因子，
+ * 研究卡管上岗）。旧 quant-nav tab 名自动映射到新位置。
  */
 
 type HubKey = "today" | "research" | "track" | "data";
@@ -31,9 +28,8 @@ const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; lab
   ] },
   { key: "research", label: "策略研究", icon: "⚗", tabs: [
     { key: "cards", label: "研究卡" },
-    { key: "backtest", label: "回测" },
-    { key: "optimize", label: "参数寻优" },
-    { key: "factor", label: "因子检验" },
+    { key: "btopt", label: "回测寻优" },
+    { key: "factorlab", label: "因子实验室" },
   ] },
   { key: "track", label: "组合跟踪", icon: "◷", tabs: [
     { key: "paper", label: "模拟盘" },
@@ -42,16 +38,19 @@ const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; lab
   ] },
   { key: "data", label: "数据中心", icon: "⇉", tabs: [
     { key: "auto", label: "自动研究" },
-    { key: "pipeline", label: "数据管道" },
-    { key: "monitor", label: "系统监控" },
-    { key: "cockpit", label: "研究驾驶舱" },
+    { key: "datasys", label: "数据与系统" },
   ] },
 ];
 
 /** 旧 tab 名 → 新二级 tab（兼容各处 dispatch 的 quant-nav 跳转）。 */
 const LEGACY_TAB_MAP: Record<string, string> = {
   news: "today",          // 资讯中心 → 今日观点（已收编为快讯栏）
-  cockpit: "cockpit",
+  backtest: "btopt",      // v2.1 合并
+  optimize: "btopt",
+  factor: "factorlab",    // 因子检验 → 因子实验室
+  cockpit: "auto",        // 研究驾驶舱 → 自动研究 · 流水线实况
+  pipeline: "datasys",
+  monitor: "datasys",
 };
 
 function findHub(sub: string): { hub: HubKey; sub: string } | null {
@@ -67,16 +66,13 @@ function HubContent({ sub }: { sub: string }) {
     case "today": return <TodayPage />;
     case "market": return <MarketPage />;
     case "cards": return <ResearchCardsPage />;
-    case "backtest": return <BacktestPage />;
-    case "optimize": return <OptimizePage />;
-    case "factor": return <FactorMinePage />;
+    case "btopt": return <BacktestOptimizePage />;
+    case "factorlab": return <FactorMinePage />;
     case "paper": return <PaperPage />;
     case "signal": return <SignalPage />;
     case "attribution": return <AttributionPage />;
-    case "auto": return <AutoResearchPage />;
-    case "pipeline": return <DataPipelinePage />;
-    case "monitor": return <MonitorPage />;
-    case "cockpit": return <ResearchPage />;
+    case "auto": return <AutoResearchHubPage />;
+    case "datasys": return <DataSystemPage />;
     default: return null;
   }
 }
@@ -195,7 +191,7 @@ export default function App() {
             <span style={{ marginRight: 8 }}>{mode === "dark" ? "☀" : "☾"}</span>
             {mode === "dark" ? "浅色模式" : "暗色模式"}
           </button>
-          <div style={{ color: sb.text, fontSize: 10.5, padding: "6px 12px", opacity: 0.6 }}>v2.0 · 四入口 · 本机</div>
+          <div style={{ color: sb.text, fontSize: 10.5, padding: "6px 12px", opacity: 0.6 }}>v2.1 · 四入口九页面 · 本机</div>
         </div>
       </aside>
 

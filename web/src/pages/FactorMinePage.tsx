@@ -153,8 +153,8 @@ export default function FactorMinePage() {
   return (
     <div style={{ maxWidth: 1240, margin: "0 auto" }}>
       <PageHeader
-        title="因子挖掘"
-        desc="自定义表达式 · 截面 IC 检验 / 分组单调性 / 多空收益 / 冗余度分析"
+        title="因子实验室"
+        desc="在这里造新因子（表达式 / GP 挖掘 / AI 生成）· 造好了去「研究卡」上岗：登记 → 候选 → 启用"
         actions={<Btn onClick={() => setShowFns(!showFns)} kind="ghost" small>函数参考</Btn>}
       />
 

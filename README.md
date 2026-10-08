@@ -1,246 +1,213 @@
-# 个人量化投研平台 (Quant Platform)
+# QUANT·DESK · 个人量化投研平台
 
-> 个人定量投资研究 · 策略回测 · 实盘交易一体化平台
-> 对应产品设计方案：`quant-platform-design.html`
-
----
-
-## 当前进度：Phase 1 + Phase 2 + 指数增强 — 基础设施 / 行情看板 / 策略回测 / 指数增强
-
-已实现：
-- ✅ FastAPI 后端（REST API + 自动文档）
-- ✅ **DuckDB 分析数据层**（按设计 v1.0 落地：PG/Timescale → DuckDB；K线 133万行/指数/基本面/股票 144万行入库，回测/组合/模拟盘读数据列式加速；业务写表留 SQLite，读写路径分离）
-- ✅ akshare 数据源封装（免 token，A股日K/实时/财务；指数成分股与日K走 csindex/sina 源）
-- ✅ **Tushare 数据源**（已配置 token，指数成分/指数日K/个股日K 兜底，任意指数均支持）
-- ✅ 数据入库服务（全市场股票列表 + 日K线，支持增量更新 / 自动回源）
-- ✅ 行情 API（K线查询、实时快照、标的信息）
-- ✅ 前端行情看板（ECharts K线 + A股红涨绿跌 + 自选实时行情）
-- ✅ 策略 SDK 基类（StandardStrategy：init / on_bar；PortfolioStrategy：init / rebalance）
-- ✅ **事件驱动回测引擎**（逐K线驱动、多头单标的、佣金/滑点、绩效归因）
-- ✅ **三个单标的策略模板**：双均线趋势 / 均线金叉死叉 / 动量突破
-- ✅ **组合回测引擎**（多标的、横截面因子、月度调仓、基准对比、超额收益/信息比率）
-- ✅ **中证800指数增强策略**（多因子打分 + 月度调仓 + 指数基准对比，选股 TopN 最低 5 只）
-- ✅ **沪深300指数增强策略**（成分股仅 300 只，比中证800更少，适合不想覆盖太多标的的场景）
-- ✅ **回测 API + 前端回测页**（参数配置、净值曲线、绩效指标、成交明细、**历史点开看详情**）
-- ✅ **回测引擎实盘化**（涨停买不进/跌停卖不出、A股100股整数倍、单笔最低佣金5元、现金缓冲）
-- ✅ **股票基本面截面入库**（Tushare 行业/总市值/PE/PB，支撑中性化与估值因子）
-- ✅ **指数增强升级**：行业中性 + 市值中性（可开关），因子合成更稳健、跟踪误差更小
-- ✅ **回测详情组合结构可视化**（行业分布饼图 / 持仓数量变化 / 前十大重仓权重时序）
-
-后续 Phase（见设计文档路线图）：
-- Phase 3: 因子研究模块（因子库扩展 / 行业中性 / 市值中性）✅ 已落地
-- Phase 3: 因子研究模块（因子库扩展 / 行业中性 / 市值中性）
-- Phase 4: 模拟交易
-- Phase 5: 实盘对接（CTP/XTP/QMT）
-- Phase 6: 报告中心
+> 因子挖掘 · 策略回测 · 信号跟踪 · 模拟盘 —— 单机全链路闭环
+> 个人研究工具，不含实盘交易通道
 
 ---
 
-## 快速开始（开发模式，无需 Docker）
+## 快速开始
 
-### 1. 准备 Python 环境
-```bash
-# 使用本机 Python 3.13（或任意 3.10+）
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r backend/requirements.txt
-```
-
-### 2. 启动后端
-```bash
-cd backend
-PYTHONPATH=$(pwd) uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-```
-- API 文档：http://localhost:8000/docs
-- 健康检查：http://localhost:8000/health
-
-### 3. 打开前端
-浏览器访问 http://localhost:8000/ （由后端直接托管 `web/dist`，即 React 完整平台 QUANT·DESK）
-
-> 前端源码在 `web/`（React + Vite，四入口：今日观点 / 策略研究 / 组合跟踪 / 数据中心）。
-> 改动后执行 `cd web && npm run build` 重新构建；开发调试用 `npm run dev`（端口 5173，代理 /api 到 8000）。
-
----
-
-## 数据接入（拉取真实行情）
-
-平台数据层支持**三后端**，自动按可用性选择：
-- **akshare**（个股行情首选）：免 token，覆盖 A/港/美股全量历史，需要能访问东方财富接口的网络。
-- **Tushare**（指数数据首选）：已内置 token，指数成分股/指数日K/个股日K 兜底，**任意指数（000300/000905/000906 等）均支持**，最可靠。token 位于 `backend/app/config.py`（`QUANT_TUSHARE_TOKEN` 环境变量可覆盖，建议生产放入 `.env` 不要提交）。
-- **westock-data CLI**（兜底）：调用 WorkBuddy 内置 westock-data（腾讯自选股接口），在受限网络/沙箱环境下自动启用，保证看板始终有真实数据。
-
-后端启动后，通过 API 触发数据入库（首次需联网拉取）：
+**日常使用只需要后端一个服务**（launchd 已托管，开机自启）：
 
 ```bash
-# 1) 拉取全市场 A股基础信息（约 5000+ 只）
-curl -X POST http://localhost:8000/api/v1/data/ingest/stocks
-
-# 2) 拉取日K线（不指定 symbols 则全市场；首次约需数十分钟）
-curl -X POST http://localhost:8000/api/v1/data/ingest/kline \
-  -H "Content-Type: application/json" \
-  -d '{"symbols":["sh600519","sz000858"],"start_year":2015,"adj":"qfq"}'
-
-# 查看数据覆盖情况
-curl http://localhost:8000/api/v1/data/status
+open http://127.0.0.1:8000
 ```
 
-> 说明：数据接入为后台任务。可通过 `/api/v1/data/status` 轮询进度，或查看后端日志。
+前端由后端托管构建产物，打开即用。
 
-### 指数增强数据（成分股日K）
+**改前端代码时**（才需要临时开 Vite）：
 
-指数增强策略需要**全股票池**的历史日K。运行预拉取脚本可批量入库（断点续传、并发加速）：
+```bash
+cd web && npm install && npx vite      # 打开 http://localhost:5173
+# 改完务必同步构建产物，否则 8000 上仍是旧版：
+npm run build
+```
+
+> Vite 已配好 `/api` → `http://127.0.0.1:8000` 代理，前端页面与数据都能正常工作。
+
+**首次部署 / 重启后端**：
 
 ```bash
 cd backend
-# 泛化脚本，--index 指定指数：000906=中证800（默认） / 000300=沪深300 / 000905=中证500
-PYTHONPATH=$(pwd) python scripts/seed_index.py --index 000906 --since 2021
-PYTHONPATH=$(pwd) python scripts/seed_index.py --index 000300 --since 2021
-PYTHONPATH=$(pwd) python scripts/seed_index.py --index 000300 --limit 60   # 仅前 60 只（验证用）
+PYTHONPATH=$(pwd) uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-- 成分股列表：优先 Tushare `index_weight`（任意指数），回退 akshare `index_stock_cons_csindex`
-- 成分股日K：akshare `stock_zh_a_daily(adjust='qfq')`（sina 源前复权）+ Tushare `daily` 兜底
-- 完成后回测将从本地库秒级读取；首次回测若本地缺失会自动回源（较慢）
-
-### 股票基本面截面（行业/市值/估值）
-指数增强的中性化与估值因子需要每只股票的基本面属性。一次性拉取并写入 `stocks` 表：
-
-```bash
-cd backend
-PYTHONPATH=$(pwd) python scripts/seed_attributes.py
-```
-- 数据来源：Tushare `stock_basic`（申万行业）+ `daily_basic`（总市值/PE_TTM/PB，最近交易日）
-- 写入 `stocks` 表的 `industry` / `market_cap`(亿元) / `pe_ttm` / `pb` 字段
-- 中性化开启时自动读取；缺失时策略退化为全局 TopN 选股
-
----
-
-## 策略回测（Phase 2）
-
-### 前端可视化
-浏览器打开 http://localhost:8000/ → 「策略研究 · 回测」页签：
-1. 输入标的（代码或名称，自动联想）→ 选择回测区间与初始资金
-2. 选择策略：
-   - 单标的：双均线趋势 / 均线金叉死叉 / 动量突破，填写参数
-   - **中证800指数增强**：标的自动锁定为「中证800指数 (000906)」，参数为选股数量 TopN（最低 5 只）/调仓周期/因子权重
-   - **沪深300指数增强**：标的自动锁定为「沪深300指数 (000300)」，成分股仅 300 只，比中证800更少、更易实操
-3. 点击「运行回测」→ 展示绩效指标卡、净值曲线（策略 vs 基准）、成交明细（含标的列）
-4. 指数增强额外展示：基准收益、超额收益、信息比率(IR)
-5. **回测历史点开看详情**：历史表格任意一行可点击，加载该次回测的完整净值曲线与成交明细
-
-### 运行指数增强回测（API）
-```bash
-# 中证800 增强（TopN=30）
-curl -X POST http://localhost:8000/api/v1/strategy/backtest \
-  -H "Content-Type: application/json" \
-  -d '{"symbol":"sh000906","start":"2023-01-01","end":"2025-12-31","strategy":"csi800_enhanced","params":{"top_n":30}}'
-
-# 沪深300 增强（TopN=20，最少可到 5）
-curl -X POST http://localhost:8000/api/v1/strategy/backtest \
-  -H "Content-Type: application/json" \
-  -d '{"symbol":"sh000300","start":"2023-01-01","end":"2025-12-31","strategy":"hs300_enhanced","params":{"top_n":20}}'
-```
-返回含：`total_return`(策略总收益)、`benchmark_total_return`(基准收益)、`excess_return`(超额收益)、
-`info_ratio`(信息比率)、`sharpe`、`max_drawdown`、`equity_curve`(策略净值 vs 基准净值)、`trades`(成交明细)。
-
-> 指数增强策略需成分股日K在库（见上节 seed 脚本）；未预拉取时回测会按需自动回源，但较慢。
-
-**行业中性 / 市值中性**（指数增强可选参数，默认开启）：
-- `neutralize_industry`（1/0）：按成分股行业数量占比分配选股名额，使组合行业分布与基准一致
-- `neutralize_marketcap`（1/0）：对每个因子按市值分位分组 demean，剥离规模风格暴露
-- 关闭后退化为主观打分 TopN 选股。需先运行 `seed_attributes.py` 填充行业/市值数据方可生效。
-
-### 列出可用策略
-```bash
-curl http://localhost:8000/api/v1/strategy/strategies
-```
-
-### 运行一次回测
-```bash
-curl -X POST http://localhost:8000/api/v1/strategy/backtest \
-  -H "Content-Type: application/json" \
-  -d '{"symbol":"sh600519","start":"2024-01-01","end":"2025-12-31","strategy":"dual_ma","params":{"fast":5,"slow":20}}'
-```
-返回含：`total_return`(总收益)、`annual_return`(年化)、`max_drawdown`(最大回撤)、
-`sharpe`(夏普比率)、`win_rate`(胜率)、`trade_count`、`equity_curve`(权益曲线)、`trades`(成交明细)。
-
-### 回测历史
-```bash
-curl "http://localhost:8000/api/v1/strategy/backtests?limit=20"        # 历史列表
-curl "http://localhost:8000/api/v1/strategy/backtests/{id}"            # 单次回测完整详情（净值曲线+成交）
-```
-
-### 自定义策略
-继承 `app/core/engine/base_strategy.py` 的 `StandardStrategy`，实现 `init()` 与 `on_bar()`，
-通过 `ctx.buy() / ctx.sell() / ctx.order_target_percent(pct)` 下单，用 `ctx.sma/ema/roc/rsi` 取指标；
-在 `app/core/strategies/registry.py` 登记即可被 API 与前端自动识别。
-
----
-
-## 查询示例
-
-```bash
-# 标的列表（模糊搜索）
-curl "http://localhost:8000/api/v1/market/stocks?keyword=茅台&limit=5"
-
-# 日K线（最近 400 个交易日）
-curl "http://localhost:8000/api/v1/market/kline/sh600519?limit=400"
-
-# 实时快照（需 akshare 数据源）
-curl "http://localhost:8000/api/v1/market/quote/sh600519"
-```
+日常维护用现成脚本：`scripts/relaunch_backend.sh`（需在**你自己的终端**执行，见 `DEPLOY.md`）。
 
 ---
 
 ## 目录结构
+
 ```
 quant-platform/
 ├── backend/
 │   ├── app/
-│   │   ├── config.py          # 全局配置（QUANT_DATABASE_URL 切换 SQLite/Postgres）
-│   │   ├── database.py        # SQLAlchemy 引擎 / Session（业务写表）
-│   │   ├── models.py          # ORM 模型（Stock / KlineDaily / IndexKlineDaily / FundamentalsHistory）
-│   │   ├── schemas.py         # Pydantic 模型
-│   │   ├── main.py            # FastAPI 应用入口
-│   │   ├── routers/           # API 路由（market / data / strategy / paper / hedge）
-│   │   ├── services/          # 数据源封装 / 入库服务 / duckdb_store（DuckDB 只读分析层）
-│   │   └── core/
-│   │       ├── engine/        # 策略 SDK + 回测引擎（indicators / backtest_engine / base_strategy / portfolio_backtest / hedge_engine / paper_engine / factor_expr）
-│   │       └── strategies/    # 策略模板（dual_ma / ma_cross / momentum / chan / multi_factor / enhanced_factor）+ registry
-│   ├── scripts/               # 数据管道（seed_index / seed_attributes / seed_fundamentals / seed_index_kline / update_daily / migrate_to_duckdb / verify_strategy）
-│   ├── requirements.txt
-│   └── run.py
-├── web/                     # React + Vite 前端（QUANT·DESK v2.0，四入口导航）
-│   ├── src/pages/           # TodayPage(今日观点) / Backtest / Optimize / FactorMine / Paper / Signal / Attribution / DataPipeline / Monitor / Research
-│   ├── src/App.tsx          # 4 个一级入口 + 二级 Tab 容器
-│   └── dist/                # 构建产物（npm run build，由后端托管）
-├── prototype/               # 重构演示原型（纯静态 HTML，独立于主应用）
-├── data/                    # SQLite（业务写表）+ quant.duckdb（分析读表，自动生成）+ raw/silver（数据分层）
-└── README.md
+│   │   ├── main.py              # FastAPI 入口
+│   │   ├── config.py            # 全局配置（token / 路径 / 端口）
+│   │   ├── models.py            # SQLAlchemy ORM（29 张表）
+│   │   ├── routers/             # 14 个路由：market/data/strategy/paper/
+│   │   │                        #   signal/factor/auto/monitor/research/…
+│   │   ├── core/
+│   │   │   ├── engine/          # 回测引擎（单标的 + 组合 + 对冲）
+│   │   │   │                    #   factor_expr DSL 引擎 / 指标库
+│   │   │   ├── strategies/      # 策略注册表（21 个，6 个启用）
+│   │   │   ├── datahub/         # 数据枢纽（Bronze/Silver 分层）
+│   │   │   └── broker/          # 模拟撮合 + 风控
+│   │   ├── services/
+│   │   │   ├── xq/              # 信号引擎（9 选股策略 + 判定 + 组合镜像）
+│   │   │   ├── factor_mining.py # 因子挖掘 + 有效性评级
+│   │   │   ├── factor_gp.py     # GP 挖矿（已熔断，见下）
+│   │   │   ├── etl.py           # Medallion 数据管道
+│   │   │   └── research_card_svc.py # 研究卡状态机
+│   │   └── datahub/             # 数据源接入
+│   ├── scripts/                 # 运维脚本（rerun_signals / seed_* / verify_*）
+│   ├── tests/                   # 回归测试（5 组 29 条断言）
+│   └── requirements.txt
+├── web/                         # React + Vite 前端（四入口枢纽）
+│   └── public/docs/             # 侧边栏直链文档（架构/手册/方法论/研究卡）
+├── data/                        # 数据层（不入 git）
+│   ├── quant_dev.db             # SQLite 3.1GB：K线982万行 + 业务写表
+│   ├── quant.duckdb             # DuckDB 846MB：分析读表
+│   └── raw/ silver/             # Bronze 层原始与清洗数据
+├── docs/
+│   ├── REBUILD-2026-10.md       # ⭐ 效果诊断与重构方案（含执行状态）
+│   ├── decisions.json           # 决策记录活文档（27 条）
+│   └── ARCHIVE/                 # 历史方案归档
+└── scripts/                     # 服务启停
+```
+
+**规模**：后端 130 个 py 文件 / 26232 行 · 29 张表 · K线 982 万行（2017-06 至今，2237 个交易日）
+
+---
+
+## 架构
+
+### 数据层（双库读写分离）
+
+| 角色 | 存储 | 内容 |
+|---|---|---|
+| 业务写表 | SQLite `quant_dev.db` | K线、复权因子、信号、回测记录、账本、事件 |
+| 分析读表 | DuckDB `quant.duckdb` | factor_daily、index_membership、fundamentals、stocks |
+
+> **注意**：K线数据在 SQLite，DuckDB 里没有 `kline_daily` 表。
+> `xq/data.py` 已做自动探测 + attach SQLite 回退，改动数据源位置时需留意。
+
+### Medallion 分层
+
+```
+L0  sources      tushare / akshare / 东财 / 新浪
+     ↓
+Bronze  raw/     原始快照（Parquet）
+     ↓
+Silver          清洗 + 标准化
+     ↓
+Gold            factor_daily（14 因子）/ signal_daily（选股信号）
+     ↓
+应用层          回测 / 模拟盘 / 信号 / 归因
+```
+
+### 每日流水线
+
+| 时间 | 步骤 |
+|---|---|
+| 15:35 | 收盘后采集 → 清洗 → 因子计算（14 个） |
+| 19:00 | 因子增量入库（tushare 日线 17:00 前未就绪，故后移） |
+| 每周六 | 周复盘（有效性统计 + 策略升降级） |
+
+节假日自动静默，非交易日不误报「数据停更」。
+
+---
+
+## 策略
+
+**6 个启用**（`app/core/strategies/registry.py`）：
+
+| Key | 名称 | 类型 | 独立假设 |
+|---|---|---|---|
+| `chan` | 缠论买卖点 | 单标的择时 | 中枢背驰 + 三类买卖点 |
+| `turtle_classic` | 经典海龟 | 单标的趋势 | ATR 仓位 + 金字塔加仓 + 2N 止损 |
+| `momentum` | 动量突破 | 单标的趋势 | N 日 ROC 阈值 |
+| `xq_rps_breakout` | RPS 强度突破 | 横截面选股 | 相对强度排名 |
+| `xq_high_tight_flag` | 高旗形整理 | 横截面选股 | 高紧旗突破 |
+| `hs300_enhanced` | 沪深300 增强 | 组合多因子 | 因子合成 + 行业市值中性 |
+
+**15 个已停用**（代码保留，`DISABLED_STRATEGIES` 可随时恢复）：
+趋势系 5 个（dual_ma / ma_cross / ma_alignment / turtle / macd_boll）、
+均值回归系 2 个（rsi_reversal / bollinger）、
+组合多因子 5 个（csi800_enhanced / enhanced_factor / enhanced_factor_hs300 / jk001 / jk002）、
+选股信号 3 个（xq_dual_param / xq_private_placement / xq_chan_buy）。
+
+> 停用原因：21 个策略归并后仅约 3 类独立 alpha 假设，保留同质策略只稀释注意力。
+> 详见 `docs/REBUILD-2026-10.md` §1.6。
+
+### 信号引擎
+
+9 个选股策略（turtle_trade / chan_buy / rps_breakout / dual_param / ma_volume /
+private_placement / high_tight_flag / uptrend_limit_down / limit_up_shakeout）
+→ 连续出现天数（streak）聚合 → 质量分级 → 买卖动作判定（含风控三件套：止损 −8% →
+移动止盈 → MA10 减仓 / MA20 清仓 → 时间止盈 15 天）→ 镜像组合重放（T+1 开盘成交）。
+
+---
+
+## ⚠️ 评估口径（2026-10-08 修复，务必了解）
+
+**修复前平台输出的所有「策略表现」都不可信**，存在四个系统性缺陷。已修复：
+
+| 问题 | 修复前 | 修复后 |
+|---|---|---|
+| **风控复权口径** | MA 用后复权、close 用未复权 → 比值 3-13 倍，**MA 破位风控从未触发** | 统一取 `c_hfq` |
+| **因子评级丢方向** | `abs(ic_mean)` → 26/37 因子负 IC，7 个被误判「可用」 | 加 `has_pos` 判据，负 IC 单列「反向」 |
+| **成本口径双轨** | 主引擎零滑点、无印花税 | 万2.5 + 万1滑点 + 万5印花税（卖出） |
+| **Sharpe 未减 rf** | 隐含 rf=0，夏普虚高约 0.03-0.05 | 减 2.5% |
+
+**修复后夏普普遍下降 0.3-1.0，这是暴露真实水平，不是变差。**
+旧记录里夏普 0.9-1.2 的单标的回测大多是单股反复调参（`is_tuning=true`），不代表策略有效性。
+
+**GP 挖矿已熔断**（`QUANT_GP_ENABLED=1` 可恢复，但**不推荐**）：
+37 个输出全是 `roc(c,6)` 一类单变量变体、无交互项；fitness 与选择在同全样本内完成
+（结构性过拟合）；26/37 负 IC 污染注册表。复活前置：样本外框架 + 估值因子 PIT 修复。
+
+### 已知局限（诚实披露）
+
+| 局限 | 影响 |
+|---|---|
+| **估值因子 PIT 前视** | `Stock` 表只有最新一列快照，复用于所有历史截面 → 2019 截面用 2026 年的 PE。**含估值/市值因子的历史结论不可信** |
+| **单标的引擎用收盘价成交** | 简化模型，比次日开盘口径乐观。组合镜像引擎已是 T+1 开盘（正确） |
+| **IC 截面数仅 13-31** | 月度截面，t 检验约束极松，因子检验功效不足 |
+| **无样本外切分** | 因子挖掘未做 IS/OOS，M3 待补 |
+| **组合策略超额 ≈ 0** | hs300_enhanced IR=0.19 是目前最好水平 |
+
+---
+
+## 开发
+
+```bash
+# 后端测试（29 条回归断言，M1-6 建立）
+cd backend && pytest tests/ -q
+
+# 重跑历史信号（独立脚本，不依赖后端进程）
+python scripts/rerun_signals.py --days 250 --with-portfolio
+python scripts/rerun_signals.py --days 250 --dry-run    # 预演不写库
+python scripts/rerun_signals.py --days 250 --resume     # 断点续跑
+
+# 数据入库
+python scripts/seed_index.py --index 000300 --since 2021
+python scripts/seed_attributes.py
 ```
 
 ---
 
-## 数据库架构（设计 v1.0：PG/Timescale → SQLite + DuckDB）
+## 相关文档
 
-按 `quant-platform-design.html` 的技术选型调整：原「PostgreSQL(业务) + TimescaleDB(时序)」
-在单机场景替换为嵌入式方案，**读写路径分离**：
-
-| 角色 | 存储 | 表 |
-|---|---|---|
-| 业务写表 | `data/quant_dev.db` (SQLite) | backtests / strategies / paper_tasks / paper_trades / paper_snapshots |
-| 分析读表 | `data/quant.duckdb` (DuckDB) | kline_daily(133万行) / index_kline_daily / fundamentals_history / stocks |
-
-读取路径：`duckdb_store`（`backend/app/services/duckdb_store.py`）优先读 DuckDB（列式+向量化），
-表缺失/文件不存在自动降级回 SQLite → 在线拉取，不破坏原链路。
-
-```bash
-# 全量迁移（幂等，重跑重建；数据行数零差异校验）
-cd backend && PYTHONPATH=$(pwd) python scripts/migrate_to_duckdb.py
-
-# 增量补数据后需重跑迁移同步 DuckDB（seed 脚本写入 SQLite 后）
-```
-
-> 注：`config.py` 仍支持 `QUANT_DATABASE_URL` 切换业务库（Postgres 备选，当前默认 SQLite）。
+| 文档 | 内容 |
+|---|---|
+| `docs/REBUILD-2026-10.md` | **效果诊断与重构方案**（审计证据 + M1/M2/M3 路线） |
+| `docs/decisions.json` | 决策记录活文档（重大变更自动留痕） |
+| `web/public/docs/architecture.html` | 系统架构设计（侧边栏直链） |
+| `web/public/docs/manual.html` | 使用说明书（侧边栏直链） |
+| `web/public/docs/methodology.html` | 量化方法论（《量化交易》思想提炼） |
+| `docs/ARCHIVE/` | 历史方案归档（已实施的提案、已废弃的路线） |
+| `DEPLOY.md` | 部署与 launchd 运维 |
 
 ---
 
