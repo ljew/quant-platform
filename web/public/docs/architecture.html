@@ -219,7 +219,7 @@
 <tr><td>后端</td><td>FastAPI，端口 <code>8000</code>，launchd 托管（<code>com.quant.backend.plist</code>，KeepAlive 仅异常退出时重启）</td></tr>
 <tr><td>启动包装</td><td><code>backend/scripts/run_backend_launchd.sh</code>：端口被占则正常退出，杜绝「bind 失败 → KeepAlive 死循环 → SQLite wal 幽灵 inode」</td></tr>
 <tr><td>重启方式</td><td><code>pkill -f "uvicorn app.main"</code>，launchd 自动拉起（注意 ThrottleInterval=30s；若进程卡在优雅退出需 kill -9）</td></tr>
-<tr><td>前端</td><td><code>web/</code> React+Vite；开发预览 7100（代理 /api → 8000）；生产由后端托管 <code>web/dist</code></td></tr>
+<tr><td>前端</td><td><code>web/</code> React+Vite；<b>日常入口 = http://localhost:8000/</b>（后端托管 <code>web/dist</code>，改前端需 <code>npm run build</code> 后生效）；7100 仅为开发期热更新临时端口，平时不开</td></tr>
 <tr><td>Python</td><td>固定解释器 <code>~/.workbuddy/binaries/python/envs/quant/bin/python</code></td></tr>
 <tr><td>目录</td><td><code>backend/</code> 后端 · <code>web/</code> 前端 · <code>data/</code> 全部数据与报告 · <code>prototype/</code> 早期原型</td></tr>
 </table>
