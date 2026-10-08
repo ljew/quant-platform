@@ -735,6 +735,15 @@ export interface ResearchCardsResp {
   state_count: Record<string, number>;
   cards: ResearchCardItem[];
 }
+export interface CardSuggestion {
+  card_id: number; key: string; name: string; state: string;
+  evidence_date?: string | null;
+  kind: "downgrade" | "retire" | "upgrade" | "demote_watch";
+  to_state: string; text: string;
+}
 export const researchApi = {
   cards: () => get<ResearchCardsResp>("/research/cards"),
+  suggestions: () => get<{ total: number; items: CardSuggestion[] }>("/research/suggestions"),
+  transition: (id: number, to_state: string, reason: string) =>
+    post<{ ok: boolean; changed: boolean; state: string }>(`/research/cards/${id}/transition`, { to_state, reason }),
 };
