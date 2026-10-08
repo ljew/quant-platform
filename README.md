@@ -66,7 +66,7 @@ quant-platform/
 ├── web/                         # React + Vite 前端（四入口枢纽）
 │   └── public/docs/             # 侧边栏直链文档（架构/手册/方法论/研究卡）
 ├── data/                        # 数据层（不入 git）
-│   ├── quant_dev.db             # SQLite 3.1GB：K线982万行 + 业务写表
+│   ├── quant_dev.db             # SQLite 4.8GB：K线982万行 + 估值时序893万行 + 业务写表
 │   ├── quant.duckdb             # DuckDB 846MB：分析读表
 │   └── raw/ silver/             # Bronze 层原始与清洗数据
 ├── docs/
@@ -76,7 +76,7 @@ quant-platform/
 └── scripts/                     # 服务启停
 ```
 
-**规模**：后端 130 个 py 文件 / 26232 行 · 29 张表 · K线 982 万行（2017-06 至今，2237 个交易日）
+**规模**：后端 130 个 py 文件 / 26232 行 · 30 张表 · K线 982 万行（2017-06 至今，2237 个交易日）· 估值时序 893 万行（2019-01 至今，1881 个交易日 / 6066 只）
 
 ---
 
@@ -173,7 +173,7 @@ private_placement / high_tight_flag / uptrend_limit_down / limit_up_shakeout）
 
 | 已修复 | 说明 |
 |---|---|
-| ~~估值因子 PIT 前视~~ | 新增 `stock_valuation_daily` 时序表（1881 个交易日），`_attrs_asof` 按截面日取值。实测茅台 2019 年 pe=24.42 vs 今日 19.87 |
+| ~~估值因子 PIT 前视~~ | 新增 `stock_valuation_daily` 时序表（1881 个交易日 / 893 万行 / 0 缺失），`_attrs_asof` 按截面日取值。实测茅台 2022 年 pe=51.39 vs 今日 19.28（旧口径偏差近 3 倍） |
 | ~~IC 截面数仅 13-31~~ | `DEFAULT_STEP` 20→5（月频→周频），截面数提升 4 倍（3年 36→145，7年 85→340）。`forward` 保持 20，因子含义不变 |
 | ~~因子评级丢方向~~ | 加 `has_pos` 判据，负 IC 单列「反向」，禁止自动进生产 |
 | ~~成本/夏普口径双轨~~ | 统一为万2.5 + 万1滑点 + 万5印花税（卖出），Sharpe 减 rf 2.5% |
