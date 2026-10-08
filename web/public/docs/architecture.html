@@ -226,6 +226,7 @@
 <tr><td>2026-09-30</td><td>决策记录活文档化</td><td>重大变更自动/半自动追加到架构文档，防止文档腐烂</td></tr>
 <tr><td>2026-10-03</td><td>SQLite 连接池改 NullPool</td><td>QueuePool(5+10) 被常驻调度线程耗尽致 API 半死（/health 正常、查库接口全超时）；SQLite 建连廉价，NullPool 根除池耗尽与泄漏级联</td></tr>
 <tr><td>2026-10-03</td><td>周级任务判重粒度改为「当天」</td><td>周三手动复盘误占本周额度致周六正式复盘被跳过；日级判重既防重启重复又不错杀周末运行</td></tr>
+<tr><td>2026-10-08</td><td>嵌入《量化交易》方法论（郭新/黎子良等）</td><td>提炼数据/分析/模型/优化/算法五支柱为六条平台原则；落地为方法论页+研究纪律卡；明确三项待办：多重检验校正、组合层优化、参数置信区间</td></tr>
 <!-- DECISIONS:END -->
 </table>
 <p class="muted" style="font-size:12.8px">本表由 <code>docs/decisions.json</code> 自动生成：策略档位变化由每周复盘自动留痕；其他重大变更运行 <code>python scripts/render_decisions.py --add "决策" --reason "理由"</code> 追加。</p>

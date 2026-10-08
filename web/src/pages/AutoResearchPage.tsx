@@ -182,6 +182,26 @@ export default function AutoResearchPage() {
             安全边界：自动动作仅限因子登记/启用；策略降级与参数调整只写进复盘建议，不自动执行。
           </div>
         </Card>
+
+        {/* —— 研究纪律（源自《量化交易：算法、分析、数据、模型和优化》）—— */}
+        <Card colors={colors} title="研究纪律" pad={14}>
+          {[
+            "数据先行：结论前先问数据是否干净、新鲜、无未来函数",
+            "样本外才算数：单窗口亮眼结果只算候选，滚动窗口复核",
+            "挖得多门槛就高：批量挖掘的好结果默认含运气成分",
+            "扣完成本还活着才是 α：换手、延迟、冲击成本之后的超额",
+            "错了要留痕：升降档与修复都记入决策文档，可回溯",
+          ].map((t, i) => (
+            <div key={i} style={{ display: "flex", gap: 8, fontSize: 12.3, lineHeight: 1.55, marginBottom: 7 }}>
+              <span style={{ color: colors.down, flexShrink: 0 }}>✓</span>
+              <span>{t}</span>
+            </div>
+          ))}
+          <a href="/docs/methodology.html" target="_blank" rel="noreferrer"
+            style={{ fontSize: 11.8, color: colors.accent, textDecoration: "none" }}>
+            📚 方法论出处与落地对照 →
+          </a>
+        </Card>
       </div>
 
       {/* —— 报告查看 —— */}

@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>量化方法论 —— 《量化交易：算法、分析、数据、模型和优化》思想提炼</title>
+<style>
+  :root { --bg:#0d1219; --card:#151d29; --border:#26303f; --text:#dbe4ee; --muted:#8b98a9; --accent:#4f8cff; --up:#e0605e; --down:#3fbf7f; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.85 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
+  .wrap { max-width:920px; margin:0 auto; padding:48px 32px 80px; }
+  h1 { font-size:28px; margin:0 0 6px; letter-spacing:.5px; }
+  h2 { font-size:20px; margin:42px 0 12px; padding-left:12px; border-left:4px solid var(--accent); }
+  h3 { font-size:16px; margin:24px 0 8px; color:#b8c6d8; }
+  p { margin:8px 0; }
+  .sub { color:var(--muted); font-size:13.5px; margin-bottom:30px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px 22px; margin:14px 0; }
+  code { background:#0a0f16; border:1px solid var(--border); border-radius:5px; padding:1px 7px; font:13px/1.6 "SF Mono",Menlo,monospace; color:#9ecbff; }
+  pre { background:#0a0f16; border:1px solid var(--border); border-radius:10px; padding:14px 20px; overflow-x:auto; font:12.8px/1.8 "SF Mono",Menlo,monospace; color:#a9c3de; }
+  table { width:100%; border-collapse:collapse; margin:12px 0; font-size:13.6px; }
+  th, td { border:1px solid var(--border); padding:7px 12px; text-align:left; vertical-align:top; }
+  th { background:#1a2432; font-weight:600; }
+  td { background:var(--card); }
+  ul, ol { padding-left:22px; margin:8px 0; }
+  li { margin:4px 0; }
+  .tag { display:inline-block; padding:1px 9px; border-radius:5px; font-size:12px; margin-right:6px; white-space:nowrap; }
+  .t-g { background:#3fbf7f1c; color:#5fd69a; border:1px solid #3fbf7f44; }
+  .t-y { background:#e8a5201c; color:#f0c060; border:1px solid #e8a52044; }
+  .t-r { background:#e0605e1c; color:#f08a88; border:1px solid #e0605e44; }
+  .t-a { background:#4f8cff22; color:#7fb0ff; border:1px solid #4f8cff44; }
+  .muted { color:var(--muted); }
+  .quote { border-left:3px solid var(--accent); padding:6px 16px; color:#b8c6d8; background:#4f8cff0d; border-radius:0 8px 8px 0; margin:12px 0; font-size:14px; }
+  .foot { margin-top:52px; padding-top:18px; border-top:1px solid var(--border); color:var(--muted); font-size:12.5px; }
+  a { color:var(--accent); text-decoration:none; }
+  @media print { body { background:#fff; color:#222; } .card,td { background:#fafafa; } pre,code { background:#f2f2f2; color:#333; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>量化方法论</h1>
+<div class="sub">《量化交易：算法、分析、数据、模型和优化》思想提炼 × QUANT·DESK 落地对照 · 2026-10-08</div>
+
+<div class="card">
+<b>关于这本书</b>：郭新（UC Berkeley）、黎子良（Stanford）、Howard Shek、Sam Wong 合著，
+源自伯克利与斯坦福的一线量化交易课程，高等教育出版社 2020 年中译（冯玉林、刘庆富译）。
+全书八章：① 概论 → ② 统计模型与方法 → ③ 积极型组合管理 → ④ 电子交易计量经济学 →
+⑤ 限价指令簿 → ⑥ 最优执行与配置 → ⑦ 做市与智能订单路径 → ⑧ 信息学、监管与风险管理，
+外加鞅论/马尔可夫链/点过程/排队极限四个数学附录。
+<div class="quote">书名五个词就是量化交易的流程顺序：机器先导入<b>数据</b>，然后做<b>分析</b>，
+用<b>模型</b>在数据与决策之间搭桥，用<b>优化</b>把决策变成最优策略，最后用<b>算法</b>把策略执行出来。
+—— 第 1.5 节</div>
+</div>
+
+<h2>一、对本平台最相关的六个思想</h2>
+
+<h3>1. 数据是五支柱之首（第 1.5 节）</h3>
+<p>原书明确：无论从套利视角还是有效市场视角，「数据」都是量化交易最重要的一环。垃圾数据喂养出精致的错误。</p>
+<p class="muted">→ 本平台对应：Bronze→Silver→Gold 三层管道、每日 19:00 自动 ETL、断供自愈、质检闸门（数据不合格阻断后续流水线）、健康度引擎把「采集层」权重设为最高的 35%。</p>
+
+<h3>2. 样本内 / 样本外评估 + 多重检验（第 2.8.5 节）</h3>
+<p>原书警示：策略在样本内表现好可能是数据挖掘偏差；测试的策略越多，「幸存者」越是运气——需要多重检验校正（Bonferroni / White 现实检验的思想）和真正的样本外验证。这直接回应「回测好 ≠ 未来好」。</p>
+<p class="muted">→ 本平台对应：GP 挖矿的精英评级阈值（宁缺毋滥：56 候选 5 精英全「弱」就一个不进库）；策略定档要求多窗口一致（240/120/60 日三窗口，正是样本外思想的滚动版）；每周复盘用最近 90 日窗口对旧结论持续再检验。</p>
+
+<h3>3. 参数不确定性（第 2.5、3.3.6 节）</h3>
+<p>估计的参数（均值、协方差、因子收益）本身有误差，把点估计当真值做优化会放大误差。原书给出贝叶斯/缩减（shrinkage）、Black-Litterman、Bootstrap 重抽样（NPEB）等处理框架。</p>
+<p class="muted">→ 本平台对应：参数寻优看「最优区间」而非单个最优点；high_tight_flag 维持 strong 的理由正是三窗口全正（对窗口选择不敏感 = 对参数扰动稳健）；rps_breakout 240 日强、90 日弱 → 降级而非删除。</p>
+
+<h3>4. 交易成本与约束是策略的一部分（第 3.2 节）</h3>
+<p>超额收益 α 的来源必须扣除交易成本、冲击成本和买卖限制后还活着才算数；多期环境下存在交易成本时的动态再平衡是第 3 章的核心问题。</p>
+<p class="muted">→ 本平台对应：信号归因口径 T+1 开盘建仓、T+10 收盘卖出（计入隔夜与延迟）；因子检验包含换手与容量；A 股 T+1 制度直接写进组合镜像规则。</p>
+
+<h3>5. 模型是数据与决策之间的桥（第 1.5、2.6-2.7 节）</h3>
+<p>从随机游走到鞅模型、ARIMA/GARCH、多因子定价——模型的价值不在复杂度而在「能否支撑更好的决策」。鞅回归模型把可预测性显式纳入组合优化（最优信息比率）。</p>
+<p class="muted">→ 本平台对应：因子不做成预测模型本身，而是进入「质量分级 → 信号动作」的决策链；弱因子不进库、弱策略不建仓，模型的输出必须能落到动作上。</p>
+
+<h3>6. 策略风险与操作风险（第 8.5 节）</h3>
+<p>原书把风险分两类：<b>策略风险</b>（模型错了、环境变了）和<b>操作风险</b>（系统挂了、数据断了、流程错了）。两者都要制度化监控。</p>
+<p class="muted">→ 本平台对应：策略风险 → 每周复盘 + 质量降级机制 + 决策留痕；操作风险 → 健康度引擎、节假日静默（区分「预期停更」与「真故障」）、调度幂等防重、决策记录活文档。</p>
+
+<h2>二、落地对照表</h2>
+<table>
+<tr><th>原书思想</th><th>出处</th><th>本平台实现</th><th>状态</th></tr>
+<tr><td>数据质量优先，分层治理</td><td>1.5</td><td>三层数据管道 + 质检闸门 + 健康分</td><td><span class="tag t-g">已落地</span></td></tr>
+<tr><td>防前视偏差</td><td>2.8.5</td><td>T+1 开盘成交、PIT 成分快照月更</td><td><span class="tag t-g">已落地</span></td></tr>
+<tr><td>样本外/多窗口复核</td><td>2.8.5</td><td>240/120/60 日三窗口定档 + 每周 90 日滚动复盘</td><td><span class="tag t-g">已落地</span></td></tr>
+<tr><td>多重检验校正（挖得越多越要保守）</td><td>2.8.5</td><td>精英评级阈值从严，但<b>未做显式的多重检验校正</b>（如 deflated Sharpe）</td><td><span class="tag t-y">部分</span></td></tr>
+<tr><td>参数不确定性（shrinkage / Bootstrap）</td><td>2.5, 3.3.6</td><td>寻优看区间不看单点；无正式的 Bootstrap 置信区间</td><td><span class="tag t-y">部分</span></td></tr>
+<tr><td>交易成本与容量</td><td>3.2</td><td>换手/容量纳入因子检验；冲击成本模型较粗</td><td><span class="tag t-y">部分</span></td></tr>
+<tr><td>多期组合优化（含成本再平衡）</td><td>3.3</td><td>模拟盘是信号等权镜像，<b>无组合层权重优化</b></td><td><span class="tag t-r">未做</span></td></tr>
+<tr><td>最优执行 / LOB / 做市（4-7 章）</td><td>4-7</td><td>不适用：本平台为日频投研，无实盘执行环节</td><td><span class="tag t-a">范围外</span></td></tr>
+<tr><td>策略/操作风险制度化</td><td>8.5</td><td>复盘+降级+留痕 / 监控+静默+幂等</td><td><span class="tag t-g">已落地</span></td></tr>
+</table>
+
+<h2>三、研究纪律（嵌入自动研究流程的硬规则）</h2>
+<div class="card">
+以下五条已作为「数据中心 → 自动研究」页面的常驻纪律卡展示，供每次查看挖矿/复盘结果时对照：
+<ol>
+  <li><b>数据先行</b>：任何结论之前先问数据是否干净、新鲜、无未来函数。</li>
+  <li><b>样本外才算数</b>：单窗口、单区间的亮眼结果一律视为候选，需滚动窗口复核。</li>
+  <li><b>挖得多，门槛就得高</b>：批量挖掘的「好结果」默认有运气成分，评级从严。</li>
+  <li><b>扣除成本还活着才是 α</b>：换手、延迟、冲击成本之后的超额才算数。</li>
+  <li><b>错了要留痕</b>：每次升降档、每次修复都记入决策文档，可回溯、可复盘。</li>
+</ol>
+</div>
+
+<h2>四、待办（按价值排序）</h2>
+<ul>
+  <li><b>多重检验校正</b>：挖矿批次输出 deflated Sharpe 或等价的「运气折价」提示，评级时再降一档保守度。</li>
+  <li><b>组合层优化</b>：信号组合从等权镜像升级为带成本约束的均值-方差/风险平价加权（第 3 章框架）。</li>
+  <li><b>参数置信区间</b>：寻优结果附 Bootstrap 置信带，替代单点最优报告。</li>
+</ul>
+
+<div class="foot">QUANT·DESK · 量化方法论 · 思想来源：郭新、黎子良、Howard Shek、Sam Wong《量化交易：算法、分析、数据、模型和优化》（高等教育出版社，2020）· <a href="architecture.html">系统架构设计</a> · <a href="manual.html">使用说明书</a></div>
+</div>
+</body>
+</html>

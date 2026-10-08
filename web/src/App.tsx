@@ -168,6 +168,12 @@ export default function App() {
               onMouseLeave={(e) => (e.currentTarget.style.color = sb.text)}>
               <span style={{ marginRight: 8 }}>📖</span>使用说明书
             </a>
+            <a href="/docs/methodology.html" target="_blank" rel="noreferrer"
+              style={{ color: sb.text, fontSize: 12.5, textDecoration: "none", padding: "4px 0" }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = sb.activeText)}
+              onMouseLeave={(e) => (e.currentTarget.style.color = sb.text)}>
+              <span style={{ marginRight: 8 }}>📚</span>量化方法论
+            </a>
           </div>
           <button
             onClick={toggle}
