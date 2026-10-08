@@ -761,5 +761,7 @@ export const researchApi = {
   suggestions: () => get<{ total: number; items: CardSuggestion[] }>("/research/suggestions"),
   transition: (id: number, to_state: string, reason: string) =>
     post<{ ok: boolean; changed: boolean; state: string }>(`/research/cards/${id}/transition`, { to_state, reason }),
-  cardSignals: (id: number) => get<CardSignalsResp>(`/research/cards/${id}/signals`),
+  card: (id: number) => get<ResearchCardItem>(`/research/cards/${id}`),
+  cardSignals: (id: number, date?: string) =>
+    get<CardSignalsResp>(`/research/cards/${id}/signals${date ? `?date=${date}` : ""}`),
 };
