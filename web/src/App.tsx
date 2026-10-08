@@ -7,6 +7,7 @@ import OptimizePage from "./pages/OptimizePage";
 import MonitorPage from "./pages/MonitorPage";
 import DataPipelinePage from "./pages/DataPipelinePage";
 import FactorMinePage from "./pages/FactorMinePage";
+import ResearchCardsPage from "./pages/ResearchCardsPage";
 import ResearchPage from "./pages/ResearchPage";
 import SignalPage from "./pages/SignalPage";
 import AttributionPage from "./pages/AttributionPage";
@@ -29,6 +30,7 @@ const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; lab
     { key: "market", label: "行情看板" },
   ] },
   { key: "research", label: "策略研究", icon: "⚗", tabs: [
+    { key: "cards", label: "研究卡" },
     { key: "backtest", label: "回测" },
     { key: "optimize", label: "参数寻优" },
     { key: "factor", label: "因子检验" },
@@ -64,6 +66,7 @@ function HubContent({ sub }: { sub: string }) {
   switch (sub) {
     case "today": return <TodayPage />;
     case "market": return <MarketPage />;
+    case "cards": return <ResearchCardsPage />;
     case "backtest": return <BacktestPage />;
     case "optimize": return <OptimizePage />;
     case "factor": return <FactorMinePage />;

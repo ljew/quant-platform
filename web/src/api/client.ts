@@ -708,3 +708,33 @@ export const autoApi = {
   saveConfig: (patch: Partial<AutoConfig>) =>
     put<{ ok: boolean; config: AutoConfig }>("/auto/config", patch),
 };
+
+// —— 研究卡（/research/cards，研究卡机制第 4 步）——
+export interface CardHistoryEntry {
+  at?: string; date?: string;
+  from: string | null; to: string; reason: string; actor?: string;
+}
+export interface ResearchCardItem {
+  id: number; card_type: "strategy" | "factor"; key: string; name: string;
+  hypothesis: string; data_spec: string;
+  evidence: {
+    w240?: number | null; w120?: number | null; w60?: number | null; d90?: number | null;
+    exc_10?: number | null; exc_5?: number | null; n_10?: number; n?: number;
+    win_10?: number | null; t_10?: number | null; negative_weeks?: number;
+    evidence_updated_at?: string;
+    ic_mean?: number | null; icir?: number | null; rating?: string;
+    weekly?: { date: string; exc_10: number | null; n_10: number; t_10?: number | null }[];
+  };
+  cost_note: string; crowd_note: string; fail_condition: string;
+  state: "enabled" | "candidate" | "watch" | "downgraded" | "retired";
+  history: CardHistoryEntry[];
+  updated_at: string | null;
+}
+export interface ResearchCardsResp {
+  total: number;
+  state_count: Record<string, number>;
+  cards: ResearchCardItem[];
+}
+export const researchApi = {
+  cards: () => get<ResearchCardsResp>("/research/cards"),
+};

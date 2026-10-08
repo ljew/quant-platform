@@ -318,7 +318,72 @@ GP-3  roc(c_v, 6)     ic=-0.038      GP-3  roc(c_r, 6)    ic=-0.038
 
 ---
 
-## 附：待老刘确认后执行
+## 附：执行状态（老刘拍板后 · 2026-10-08）
+
+老刘 7 项全部拍板：①GP 暂停 ②Bug#1 重跑 ③M2-2 保留清单认同（+hs300_enhanced）
+④iching-quant 归档移出 ⑤Str00-03 放弃 ⑥rf 取 2.5% ⑦接受效果变差。
+
+### M1 可信度地基 —— ✅ 已完成
+
+| # | 改动 | 状态 | 验证 |
+|---|---|---|---|
+| M1-1 | 复权口径统一（`xq/runner.py` close 改取 `c_hfq`） | ✅ | 重跑日实测错位率 **77% → 0.8%**（剩余 3 行为股价正常波动，非口径问题） |
+| M1-2 | 因子评级加方向（`factor_mining.py` has_pos 判据） | ✅ | 负 IC 不再可能获「可用/优秀」，单列「反向」 |
+| M1-3 | 成本统一（万2.5 + 万1滑点 + 万5印花税） | ✅ | 两引擎默认值已一致，T3 断言守护 |
+| M1-4 | 基准缺失显式标记 | ✅ | 历史回填 248 条，识别出 **165 条未算基准** |
+| M1-5 | Sharpe 减 rf=2.5% | ✅ | 两引擎均已改 |
+| M1-6 | pytest 基建 + 5 组回归测试 | ✅ | `backend/tests/` **29 条断言全绿** |
+| M1-7 | 清退负 IC 的 enabled 因子 | ✅ | 注册表唯一记录本已是 disabled，无需变更 |
+
+**额外发现并修复**：`xq/data.py` 硬编码从 DuckDB 读 `kline_daily`，但双库改造后
+该表已迁至 SQLite（K 线 982 万行）。**信号回填链路在双库架构下一直是断的**
+（`Catalog Error: Table with name kline_daily does not exist`）。已改为缺表时
+attach SQLite 自动回退，实测面板可正常载入 5301 只 × 2.88M 行。
+
+### M2 砍无效面 —— ✅ 已完成
+
+| # | 动作 | 状态 | 说明 |
+|---|---|---|---|
+| M2-1 | GP 熔断 | ✅ | 环境变量 `QUANT_GP_ENABLED=1` 可恢复。复活前置：M3-1 样本外框架 + 估值因子 PIT 修复 |
+| M2-2 | 策略 21→6 | ✅ | 保留 chan / turtle_classic / momentum / xq_rps_breakout / xq_high_tight_flag / hs300_enhanced。15 个标记 `enabled=False`，**代码全留**，`get_strategy` 对停用项明确报错 |
+| M2-3 | iching-quant 结项 | ✅ | 移至 `Quant/_archive/iching-quant`，加 `ARCHIVE.md` + `gua_semantics.json` 结项声明 |
+| M2-4 | Str00-03 放弃 | ✅ | 代码保留于 `Quant/`，新增 `STRATEGY_ARCHIVE.md` 记录放弃依据与重评估条件 |
+| M2-5 | 单股调参隔离 | ✅ | 标记 159 条 `is_tuning=true`（占单标的回测 96%；博瑞 89 条、茅台 53 条） |
+| M2-6 | 易经语义降级标注 | ✅ | `_meta.DISCLAIMER_2026_10_08` 写入三套阴性检验结论 |
+
+### 重跑进度
+
+新增 `backend/scripts/rerun_signals.py`（前台执行 + 断点续跑，不依赖后端进程——
+首次尝试走 API 时后端被 launchd 重启中断，只跑了 1 天）。250 个交易日约 100 分钟。
+
+### 隔离后的真实表现（组合类回测）
+
+| 策略 | n | 夏普 | 超额 | IR |
+|---|---|---|---|---|
+| xq_high_tight_flag | 1 | 0.79 | +30.7% | 0.86 |
+| **hs300_enhanced** | 9 | **0.71** | **+9.5%** | **0.19** |
+| xq_rps_breakout | 1 | 0.62 | +17.8% | 0.93 |
+| enhanced_factor | 39 | 0.48 | +4.9% | 0.18 |
+| enhanced_factor_hs300 | 6 | 0.33 | **-10.8%** | -0.66 |
+| jk001 | 5 | 0.28 | **-12.7%** | -0.29 |
+| csi800_enhanced | 18 | 0.09 | -2.6% | -0.19 |
+
+---
+
+### M3 开工前必须先解决的数据阻塞
+
+| # | 阻塞项 | 现状 | 需要做什么 |
+|---|---|---|---|
+| **B1** | **估值因子 PIT 时序表缺失** | `Stock` 表只有**最新一列**快照（market_cap/pe_ttm/pb/roe），`_attrs_map` 查一次后复用于所有历史截面 → 2019 年截面上用的是 2026 年的 PE，属**明确前视**。`fundamentals_history` 只有 roe/revenue_yoy/profit_yoy（按 report_date），`financials_raw` 有 ann_date 但无 PE/PB/市值 | 新建 `stock_valuation_daily`（symbol × trade_date × pe_ttm/pb/market_cap/industry），从 tushare `daily_basic` 按日回填 2019 至今；改 `_attrs_map` 为「按截面日 as-of 取值」。**这是 GP 复活的硬前置** |
+| **B2** | IC 截面数不足 | `n_periods` 仅 {13, 27, 31}（月度），t 检验约束极松 | 改周频截面，样本量 ×4 |
+| **B3** | 无样本外切分 | GP fitness 与选择在同全样本内完成 | 建 IS/OOS 框架（2015-2021 / 2022-2026） |
+
+> 注：B1 是数据层缺口，不修则任何含估值/市值因子的历史回测结论都不可信。
+> 工作量估计 2-3 天（含 tushare 回填速率评估）。
+
+---
+
+## 附录：待老刘确认后执行
 
 本方案**未改动任何生产代码**。确认后按 M1 → M2 → M3 顺序执行，每阶段独立提交（按老刘 git 约定：先在 `dev` 分支，不直接推 `main`）。
 

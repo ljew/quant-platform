@@ -5,6 +5,21 @@
 - cls：策略类（继承自 StandardStrategy）
 - default_params：默认参数
 - param_schema：前端动态渲染参数表单的元数据
+- enabled：是否启用（M2-2 策略瘦身，2026-10-08）
+
+—— M2-2 策略瘦身说明 ——
+审计发现 21 个策略归并后仅约 3 类独立 alpha 假设：
+  趋势/动量系：dual_ma / ma_cross / ma_alignment / momentum / turtle /
+                turtle_classic / macd_boll（7 个，同质）
+  均值回归系：rsi_reversal / bollinger / chan（3 个，同质）
+  多因子打分：csi800_enhanced / hs300_enhanced / enhanced_factor(+hs300) / jk001 / jk002
+  选股信号系：xq_*（5 个）
+注册 21 个策略但夏普上不去，是因为独立假设太少、且大量配置复制
+（csi800/hs300 共用 Csi800EnhancedStrategy，jk001/jk002 共用 JKFactorStrategy）。
+
+瘦身原则：**代码全部保留，仅标记 enabled=False**。可随时恢复，
+历史回测记录（backtests 表）也不受影响。
+恢复方式：把 DISABLED_STRATEGIES 里的 key 挪出该集合。
 """
 from __future__ import annotations
 
@@ -593,12 +608,26 @@ def _grouped_schema(schema: list[dict], strategy_key: str) -> list[dict]:
 def get_strategy(key: str) -> dict:
     if key not in STRATEGY_REGISTRY:
         raise KeyError(f"未知策略: {key}")
+    if key in DISABLED_STRATEGIES:
+        raise KeyError(
+            f"策略 {key}（{STRATEGY_REGISTRY[key]['name']}）已于 2026-10-08 停用（M2-2 策略瘦身）。"
+            f"停用原因：与保留策略同质或独立 alpha 假设不足。代码保留，可从 "
+            f"app.core.strategies.registry.DISABLED_STRATEGIES 中移除以恢复。"
+        )
     return STRATEGY_REGISTRY[key]
 
 
-def list_strategies() -> list[dict]:
-    return [
-        {
+def is_enabled(key: str) -> bool:
+    return key in STRATEGY_REGISTRY and key not in DISABLED_STRATEGIES
+
+
+def list_strategies(include_disabled: bool = False) -> list[dict]:
+    """列出策略。默认只返回启用的（前端只应看到可用策略）。"""
+    out = []
+    for k, v in STRATEGY_REGISTRY.items():
+        if not include_disabled and k in DISABLED_STRATEGIES:
+            continue
+        out.append({
             "key": k,
             "name": v["name"],
             "description": v["description"],
@@ -608,6 +637,27 @@ def list_strategies() -> list[dict]:
             "index_code": v.get("index_code"),
             "index_symbol": v.get("index_symbol"),
             "index_name": v.get("index_name"),
-        }
-        for k, v in STRATEGY_REGISTRY.items()
-    ]
+            "enabled": k not in DISABLED_STRATEGIES,
+        })
+    return out
+
+
+# ============ M2-2 停用清单（2026-10-08）============
+# 保留 6 个：缠论买点 / 经典海龟 / 动量突破 / RPS突破 / 高旗形整理 / 沪深300增强
+#   - chan                独立假设：缠论买卖点（择时型）
+#   - turtle_classic      独立假设：ATR 仓位 + 金字塔加仓 + 2N 止损
+#   - momentum            独立假设：动量突破（最简形态）
+#   - xq_rps_breakout     独立假设：RPS 相对强度（横截面选股）
+#   - xq_high_tight_flag  独立假设：高紧旗整理（横截面选股）
+#   - hs300_enhanced      组合类唯一 IR>0（0.19），M3 组合层优化的研究载体
+DISABLED_STRATEGIES: set[str] = {
+    # 趋势系（与 momentum / turtle_classic 同质）
+    "dual_ma", "ma_cross", "ma_alignment", "turtle", "macd_boll",
+    # 均值回归系（与 chan 同质）
+    "rsi_reversal", "bollinger",
+    # 组合多因子系（与 hs300_enhanced 同质；实测超额 -2.6% ~ +4.9%，IR 接近 0）
+    "csi800_enhanced", "enhanced_factor", "enhanced_factor_hs300",
+    "jk001", "jk002",
+    # 选股信号系（与保留的两个 xq 同质，IC 未见显著优势）
+    "xq_dual_param", "xq_private_placement", "xq_chan_buy",
+}

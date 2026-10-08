@@ -85,6 +85,61 @@
       "date": "2026-10-08",
       "decision": "研究卡机制第3步：周复盘驱动状态机",
       "reason": "每周复盘自动更新卡片证据（含新增t值字段）；升级类迁移自动（watch→candidate、降级恢复），降级/退役出建议人确认；降级卡连续4周负超额建议退役；挖矿入库自动建/同步因子卡；决策留痕改读卡片解析档位"
+    },
+    {
+      "date": "2026-10-08",
+      "decision": "M1-1 修复风控复权口径错位（signal_actions 重跑全历史）",
+      "reason": "xq/runner.py 用后复权 c_hfq 算 MA10/MA20 却拿未复权 close 比较（adj_factor 均值10.08/最大10055），ma10/close 比值中位数3-13倍，MA破位风控从未正确触发；改为一律取 c_hfq。实测重跑后错位率 77%→0.8%（剩余3行为股价正常波动）"
+    },
+    {
+      "date": "2026-10-08",
+      "decision": "M1-2 因子评级加方向判据",
+      "reason": "旧实现对 t_stat/ic_mean 都取 abs()，37个已挖因子中26个负IC、7个负IC被标可用/优秀；新增 has_pos 判据，负IC显著者单列「反向」评级且禁止自动进生产"
+    },
+    {
+      "date": "2026-10-08",
+      "decision": "M1-3/4/5 成本·基准·Sharpe 口径统一",
+      "reason": "主引擎与 xq 引擎两套成本口径（前者零滑点无印花税）；统一为佣金万2.5+滑点万1+印花税万5（卖出），Sharpe 减无风险利率2.5%，无基准回测显式标 benchmark_missing（已回填248条，其中165条为未算基准）"
+    },
+    {
+      "date": "2026-10-08",
+      "decision": "M1-6 建立 pytest 回归测试基建",
+      "reason": "此前零测试，上述三个 bug 本应被测试拦住；新增 backend/tests/ 5组共29条断言（复权一致性/评级方向/成本模型/成交时点/PIT成分）"
+    },
+    {
+      "date": "2026-10-08",
+      "decision": "M2-1 GP 挖矿熔断（环境变量 QUANT_GP_ENABLED 恢复）",
+      "reason": "37个输出全是 roc(c,6/40) 单变量变体无交互项；fitness 与选择在同全样本内完成属结构性过拟合；26/37负IC污染注册表。复活前置：M3-1样本外框架+估值因子PIT修复"
+    },
+    {
+      "date": "2026-10-08",
+      "decision": "M2-2 策略瘦身 21→6（15个标记停用，代码保留）",
+      "reason": "21个策略归并后仅约3类独立alpha假设。保留 chan/turtle_classic/momentum/xq_rps_breakout/xq_high_tight_flag/hs300_enhanced（后者是唯一IR>0的组合超额0.19，留作M3组合层优化载体）"
+    },
+    {
+      "date": "2026-10-08",
+      "decision": "M2-4 Str00-03 放弃（代码保留于 Quant/）",
+      "reason": "Str02 注释明写权重在2025数据上现调（样本内过拟合）；四者互为复制；strategies表0行从未入库。归档说明见 Quant/STRATEGY_ARCHIVE.md"
+    },
+    {
+      "date": "2026-10-08",
+      "decision": "M2-3 iching-quant 结项归档并移出项目",
+      "reason": "三套独立检验全阴性（正交化后残差IC=-0.0062/t=-12.91；语义接地5维度FDR 0/5；disagreement分年符号翻转）。已移至 Quant/_archive/iching-quant，加 ARCHIVE.md 与 gua_semantics.json 结项声明"
+    },
+    {
+      "date": "2026-10-08",
+      "decision": "M2-5 单股调参记录隔离",
+      "reason": "单标的回测中博瑞医药89条、茅台53条为反复调参；96%的单标的回测标记 is_tuning=true，不参与效果汇总"
+    },
+    {
+      "date": "2026-10-08",
+      "decision": "修复 xq/data.py 数据源断裂（DuckDB→SQLite 回退）",
+      "reason": "DuckDB 在双库改造后已不含 kline_daily（K线982万行全在SQLite），load_panel 硬编码读DuckDB导致信号回填链路完全不可用（Catalog Error）；改为缺表时 attach SQLite"
+    },
+    {
+      "date": "2026-10-08",
+      "decision": "研究卡机制第4步：前端研究卡页面上线",
+      "reason": "策略研究 hub 首个 Tab；状态机总览+卡片墙+证据柱+t值+负周数计数+决策历史折叠；数据实时取自 /research/cards；四步路线图全部完成"
     }
   ]
 }
