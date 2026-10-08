@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings, BASE_DIR
 from app.database import init_db
-from app.routers import data, market, strategy, paper, hedge, monitor, factor, llm, signal, agent, news, auto
+from app.routers import data, market, strategy, paper, hedge, monitor, factor, llm, signal, agent, news, auto, research
 from app.schemas import HealthResponse
 
 import os
@@ -38,6 +38,7 @@ app.include_router(signal.router, prefix=settings.api_prefix)
 app.include_router(agent.router, prefix=settings.api_prefix)
 app.include_router(news.router, prefix=settings.api_prefix)
 app.include_router(auto.router, prefix=settings.api_prefix)
+app.include_router(research.router, prefix=settings.api_prefix)
 
 
 @app.on_event("startup")

@@ -780,3 +780,29 @@ class AutoResearchRun(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class ResearchCard(Base):
+    """研究卡：一个策略/因子从想法到生产的标准化载体（docs/research-card-v0.1.md）。
+
+    状态机：watch 观察 → candidate 候选 → enabled 启用 → downgraded 降级 → retired 退役。
+    本表只做"档案+状态"，不改变现有生产逻辑（信号定档仍走 STRATEGY_QUALITY，
+    因子生产仍走 factor_registry.status）——两边由迁移/复盘脚本同步。
+    """
+
+    __tablename__ = "research_cards"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    card_type: Mapped[str] = mapped_column(String(12))      # strategy / factor
+    key: Mapped[str] = mapped_column(String(64))            # 策略 key 或因子名（类型内唯一）
+    name: Mapped[str] = mapped_column(String(64))           # 中文名
+    hypothesis: Mapped[str] = mapped_column(Text, default="")        # 假设（一句话）
+    data_spec: Mapped[str] = mapped_column(Text, default="")         # 数据与口径
+    evidence_json: Mapped[str] = mapped_column(Text, default="{}")   # 证据（窗口超额/样本量/t 值/IC）
+    cost_note: Mapped[str] = mapped_column(Text, default="")         # 成本与容量
+    crowd_note: Mapped[str] = mapped_column(Text, default="")        # 拥挤度/相关性
+    fail_condition: Mapped[str] = mapped_column(Text, default="")    # 失效条件（预先写明）
+    state: Mapped[str] = mapped_column(String(16), default="watch")
+    history_json: Mapped[str] = mapped_column(Text, default="[]")    # 状态迁移留痕
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
