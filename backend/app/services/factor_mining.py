@@ -133,6 +133,99 @@ def _quantile(sorted_xs: list[float], q: float) -> float:
     return sorted_xs[lo] + (sorted_xs[hi] - sorted_xs[lo]) * (pos - lo)
 
 
+def _oos_metrics(ic_seq: list[float]) -> dict:
+    """对一段 IC 序列算 mean/std/icir/t/胜率。样本 <3 时返回 nulls（不硬凑）。
+
+    ⚠️ 零方差防护：IC 是秩相关的连续量，正常不会全等；但构造数据或极端情况
+    下 std 可能返回极小值（如 1e-17）而非精确 0，导致 icir / t_stat 变成
+    天文数字（实测 6.6e15），格式化时抛 TypeError。故显式设阈值。
+    """
+    n = len(ic_seq)
+    if n < 3:
+        return {"n": n, "ic_mean": None, "ic_std": None, "icir": None,
+                "t_stat": None, "win_rate": None}
+    m = _mean(ic_seq)
+    s = _std(ic_seq)
+    degenerate = s < 1e-9                    # 零方差（秩相关不可能真为 0）
+    return {
+        "n": n,
+        "ic_mean": round(m, 5),
+        "ic_std": round(s, 5),
+        "icir": None if degenerate else round(m / s, 4),
+        "t_stat": None if degenerate else round(m / (s / math.sqrt(n)), 3),
+        "win_rate": round(sum(1 for x in ic_seq if x > 0) / n, 4),
+    }
+
+
+def _is_oos_split(ic_dates: list[str], ic_seq: list[float],
+                  oos_ratio: float = 0.3) -> dict:
+    """样本内/样本外切分（M3-1）。
+
+    为什么必须有（B3）：过去「选因子」与「评因子」在同一段样本上完成 ——
+    IC 全量算完再评级，等于用全样本挑标准再报全样本成绩，属结构性过拟合。
+    这是 GP 熔断的三条原因之一。
+
+    做法：**零额外成本**。ic_dates 本来就带日期，按切点分流即可，
+    不需要把数据加载与截面循环跑两遍。
+
+    判定逻辑（风控优先，宁可错过不可错信）：
+      · OOS 截面 < 3 → `verdict="样本不足"`，不给结论
+      · OOS 与 IS **符号相反** → `verdict="过拟合"`
+      · OOS |t| < 1 → `verdict="未通过"`
+      · 否则 → `verdict="通过"`
+
+    oos_ratio: OOS 占比，默认 0.3。
+    """
+    n = len(ic_seq)
+    if n < 6:
+        return {"enabled": True, "verdict": "样本不足",
+                "note": f"总截面 {n} < 6，无法切分",
+                "is": _oos_metrics(ic_seq), "oos": _oos_metrics([]),
+                "oos_ratio": oos_ratio}
+
+    k = max(3, int(round(n * oos_ratio)))
+    k = min(k, n - 3)                      # 保证 IS 至少 3 个
+    if n - k < 3:                          # OOS 不足 3 → 不给结论
+        k = max(0, n - 3)
+    is_seq, oos_seq = ic_seq[:-k], ic_seq[-k:]
+    is_m, oos_m = _oos_metrics(is_seq), _oos_metrics(oos_seq)
+    is_dates = ic_dates[:-k] if k else ic_dates
+    oos_dates = ic_dates[-k:] if k else []
+
+    # 判定
+    if oos_m["ic_mean"] is None or is_m["ic_mean"] is None:
+        verdict, note = "样本不足", "IS 或 OOS 截面 < 3"
+    elif is_m["ic_mean"] * oos_m["ic_mean"] < 0:
+        verdict = "过拟合"
+        note = (f"IS ic={is_m['ic_mean']:+.4f} 与 OOS ic={oos_m['ic_mean']:+.4f} "
+                f"**符号相反** —— 样本内有效、样本外失效")
+    elif oos_m["t_stat"] is None:
+        # 零方差（t 算不出）→ 无法判定，不给结论（宁可不判，不错判）
+        verdict = "样本不足"
+        note = f"OOS 段 IC 零方差（std≈0），t 检验不可用"
+    elif abs(oos_m["t_stat"]) < 1.0:
+        verdict = "未通过"
+        note = (f"OOS |t|={abs(oos_m['t_stat']):.2f} < 1.0，"
+                f"样本外区分力不足（IS |t|={abs(is_m['t_stat'] or 0):.2f}）")
+    else:
+        verdict = "通过"
+        _it = "n/a" if is_m["t_stat"] is None else f"{is_m['t_stat']:+.2f}"
+        _ot = "n/a" if oos_m["t_stat"] is None else f"{oos_m['t_stat']:+.2f}"
+        note = (f"IS ic={is_m['ic_mean']:+.4f} (t={_it}) → "
+                f"OOS ic={oos_m['ic_mean']:+.4f} (t={_ot})，同向且显著")
+
+    return {
+        "enabled": True,
+        "verdict": verdict,
+        "note": note,
+        "is": is_m,
+        "oos": oos_m,
+        "split_date": is_dates[-1] if is_dates else None,
+        "oos_start": oos_dates[0] if oos_dates else None,
+        "oos_ratio": oos_ratio,
+    }
+
+
 def _factor_stats(vals: list[float], n_periods: int) -> dict:
     """因子值本身的分布统计（与 IC 无关）。
 
@@ -427,10 +520,12 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
                 groups: int = DEFAULT_GROUPS, forward: int = DEFAULT_FORWARD,
                 step: int = DEFAULT_STEP, universe: list[str] | None = None,
                 n_tested: int = 1,
+                oos_ratio: float = 0.3,
                 progress=None) -> dict:
     """因子挖掘：逐期截面因子 vs 未来收益，输出有效性检验报告。
 
     n_tested: 本次批量挖掘累计测试的候选数（多重检验校正，默认 1=单次手动检验）。
+    oos_ratio: 样本外占比（M3-1，默认 0.3；0=关闭切分）。
     """
     ok, err, sample = validate_expr(expr)
     if not ok:
@@ -616,6 +711,18 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
     t_stat = ic_mean / (ic_std / math.sqrt(len(ic_list))) if ic_std > 0 else 0.0
     ic_win = sum(1 for x in ic_list if x > 0) / len(ic_list)
 
+    # —— 样本内/样本外切分（M3-1，2026-10-08）——
+    # 动机：本函数过去把「选因子」与「评因子」放在同一段样本上（IC 全量算完再评级），
+    # 属于结构性样本内过拟合 —— 这是 GP 被熔断的三条原因之一。
+    # 做法：**零额外成本**。数据只加载一次，ic_list / ic_dates 本来就带日期，
+    # 按切分点分流即可（不需要跑两遍）。
+    # 默认切点：区间前 70% 为 IS（用于判断是否值得用），后 30% 为 OOS（用于诚实评估）。
+    # oos_ratio=0 时关闭切分（不产出 OOS 结论）。
+    oos_report = (_is_oos_split(ic_dates, ic_list, oos_ratio=oos_ratio)
+                  if oos_ratio > 0 else
+                  {"enabled": False, "verdict": "未启用",
+                   "note": "oos_ratio=0，已关闭样本外切分"})
+
     # 分组平均收益 + 单调性（首尾组差）
     g_means = {g: _mean(group_rets[g]) if group_rets[g] else 0.0 for g in range(1, groups + 1)}
     monotonic = (g_means[groups] - g_means[1]) if groups >= 2 else 0.0
@@ -659,6 +766,25 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
     else:
         rating = "无效"
 
+    # —— OOS 门槛（M3-1，B3）——
+    # 上面所有评级都基于**全样本** IC。若因子在 OOS 上失效（过拟合 / 未通过），
+    # 它就不该拿「优秀 / 可用」—— 那会让样本内噪音被当成建仓依据。
+    # 处置：正 IC 且评级达标的，若 OOS 判定为「过拟合」，降为「弱」；
+    #      「未通过」不降级但标记（保留观察），因为 OOS 样本本就少、t 波动大。
+    # 反向因子同理（反向也需 OOS 确认）。
+    oos_verdict = (oos_report or {}).get("verdict")
+    rating_before_oos = rating
+    if rating in ("优秀", "可用", "反向") and oos_verdict == "过拟合":
+        rating = "弱"
+    elif rating == "优秀" and oos_verdict == "未通过":
+        rating = "可用"          # 优秀 → 可用（降半档，仍需人工确认）
+    if rating != rating_before_oos:
+        oos_report = {
+            **oos_report,
+            "demoted_from": rating_before_oos,
+            "demote_note": f"因样本外检验「{oos_verdict}」，评级 {rating_before_oos} → {rating}",
+        }
+
     return {
         "ok": True,
         "name": name,
@@ -680,6 +806,7 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
         "luck_bar": round(luck_bar, 3),
         "t_thresholds": {"优秀": round(t_excellent, 2), "可用": round(t_usable, 2)},
         "n_periods": len(ic_list),
+        "oos": oos_report,
         "complexity": compute_complexity(expr),
         "factor_stats": _factor_stats(all_vals, len(ic_list)),
         "n_stocks": len(syms),
