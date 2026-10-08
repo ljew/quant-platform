@@ -451,6 +451,27 @@ def legacy_tail():
 # ============ GP 主搜索 ============
 DIRECTIONS = list(DIRECTION_TEMPLATES.keys())
 
+# —— GP 熔断开关（M2-1，2026-10-08）——
+# 暂停原因（三条，均为实测结论）：
+#   1. 退化：37 个已挖因子全是 roc(c, 6/40) 一类单变量变体，无任何交互项
+#   2. 过拟合：fitness 与种群选择在**同一全样本**内完成，结构性过拟合
+#   3. 污染：输出 26/37 为负 IC，其中 7 个曾被误判「可用」并进入注册表
+# 复活前置条件：M3-1 样本外框架 + M3-2 IC 周频化 + 估值因子 PIT 修复
+#   （factor_mining._attrs_map 目前只查一次 stocks 最新快照，2019 截面用的是
+#    2026 年的 PE，属明确前视 —— 不修则 GP 搜出来的仍是有偏结果）
+# 恢复方式：把 QUANT_GP_ENABLED 设为 1
+import os as _os
+
+GP_ENABLED = _os.getenv("QUANT_GP_ENABLED", "0") not in ("0", "", "false", "False")
+
+GP_DISABLED_NOTICE = {
+    "ok": False,
+    "disabled": True,
+    "error": "GP 挖矿已于 2026-10-08 暂停（M2-1）：无样本外验证 + 输出退化 + 污染因子注册表。"
+             "复活需先完成 M3 样本外框架与估值因子 PIT 修复。",
+    "resume_hint": "设置环境变量 QUANT_GP_ENABLED=1 可恢复（不推荐直接恢复）",
+}
+
 
 def gp_search(db: Session, directions: list[str] | None = None,
               pop_size: int = 14, generations: int = 6,
@@ -460,8 +481,13 @@ def gp_search(db: Session, directions: list[str] | None = None,
               progress=None) -> dict:
     """遗传规划批量挖掘：返回精英报告列表（top_k 已全池精评）。
 
+    ⚠️ 已熔断（M2-1）：默认直接返回 disabled，不再执行搜索。详见 GP_DISABLED_NOTICE。
+
     orthogonal=True 挖"增量 alpha"（对代表因子正交后的残差 IC）；
     crisis_only=True 只在基准下跌窗口评 IC（危机 Alpha）。"""
+    if not GP_ENABLED:
+        return dict(GP_DISABLED_NOTICE)
+
     dirs = [d for d in (directions or DIRECTIONS) if d in DIRECTION_TEMPLATES] or DIRECTIONS
     rng = random.Random(datetime.now().microsecond)
 

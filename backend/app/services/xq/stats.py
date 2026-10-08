@@ -132,6 +132,12 @@ def compute_stats(db, duckdb_path: str, days: int = 90, force: bool = False) -> 
                 rec[f"ret_{n}"] = round(float(sub["ret"].mean()) * 100, 2)
                 rec[f"exc_{n}"] = round(float(sub["excess"].mean()) * 100, 2)
                 rec[f"win_{n}"] = round(float(sub["win"].mean()) * 100, 1)
+                # 运气折价用 t 值：mean / (std/√n)，样本 <2 或零波动时给 None
+                if len(sub) >= 2:
+                    std = float(sub["excess"].std(ddof=1))
+                    if std > 0:
+                        rec[f"t_{n}"] = round(
+                            float(sub["excess"].mean()) / (std / len(sub) ** 0.5), 2)
             out_rows.append(rec)
         return out_rows
 

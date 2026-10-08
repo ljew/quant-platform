@@ -607,6 +607,10 @@ def _persist(db, req, meta, params, result) -> Backtest:
         ),
         extra_json=json.dumps(
             {
+                # 基准缺失标记（M1-4，2026-10-08）：excess_return=0 有两种含义——
+                # 「真实超额为零」与「从未计算基准」。旧实现两者都存 0，汇总时无法
+                # 区分，导致未设基准的回测混进效果统计。显式落库后可在筛选层隔离。
+                "benchmark_missing": not bool(meta.get("index_symbol", "") if multi else ""),
                 "holdings": getattr(result, "holdings", []),
                 "industry_distribution": getattr(result, "industry_distribution", {}),
                 "factor_analysis": getattr(result, "factor_analysis", None),

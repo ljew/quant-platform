@@ -232,18 +232,34 @@ class BacktestEngine:
         self,
         bars: List[dict],
         initial_cash: float = 1_000_000.0,
-        commission: float = 0.0003,
-        slippage: float = 0.0,
+        commission: float = 0.00025,
+        slippage: float = 0.0001,
         rebalance_tol: float = 0.005,
         min_commission: float = 5.0,
         lot_size: int = 100,
         limit_enabled: bool = True,
+        stamp_tax: float = 0.0005,
+        risk_free_rate: float = 0.025,
     ):
+        """事件驱动回测引擎（单标的、long-only）。
+
+        成交口径（T4，2026-10-08 显式化）：**信号当日收盘价成交**。
+        这是简化模型——真实交易应为「信号 bar i 确认 → bar i+1 开盘成交」，
+        差异来自隔夜跳空与日内波动。本引擎未实现次日开盘，故其结果会比
+        xq/portfolio.py（T+1 开盘成交，组合镜像口径）**偏乐观**。
+        两者对比时须记住这一差异，不要横向直接比较夏普。
+        （改为次日开盘属 M3 范畴，届时需同步 portfolio 与本引擎。）
+        """
         # bars: 升序的日 K 线列表，字段含 open/high/low/close/volume/date
         self.bars = bars
         self.initial_cash = float(initial_cash)
+        # 成本口径（M1-3，2026-10-08）：与 xq/portfolio.py 对齐，改用真实 A 股成本。
+        # 旧默认 commission=0.0003 / slippage=0.0 且无印花税，比 xq 引擎（万2.5 +
+        # 分向滑点 + 万5 印花税）乐观，导致同平台两套口径、结果不可比。
         self.commission = float(commission)
         self.slippage = float(slippage)
+        self.stamp_tax = float(stamp_tax)      # 印花税，仅卖出收取
+        self.risk_free_rate = float(risk_free_rate)
         # 调仓容忍度：订单金额低于净值的该比例则跳过，避免残余现金造成碎单 churn
         self.rebalance_tol = float(rebalance_tol)
         # 实盘化参数
@@ -298,6 +314,8 @@ class BacktestEngine:
         exec_price = price * (1 + self.slippage * (1 if is_buy else -1))
         notional = abs(delta_shares) * exec_price
         commission = max(notional * self.commission, self.min_commission)
+        # 印花税：仅卖出收取，万5（M1-3）
+        stamp = notional * self.stamp_tax if not is_buy else 0.0
         pnl_val = 0.0
 
         if is_buy:
@@ -312,10 +330,10 @@ class BacktestEngine:
             side = "BUY"
         else:
             sold = -delta_shares
-            # 实现盈亏 = (成交价 - 持仓成本) * 卖出股数 - 卖出佣金
-            realized = (exec_price - self.avg_cost) * sold - commission
+            # 实现盈亏 = (成交价 - 持仓成本) * 卖出股数 - 卖出佣金 - 印花税
+            realized = (exec_price - self.avg_cost) * sold - commission - stamp
             pnl_val = realized
-            self.cash += notional - commission
+            self.cash += notional - commission - stamp
             self.shares -= sold
             side = "SELL"
             # 若清仓，结束一个完整回合
@@ -379,7 +397,10 @@ class BacktestEngine:
             m = sum(rets) / len(rets)
             var = sum((r - m) ** 2 for r in rets) / (len(rets) - 1)
             std = math.sqrt(var)
-            sharpe = (m / std) * math.sqrt(252.0) if std > 0 else 0.0
+            # Sharpe 减无风险利率（M1-5，2026-10-08）。旧实现隐含 rf=0，
+            # A 股 rf≈2.5% 时夏普系统性虚高约 0.03-0.05。
+            rf_daily = self.risk_free_rate / 252.0
+            sharpe = ((m - rf_daily) / std) * math.sqrt(252.0) if std > 0 else 0.0
         else:
             sharpe = 0.0
 

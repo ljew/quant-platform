@@ -127,7 +127,14 @@ def run_from_panel(db: Session, p: Panel, run_id: int | None = None) -> dict:
             k for k, syms in picks_by_day.items() if sym in syms
         )
         streak, reso = info["streak"], len(today_strategies)
-        close = float(latest.loc[sym, "close"]) if sym in latest.index else None
+        # ⚠️ 复权口径一致性（M1-1，2026-10-08）：MA 与 close 必须同口径。
+        # 旧实现 MA 用后复权 c_hfq、close 用未复权 close，而 adj_factor 均值 10.08、
+        # 最大 10055，导致 ma10/close 比值中位数 3-13 倍，engine.judge 的
+        # 「close < ma20 → SELL / close < ma10 → REDUCE」风控从未正确触发（静默失效）。
+        # 修复：判定的 close 一律取后复权 c_hfq，与 MA 同口径。
+        # 注意：signal_actions.close 存的是判定用价（后复权），仅供展示与判定，
+        # 不参与 portfolio.py 的成交计算（那里用未复权 open/close，口径自洽）。
+        close = float(latest.loc[sym, "c_hfq"]) if sym in latest.index else None
         m10 = float(ma_map.loc[sym, "out_ma10"]) if sym in ma_map.index else None
         m20 = float(ma_map.loc[sym, "out_ma20"]) if sym in ma_map.index else None
         action, reason = xq_engine.judge(

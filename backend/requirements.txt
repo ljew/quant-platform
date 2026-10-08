@@ -20,3 +20,5 @@ tushare==1.4.29
 # datahub 数据枢纽（Bronze/Silver 分层存储 + 源配置）
 pyarrow>=14.0
 PyYAML>=6.0
+# 测试（M1-6，2026-10-08 建立回归测试基建）
+pytest>=8.0

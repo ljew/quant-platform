@@ -7,8 +7,9 @@
 - 每周复盘（周六 10:15）：信号归因 + 镜像组合 + 因子生产盘点 → HTML 报告
   落盘 data/reports/ 并邮件推送（复用 mailer 通道）。
 
-安全边界：自动动作仅限「因子登记/启用」（可逆，toggle 即退回）；
-策略降级/参数调整只进报告建议，不自动执行。
+安全边界：自动动作 = 因子登记/启用（可逆，toggle 即退回）+ 研究卡升级类迁移
+（watch→candidate、downgraded→candidate 恢复）；策略降级/退役只进报告建议，
+由人确认，不自动执行。
 """
 
 from __future__ import annotations
@@ -166,6 +167,13 @@ def _mining_body(db: Session, run_id: int, cfg: dict) -> dict:
             db.commit()
         elif rating == "优秀" and not simple_enough:
             reg.notes = f"{reg.notes or ''}｜复杂度 {cx_score} 超上限，留候选人工复核"
+        # 同步因子研究卡（第 2 步起卡片状态是生产门禁，注册必须带卡）
+        try:
+            from app.services.research_card_svc import sync_factor_card
+            sync_factor_card(db, reg=reg, rating=rating,
+                             ic_mean=el.get("ic_mean"), icir=el.get("icir"))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("因子研究卡同步失败（不影响登记）: %s", e)
         (enabled if reg.status == "enabled" else candidates).append(
             {"name": row.name, "rating": rating, "ic": el.get("ic_mean"),
              "icir": el.get("icir"), "status": reg.status})
@@ -241,13 +249,13 @@ def _review_body(db: Session, run_id: int, cfg: dict) -> tuple[dict, str]:
         select(FactorMineResult).where(FactorMineResult.created_at >= week_ago)
         .order_by(FactorMineResult.id.desc())).scalars().all()
 
-    # 4) 建议（只进报告，不自动执行）
-    suggestions = []
-    for r in weakening:
-        suggestions.append(f"信号「{r['strategy']}」近 90 日 T+10 超额 {r['exc_10']:+.2f}%"
-                           f"（{r.get('n_10', 0)} 样本）走弱，建议人工评估是否降级")
-    if not suggestions:
-        suggestions.append("各信号策略归因均在正值区间，无需干预")
+    # 4) 研究卡：更新证据字段 + 状态机评估（升级自动执行，降级/退役只出建议）
+    from app.services.research_card_svc import weekly_review_cards
+
+    card_review = weekly_review_cards(db, strat_rows)
+    suggestions = list(card_review["suggest"])
+    if not suggestions and not card_review["auto"]:
+        suggestions.append("各信号策略归因均在正值区间，研究卡状态无需变更")
 
     summary = {
         "date": date.today().isoformat(),
@@ -259,6 +267,7 @@ def _review_body(db: Session, run_id: int, cfg: dict) -> tuple[dict, str]:
         "portfolio": pf,
         "factors": {"enabled": n_enabled, "total": len(reg_rows),
                     "new_this_week": len(new_factors)},
+        "card_review": card_review,
         "suggestions": suggestions,
     }
 
@@ -268,13 +277,13 @@ def _review_body(db: Session, run_id: int, cfg: dict) -> tuple[dict, str]:
     path = REPORT_DIR / f"auto_review_{date.today().strftime('%Y%m%d')}.html"
     path.write_text(html, encoding="utf-8")
 
-    # 6) 决策留痕：策略档位与上周快照比对，变化自动记入架构文档第 10 章
+    # 6) 决策留痕：生效档位（研究卡解析结果）与上周快照比对，变化自动记入架构文档第 10 章
     try:
         from app.services import decisions_log
-        from app.services.xq.strategies import STRATEGY_QUALITY
+        from app.services.research_card_svc import resolve_strategy_quality
         ctx = {r["strategy"]: {"exc_10": r.get("exc_10"), "n": r.get("n_10", 0)}
                for r in strat_rows}
-        changes = decisions_log.record_tier_changes(STRATEGY_QUALITY, context=ctx)
+        changes = decisions_log.record_tier_changes(resolve_strategy_quality(db), context=ctx)
         if changes:
             summary["decisions_logged"] = changes
     except Exception as e:  # noqa: BLE001
@@ -297,12 +306,17 @@ def _render_review_html(s: dict) -> str:
         f"<td style='padding:5px 10px'>{_chg(r['exc_10'])}</td></tr>"
         for r in s["strategies"])
     sugg = "".join(f"<li style='margin:4px 0'>{x}</li>" for x in s["suggestions"])
+    cr = s.get("card_review") or {}
+    auto_items = "".join(
+        f"<li style='margin:4px 0;color:#1e8449'>✅ {x}</li>" for x in cr.get("auto", []))
+    if not auto_items:
+        auto_items = "<li style='margin:4px 0;color:#999'>本周无自动状态迁移</li>"
     pf = s.get("portfolio") or {}
     return f"""<html><body style="font-family:-apple-system,'PingFang SC',Helvetica;background:#fafafa;margin:0">
 <div style="max-width:820px;margin:0 auto;padding:24px">
   <div style="background:#1a1a2e;color:#fff;border-radius:12px 12px 0 0;padding:20px 28px">
     <div style="font-size:22px;font-weight:700">每周自动复盘</div>
-    <div style="opacity:.75;font-size:13px;margin-top:4px">{s['date']} · 自动研究闭环生成 · 只读报告，未做任何策略变更</div>
+    <div style="opacity:.75;font-size:13px;margin-top:4px">{s['date']} · 自动研究闭环生成 · 升级类迁移已自动执行并留痕；降级/退役仅建议，未动状态</div>
   </div>
   <div style="background:#fff;border:1px solid #eee;border-top:none;padding:8px 28px 24px;border-radius:0 0 12px 12px">
     <h2 style="font-size:16px;border-left:4px solid #2456c8;padding-left:10px">本周概览</h2>
@@ -321,6 +335,8 @@ def _render_review_html(s: dict) -> str:
       <th align="left" style="padding:5px 10px">T+10 超额</th></tr>
       {strat_rows or "<tr><td colspan='4' style='padding:6px 10px;color:#999'>样本不足</td></tr>"}
     </table>
+    <h2 style="font-size:16px;border-left:4px solid #1e8449;padding-left:10px;margin-top:22px">研究卡状态机（升级已自动执行）</h2>
+    <ul style="padding-left:18px;font-size:13.5px">{auto_items}</ul>
     <h2 style="font-size:16px;border-left:4px solid #c8860d;padding-left:10px;margin-top:22px">复盘建议（需人工确认）</h2>
     <ul style="padding-left:18px;font-size:13.5px">{sugg}</ul>
     <p style="color:#999;font-size:11px;margin-top:24px;border-top:1px solid #eee;padding-top:12px">

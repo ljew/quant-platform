@@ -66,14 +66,42 @@ def load_panel(
 ) -> Panel:
     """载入面板。
 
+    数据源（DuckDB → SQLite 自动回退，2026-10-08 修复）：
+      DuckDB `quant.duckdb` 在 SQLite+DuckDB 双库改造后**已不再包含 kline_daily**
+      （实测 schema 只有 adj_factor_daily / factor_daily / stocks 等 7 张表，
+       K 线 982 万行全部在 SQLite `quant_dev.db`）。原实现硬编码读 DuckDB，
+      在双库架构下必然抛 `Catalog Error: kline_daily does not exist`，
+      导致信号回填/选股整条链路不可用。现改为：先试 DuckDB，缺表则回退 SQLite
+      （同路径下的 quant_dev.db），并 attach 后复用同一段 SQL。
+
     Args:
         duckdb_path: quant.duckdb 路径（BASE_DIR/data/quant.duckdb）。
         lookback: 回看交易日数。
         as_of: 历史重演日期（time_travel 语义：截断到该日，策略零改动重演）。
         include_bj: 是否包含北交所（平台约定默认剔除）。
     """
+    duckdb_path = Path(duckdb_path)
+    sqlite_path = duckdb_path.parent / "quant_dev.db"
     con = duckdb.connect(str(duckdb_path), read_only=True)
     try:
+        # ── 数据源探测：DuckDB 有 kline_daily 就用，否则 attach SQLite ──
+        has_kline = False
+        try:
+            con.execute("select 1 from kline_daily limit 1").fetchall()
+            has_kline = True
+        except Exception:
+            has_kline = False
+        if not has_kline:
+            if not sqlite_path.exists():
+                raise RuntimeError(
+                    f"K线数据缺失：DuckDB 无 kline_daily，且找不到 SQLite 备份 {sqlite_path}"
+                )
+            con.execute(f"attach '{sqlite_path}' as sq (READ_ONLY)")
+            src = "sq.kline_daily"
+            fsrc = "sq.adj_factor_daily"
+        else:
+            src, fsrc = "kline_daily", "adj_factor_daily"
+
         cutoff_sql = ""
         params: list = []
         if as_of is not None:
@@ -81,7 +109,7 @@ def load_panel(
             params.append(as_of)
         params.append(lookback)  # limit ? 在 SQL 末尾
         dates = con.execute(
-            f"select distinct trade_date from kline_daily {cutoff_sql} "
+            f"select distinct trade_date from {src} {cutoff_sql} "
             "order by trade_date desc limit ?",
             params,
         ).fetchall()
@@ -96,8 +124,8 @@ def load_panel(
             select k.symbol, k.trade_date as date,
                    k.open, k.high, k.low, k.close,
                    k.volume, k.amount, f.adj_factor
-            from kline_daily k
-            join adj_factor_daily f
+            from {src} k
+            join {fsrc} f
               on f.symbol = k.symbol and f.trade_date = k.trade_date
             where k.trade_date in ({date_strs}){bj_filter}
             order by k.symbol, k.trade_date

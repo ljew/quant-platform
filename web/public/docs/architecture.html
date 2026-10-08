@@ -232,6 +232,7 @@
 <tr><td>2026-10-08</td><td>研究卡机制落地第1步：建表+迁移</td><td>10 张卡（9策略+1因子）入库，纯数据不动逻辑；状态机与 STRATEGY_QUALITY/factor_registry 双轨并行，后续步骤再统一</td></tr>
 <tr><td>2026-10-08</td><td>退役测试遗留因子 test-快动量</td><td>注册表唯一启用因子却是测试残留，ic 从未验证，每日管道仍全市场计算它；注册表禁用 + 研究卡退役双轨同步，可随时恢复</td></tr>
 <tr><td>2026-10-08</td><td>研究卡机制第2步：生产逻辑改读卡片（等价替换）</td><td>信号定档与因子计算门禁的唯一真相改为 research_cards.state；STRATEGY_QUALITY/factor_registry 降为冗余校验+无卡回退；等价性已验证（9策略档位逐key一致、judge五组用例行为相同）</td></tr>
+<tr><td>2026-10-08</td><td>研究卡机制第3步：周复盘驱动状态机</td><td>每周复盘自动更新卡片证据（含新增t值字段）；升级类迁移自动（watch→candidate、降级恢复），降级/退役出建议人确认；降级卡连续4周负超额建议退役；挖矿入库自动建/同步因子卡；决策留痕改读卡片解析档位</td></tr>
 <!-- DECISIONS:END -->
 </table>
 <p class="muted" style="font-size:12.8px">本表由 <code>docs/decisions.json</code> 自动生成：策略档位变化由每周复盘自动留痕；其他重大变更运行 <code>python scripts/render_decisions.py --add "决策" --reason "理由"</code> 追加。</p>

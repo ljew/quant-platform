@@ -554,11 +554,22 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
     luck_bar = math.sqrt(2 * math.log(max(n_tested, 2)))
     t_excellent = max(2.0, luck_bar + 0.3)
     t_usable = max(1.5, luck_bar - 0.3)
-    if (abs(t_stat) >= t_excellent and abs(ic_mean) > 0.02 and mono_score >= 0.6
+    # ⚠️ 方向不可用 abs() 抹掉（M1-2，2026-10-08）：旧实现对 t_stat 与 ic_mean
+    # 都取绝对值，导致 ic=-0.06/t=1.8 这类反向因子被判「可用」。实测 37 个已挖
+    # 因子中 26 个负 IC，其中 7 个负 IC 被标为可用/优秀；factor_registry 的
+    # enabled 记录即由该函数选出，等于把反向信号当正向建仓。
+    # 修复：只有 ic_mean > 0 才可能正向评级；ic_mean < 0 但显著者单列
+    # 「反向」评级（可研究取负号使用，但禁止自动进生产）。
+    has_pos = ic_mean > 0
+    if (has_pos and t_stat >= t_excellent and ic_mean > 0.02 and mono_score >= 0.6
             and abs(corr_table.get("max_abs_corr", 0)) < 0.8):
         rating = "优秀"
-    elif abs(t_stat) >= t_usable and abs(ic_mean) > 0.01:
+    elif has_pos and t_stat >= t_usable and ic_mean > 0.01:
         rating = "可用"
+    elif (not has_pos) and abs(t_stat) >= t_usable and abs(ic_mean) > 0.01:
+        # 反向因子：统计上显著但方向为负。取负号即成正因子，但需人工确认
+        # 经济含义后方可使用（不自动进生产）。
+        rating = "反向"
     elif abs(ic_mean) > 0.005:
         rating = "弱"
     else:
