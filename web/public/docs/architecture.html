@@ -38,6 +38,10 @@
 <body>
 <div class="wrap">
 
+
+<h1>QUANT·DESK 系统架构设计</h1>
+<div class="sub">个人量化投研平台 · 架构基线 v2.1 · 最后更新 2026-10-08 · 配套文档：<a href="manual.html" style="color:var(--accent)">使用说明书</a></div>
+
 <div class="card" style="border-color:#e0605e55">
 <span class="tag t-r">重要</span><b>2026-10-08 已修复四个评估口径缺陷</b> —— 修复前平台输出的所有「策略表现」都不可信：
 <b>①</b> MA 用后复权而 close 用未复权（比值 3-13 倍）→ <b>MA 破位风控从未触发</b>；
@@ -48,9 +52,6 @@
 多为单股反复调参（<code>is_tuning=true</code>），不代表策略有效性。
 完整证据与重构路线见 <code>docs/REBUILD-2026-10.md</code>。
 </div>
-
-<h1>QUANT·DESK 系统架构设计</h1>
-<div class="sub">个人量化投研平台 · 架构基线 v2.1 · 最后更新 2026-10-08 · 配套文档：<a href="manual.html" style="color:var(--accent)">使用说明书</a></div>
 
 <div class="card toc">
 <b>目录</b>
