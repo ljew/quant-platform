@@ -786,8 +786,9 @@ class ResearchCard(Base):
     """研究卡：一个策略/因子从想法到生产的标准化载体（docs/research-card-v0.1.md）。
 
     状态机：watch 观察 → candidate 候选 → enabled 启用 → downgraded 降级 → retired 退役。
-    本表只做"档案+状态"，不改变现有生产逻辑（信号定档仍走 STRATEGY_QUALITY，
-    因子生产仍走 factor_registry.status）——两边由迁移/复盘脚本同步。
+    本表是生产门禁的唯一真相：信号定档（xq/runner → resolve_strategy_quality）与
+    因子每日计算（datahub/runner → enabled_factor_names）都读这里；
+    STRATEGY_QUALITY / factor_registry.status 仅作冗余校验与无卡回退。
     """
 
     __tablename__ = "research_cards"

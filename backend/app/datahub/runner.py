@@ -437,12 +437,18 @@ def step_clean_text(db) -> int:
 
 
 def step_compute_mined_factors(db) -> int:
-    """Gold：启用状态注册因子的最新截面 → factor_mined_daily（长表，幂等覆盖）。"""
+    """Gold：启用状态注册因子的最新截面 → factor_mined_daily（长表，幂等覆盖）。
+
+    「启用」以研究卡为准（research_card_svc.enabled_factor_names）：注册表
+    status=='enabled' 且卡状态 enabled 才计算；无卡的按旧行为保底并告警。
+    """
     from app.models import FactorRegistry, FactorMinedDaily
     from app.core.engine.factor_expr import eval_factor
+    from app.services.research_card_svc import enabled_factor_names
 
-    enabled = db.execute(select(FactorRegistry).where(
-        FactorRegistry.status == "enabled")).scalars().all()
+    names = set(enabled_factor_names(db))
+    enabled = [r for r in db.execute(select(FactorRegistry).where(
+        FactorRegistry.status == "enabled")).scalars().all() if r.name in names]
     if not enabled:
         return 0
     syms = db.execute(select(Stock.symbol)).scalars().all()

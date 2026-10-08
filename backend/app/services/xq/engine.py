@@ -40,9 +40,14 @@ _TIER_RANK = {"strong": 3, "good": 2, "neutral": 1, "weak": 0}
 _TIER_LABEL = {"strong": "强", "good": "良", "neutral": "中", "weak": "弱"}
 
 
-def best_tier(strategy_keys: list[str]) -> str:
-    """当日命中策略中的最优质量档（决定能否建仓：weak 不建仓）。"""
-    tiers = [STRATEGY_QUALITY.get(k, "neutral") for k in strategy_keys]
+def best_tier(strategy_keys: list[str], quality: dict[str, str] | None = None) -> str:
+    """当日命中策略中的最优质量档（决定能否建仓：weak 不建仓）。
+
+    quality 传 None 时回退到代码常量 STRATEGY_QUALITY（纯函数场景/测试用）；
+    生产路径由 runner 传入 resolve_strategy_quality() 的卡片解析结果。
+    """
+    q = quality if quality is not None else STRATEGY_QUALITY
+    tiers = [q.get(k, "neutral") for k in strategy_keys]
     return max(tiers, key=lambda t: _TIER_RANK.get(t, 1)) if tiers else "neutral"
 
 
@@ -93,6 +98,7 @@ def judge(
     ma20: float | None,
     rules: dict,
     holding: dict | None = None,
+    quality: dict[str, str] | None = None,
 ) -> tuple[str, str]:
     """按规则判定动作，返回 (action, reason)。
 
@@ -145,7 +151,7 @@ def judge(
         return "EXIT", "已连续未再被推荐，信号消失，保留观察"
 
     # ── 3) 信号强度（长确认 × 策略质量；共振只作参考）──
-    tier = best_tier(strategies)
+    tier = best_tier(strategies, quality)
     names = "、".join(STRATEGY_NAME.get(s, s) for s in strategies)
 
     if streak >= rules["streak_buy"]:

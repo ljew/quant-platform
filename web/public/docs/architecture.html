@@ -231,6 +231,7 @@
 <tr><td>2026-10-08</td><td>停用两个与现行策略无关的模拟盘任务</td><td>简洁化审查：中证800多因子/均线金叉与当前有效策略（chan_buy、high_tight_flag）无关；仅留茅台缠论模拟，数据保留可随时恢复</td></tr>
 <tr><td>2026-10-08</td><td>研究卡机制落地第1步：建表+迁移</td><td>10 张卡（9策略+1因子）入库，纯数据不动逻辑；状态机与 STRATEGY_QUALITY/factor_registry 双轨并行，后续步骤再统一</td></tr>
 <tr><td>2026-10-08</td><td>退役测试遗留因子 test-快动量</td><td>注册表唯一启用因子却是测试残留，ic 从未验证，每日管道仍全市场计算它；注册表禁用 + 研究卡退役双轨同步，可随时恢复</td></tr>
+<tr><td>2026-10-08</td><td>研究卡机制第2步：生产逻辑改读卡片（等价替换）</td><td>信号定档与因子计算门禁的唯一真相改为 research_cards.state；STRATEGY_QUALITY/factor_registry 降为冗余校验+无卡回退；等价性已验证（9策略档位逐key一致、judge五组用例行为相同）</td></tr>
 <!-- DECISIONS:END -->
 </table>
 <p class="muted" style="font-size:12.8px">本表由 <code>docs/decisions.json</code> 自动生成：策略档位变化由每周复盘自动留痕；其他重大变更运行 <code>python scripts/render_decisions.py --add "决策" --reason "理由"</code> 追加。</p>

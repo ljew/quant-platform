@@ -13,9 +13,10 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from app.models import AgentEvent, SignalAction, SignalDaily
+from app.services.research_card_svc import resolve_strategy_quality
 from app.services.xq import engine as xq_engine
 from app.services.xq.data import Panel, load_panel
-from app.services.xq.strategies import STRATEGIES, STRATEGY_NAME, STRATEGY_QUALITY
+from app.services.xq.strategies import STRATEGIES, STRATEGY_NAME
 
 
 def emit(db: Session, run_id: int | None, agent: str, message: str,
@@ -118,6 +119,8 @@ def run_from_panel(db: Session, p: Panel, run_id: int | None = None) -> dict:
     ma_map = p.df[p.df["date"] == p.latest].set_index("symbol")[["out_ma10", "out_ma20"]]
 
     rules = xq_engine.DEFAULT_RULES
+    # 策略质量档以研究卡为准（STRATEGY_QUALITY 作冗余校验，见 research_card_svc）
+    quality_map = resolve_strategy_quality(db)
     action_dist: dict[str, int] = {}
     for sym, info in streaks.items():
         today_strategies = sorted(
@@ -129,12 +132,13 @@ def run_from_panel(db: Session, p: Panel, run_id: int | None = None) -> dict:
         m20 = float(ma_map.loc[sym, "out_ma20"]) if sym in ma_map.index else None
         action, reason = xq_engine.judge(
             sym, streak, reso, today_strategies, close, m10, m20, rules,
+            quality=quality_map,
         )
         db.add(SignalAction(
             date=data_date, symbol=sym, name=p.name_of(sym) or None,
             action=action, streak=streak, resonance=reso,
             strategies="、".join(STRATEGY_NAME.get(k, k) for k in today_strategies),
-            quality_tier=xq_engine.best_tier(today_strategies),
+            quality_tier=xq_engine.best_tier(today_strategies, quality_map),
             close=close, ma10=m10, ma20=m20, reason=reason,
         ))
         action_dist[action] = action_dist.get(action, 0) + 1
@@ -147,7 +151,7 @@ def run_from_panel(db: Session, p: Panel, run_id: int | None = None) -> dict:
         "date": data_date.isoformat(),
         "picks": {k: len(v) for k, v in picks_by_day.items()},
         "actions": action_dist,
-        "quality": STRATEGY_QUALITY,
+        "quality": quality_map,
         "on_radar": len(streaks),
     }
 
