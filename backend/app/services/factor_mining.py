@@ -359,8 +359,12 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
                 start: str = "", end: str = "",
                 groups: int = DEFAULT_GROUPS, forward: int = DEFAULT_FORWARD,
                 step: int = DEFAULT_STEP, universe: list[str] | None = None,
+                n_tested: int = 1,
                 progress=None) -> dict:
-    """因子挖掘：逐期截面因子 vs 未来收益，输出有效性检验报告。"""
+    """因子挖掘：逐期截面因子 vs 未来收益，输出有效性检验报告。
+
+    n_tested: 本次批量挖掘累计测试的候选数（多重检验校正，默认 1=单次手动检验）。
+    """
     ok, err, sample = validate_expr(expr)
     if not ok:
         return {"ok": False, "error": f"表达式无效：{err}"}
@@ -542,10 +546,18 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
         fin_hist=fin_hist, news_lookup=news_lookup,
     )
 
-    # 有效性评级
-    if abs(t_stat) >= 2 and abs(ic_mean) > 0.02 and mono_score >= 0.6 and abs(corr_table.get("max_abs_corr", 0)) < 0.8:
+    # 有效性评级（含多重检验校正：批量挖掘时抬高 t 门槛）
+    # 思想来源：《量化交易》2.8.5 + Bailey-López de Prado deflated Sharpe——
+    # N 个独立零假设检验的期望最大 |t| ≈ √(2·ln N)。挖 56 个候选时期望最大值
+    # 已达 2.84，即 t≥2 的「优秀」可能纯属运气。因此批量挖掘的评级门槛
+    # 随 N 上浮：宁可错过，不可错信（风控优先，2026-10-08）。
+    luck_bar = math.sqrt(2 * math.log(max(n_tested, 2)))
+    t_excellent = max(2.0, luck_bar + 0.3)
+    t_usable = max(1.5, luck_bar - 0.3)
+    if (abs(t_stat) >= t_excellent and abs(ic_mean) > 0.02 and mono_score >= 0.6
+            and abs(corr_table.get("max_abs_corr", 0)) < 0.8):
         rating = "优秀"
-    elif abs(t_stat) >= 1.5 and abs(ic_mean) > 0.01:
+    elif abs(t_stat) >= t_usable and abs(ic_mean) > 0.01:
         rating = "可用"
     elif abs(ic_mean) > 0.005:
         rating = "弱"
@@ -569,6 +581,9 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
         "corr_with_existing": corr_table["corr"],
         "max_abs_corr": corr_table["max_abs_corr"],
         "rating": rating,
+        "n_tested": n_tested,
+        "luck_bar": round(luck_bar, 3),
+        "t_thresholds": {"优秀": round(t_excellent, 2), "可用": round(t_usable, 2)},
         "n_periods": len(ic_list),
         "complexity": compute_complexity(expr),
         "factor_stats": _factor_stats(all_vals, len(ic_list)),

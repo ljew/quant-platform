@@ -84,7 +84,7 @@
 <tr><td>数据质量优先，分层治理</td><td>1.5</td><td>三层数据管道 + 质检闸门 + 健康分</td><td><span class="tag t-g">已落地</span></td></tr>
 <tr><td>防前视偏差</td><td>2.8.5</td><td>T+1 开盘成交、PIT 成分快照月更</td><td><span class="tag t-g">已落地</span></td></tr>
 <tr><td>样本外/多窗口复核</td><td>2.8.5</td><td>240/120/60 日三窗口定档 + 每周 90 日滚动复盘</td><td><span class="tag t-g">已落地</span></td></tr>
-<tr><td>多重检验校正（挖得越多越要保守）</td><td>2.8.5</td><td>精英评级阈值从严，但<b>未做显式的多重检验校正</b>（如 deflated Sharpe）</td><td><span class="tag t-y">部分</span></td></tr>
+<tr><td>多重检验校正（挖得越多越要保守）</td><td>2.8.5</td><td>精英评级的 t 门槛随当批测试数上浮（√(2·ln N) 运气折价，2026-10-08 起生效）</td><td><span class="tag t-g">已落地</span></td></tr>
 <tr><td>参数不确定性（shrinkage / Bootstrap）</td><td>2.5, 3.3.6</td><td>寻优看区间不看单点；无正式的 Bootstrap 置信区间</td><td><span class="tag t-y">部分</span></td></tr>
 <tr><td>交易成本与容量</td><td>3.2</td><td>换手/容量纳入因子检验；冲击成本模型较粗</td><td><span class="tag t-y">部分</span></td></tr>
 <tr><td>多期组合优化（含成本再平衡）</td><td>3.3</td><td>模拟盘是信号等权镜像，<b>无组合层权重优化</b></td><td><span class="tag t-r">未做</span></td></tr>
@@ -106,10 +106,10 @@
 
 <h2>四、待办（按价值排序）</h2>
 <ul>
-  <li><b>多重检验校正</b>：挖矿批次输出 deflated Sharpe 或等价的「运气折价」提示，评级时再降一档保守度。</li>
   <li><b>组合层优化</b>：信号组合从等权镜像升级为带成本约束的均值-方差/风险平价加权（第 3 章框架）。</li>
   <li><b>参数置信区间</b>：寻优结果附 Bootstrap 置信带，替代单点最优报告。</li>
 </ul>
+<p class="muted" style="font-size:12.8px">已完成：多重检验校正（2026-10-08，评级 t 门槛随批量测试数上浮 + 自动上岗复杂度上限 ≤4.0）。</p>
 
 <div class="foot">QUANT·DESK · 量化方法论 · 思想来源：郭新、黎子良、Howard Shek、Sam Wong《量化交易：算法、分析、数据、模型和优化》（高等教育出版社，2020）· <a href="architecture.html">系统架构设计</a> · <a href="manual.html">使用说明书</a></div>
 </div>

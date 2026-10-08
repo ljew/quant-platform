@@ -175,7 +175,7 @@ export default function AutoResearchPage() {
         {/* —— 配置 —— */}
         <Card colors={colors} title="自动化开关" pad={14}>
           <Toggle label="每日自动挖矿" k="mining_enabled" hint={`${cfg?.mining_time ?? ""} · GP ${cfg?.mining_pop}×${cfg?.mining_gens}`} />
-          <Toggle label="优秀因子自动启用" k="auto_enable_excellent" hint="启用即进入每日生产（可逆）" />
+          <Toggle label="优秀因子自动启用" k="auto_enable_excellent" hint="仅限简单表达式（复杂度≤4）· 可逆" />
           <Toggle label="每周自动复盘" k="review_enabled" hint={`周${WEEK_CN[cfg?.review_weekday ?? 5]} ${cfg?.review_time ?? ""}`} />
           <Toggle label="复盘邮件推送" k="email_review" hint="复用信号报告的邮件通道" />
           <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 10, lineHeight: 1.6 }}>

@@ -517,7 +517,8 @@ def gp_search(db: Session, directions: list[str] | None = None,
         if progress:
             progress(0.88 + 0.1 * i / max(len(elites), 1), f"精英 #{i + 1} 全池精评中…")
         full = mine_factor(db, expr, name=f"GP-elite{i + 1}", start=start, end=end,
-                           groups=5, forward=forward, universe=None)
+                           groups=5, forward=forward, universe=None,
+                           n_tested=len(seen))
         if full.get("ok"):
             full["quick_ic"] = round(quick["ic_mean"], 4)
             full["quick_icir"] = round(quick.get("icir", 0), 4)

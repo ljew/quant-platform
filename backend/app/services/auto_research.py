@@ -41,6 +41,7 @@ DEFAULT_CFG: dict = {
     "mining_pop": 16,              # GP 种群规模（小规模快跑）
     "mining_gens": 5,              # 进化代数
     "mining_top_k": 5,             # 精英全池精评数量
+    "auto_enable_max_complexity": 4.0,  # 自动上岗的复杂度上限（score≤4 ≈ 中等嵌套以内）
 }
 
 _STATE: dict = {"mining_last": "", "review_last": "", "last_error": None}
@@ -155,10 +156,16 @@ def _mining_body(db: Session, run_id: int, cfg: dict) -> dict:
             db.add(reg)
             db.commit()
             db.refresh(reg)
-        # 只有「优秀」自动启用进入每日生产；「可用」留候选待人工
-        if rating == "优秀" and cfg["auto_enable_excellent"] and reg.status == "candidate":
+        # 只有「优秀」且「足够简单」才自动启用进入每日生产；
+        # 复杂表达式即使评级优秀也留候选人工复核（2026-10-08 风控优先：不搞复杂模型）
+        cx_score = (el.get("complexity") or {}).get("score", 99)
+        simple_enough = cx_score <= float(cfg.get("auto_enable_max_complexity", 4.0))
+        if (rating == "优秀" and cfg["auto_enable_excellent"] and simple_enough
+                and reg.status == "candidate"):
             reg.status = "enabled"
             db.commit()
+        elif rating == "优秀" and not simple_enough:
+            reg.notes = f"{reg.notes or ''}｜复杂度 {cx_score} 超上限，留候选人工复核"
         (enabled if reg.status == "enabled" else candidates).append(
             {"name": row.name, "rating": rating, "ic": el.get("ic_mean"),
              "icir": el.get("icir"), "status": reg.status})
