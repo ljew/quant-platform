@@ -245,6 +245,12 @@ def _core_universe(db: Session) -> list[str]:
 
 
 def _attrs_map(db: Session, syms: list[str]) -> dict:
+    """静态属性（行业/质量/成长）—— 这些来自 stock_basic / 财报，取最新值即可。
+
+    估值与市值**不在这里**：`_attrs_timeline` 提供的 PIT 时序才是正确口径。
+    保留 market_cap/pe_ttm/pb 仅为向后兼容（旧表达式引用时给出最新值，
+    并在 factor_stats 里标注口径）。
+    """
     rows = db.execute(
         select(Stock.symbol, Stock.industry, Stock.market_cap, Stock.pe_ttm, Stock.pb,
                Stock.roe, Stock.revenue_yoy, Stock.profit_yoy)
@@ -255,6 +261,57 @@ def _attrs_map(db: Session, syms: list[str]) -> dict:
                    "pb": r.pb, "roe": r.roe, "revenue_yoy": r.revenue_yoy, "profit_yoy": r.profit_yoy}
         for r in rows
     }
+
+
+def _attrs_timeline(db: Session, syms: list[str], lo: date, hi: date) -> dict[str, list]:
+    """估值时序 PIT（B1，2026-10-08）：{symbol: [(trade_date, {pe_ttm,pb,total_mv,circ_mv}), ...]}，
+    按日期升序。`_attrs_asof` 从此按截面日二分取「≤ 截面日 的最近一条」。
+
+    **为什么必须这样**：`stocks` 表的 pe_ttm/pb/market_cap 是最新一列快照，
+    旧实现复用于所有历史截面 → 2019 年截面用 2026 年的 PE，属明确前视。
+    实测茅台 2019-01-10 pe_ttm=24.42/pb=7.59，与今日值完全不同。
+
+    若 stock_valuation_daily 无数据（未回填），返回空 dict，调用方自动退回
+    `_attrs_map` 的最新值口径并标注「估值口径=最新快照（有前视）」。
+    """
+    from app.models import StockValuationDaily
+
+    try:
+        rows = db.execute(
+            select(StockValuationDaily.symbol, StockValuationDaily.trade_date,
+                   StockValuationDaily.pe_ttm, StockValuationDaily.pb,
+                   StockValuationDaily.total_mv, StockValuationDaily.circ_mv)
+            .where(StockValuationDaily.symbol.in_(syms),
+                   StockValuationDaily.trade_date >= lo,
+                   StockValuationDaily.trade_date <= hi)
+            .order_by(StockValuationDaily.symbol, StockValuationDaily.trade_date)
+        ).all()
+    except Exception:                      # 表不存在（未迁移）
+        return {}
+    out: dict[str, list] = {}
+    for sym, d, pe, pb, tmv, cmv in rows:
+        out.setdefault(sym, []).append(
+            (d, {"pe_ttm": pe, "pb": pb, "market_cap": tmv, "circ_mv": cmv})
+        )
+    return out
+
+
+def _attrs_asof(tl: dict[str, list], sym: str, snap: date) -> dict | None:
+    """取该股票「截至 snap 日」的最近一条估值（PIT 正确口径）。"""
+    seq = tl.get(sym)
+    if not seq:
+        return None
+    # seq 按 trade_date 升序（SQL ORDER BY 保证）
+    lo, hi = 0, len(seq) - 1
+    ans = None
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if seq[mid][0] <= snap:
+            ans = seq[mid][1]
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return ans
 
 
 def _es_map(db: Session, syms: list[str]) -> dict:
@@ -378,6 +435,18 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
         return {"ok": False, "error": f"股票池过小（{len(syms)} 只），无法做截面检验"}
 
     attrs = _attrs_map(db, syms)
+    # 估值 PIT 时序（B1）：按「截至截面日」取值，替换旧的最新快照口径
+    try:
+        _sd, _ed = resolve_range(start, end)
+        attrs_tl = _attrs_timeline(db, syms, _sd, _ed)
+    except Exception:
+        attrs_tl = {}
+    if attrs_tl:
+        _cover = len(attrs_tl) / max(1, len(syms))
+        if progress:
+            progress(0.06, f"估值 PIT 时序已载入：{len(attrs_tl)} 只（覆盖 {_cover:.0%}）")
+    else:
+        _cover = 0.0
     es_map = _es_map(db, syms)
     # 财务（PIT 口径）：一次全量预载到内存（14 万行 ≈ 数 MB），
     # 之后按「公告日 ≤ 截面日」逐点选取，避免前视。
@@ -486,7 +555,12 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
                 mkt_b = bench_aligned[i0: idx + 1][-len(seg):]
                 if len(mkt_b) != len(seg):
                     continue
-            a = attrs.get(sym, {}) or {}
+            a = dict(attrs.get(sym, {}) or {})
+            # 估值/市值按 PIT 覆盖（截面日 as-of）；无时序数据时保留最新快照口径
+            if attrs_tl:
+                _pv = _attrs_asof(attrs_tl, sym, snap)
+                if _pv:
+                    a.update(_pv)
             ns = make_ns(
                 seg, mkt_b, a,
                 news=news_lookup(sym, snap) if news_lookup else None,

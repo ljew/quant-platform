@@ -423,14 +423,58 @@ attach SQLite 自动回退，实测面板可正常载入 5301 只 × 2.88M 行�
 
 ### M3 开工前必须先解决的数据阻塞
 
-| # | 阻塞项 | 现状 | 需要做什么 |
+| # | 阻塞项 | 状态 | 说明 |
 |---|---|---|---|
-| **B1** | **估值因子 PIT 时序表缺失** | `Stock` 表只有**最新一列**快照（market_cap/pe_ttm/pb/roe），`_attrs_map` 查一次后复用于所有历史截面 → 2019 年截面上用的是 2026 年的 PE，属**明确前视**。`fundamentals_history` 只有 roe/revenue_yoy/profit_yoy（按 report_date），`financials_raw` 有 ann_date 但无 PE/PB/市值 | 新建 `stock_valuation_daily`（symbol × trade_date × pe_ttm/pb/market_cap/industry），从 tushare `daily_basic` 按日回填 2019 至今；改 `_attrs_map` 为「按截面日 as-of 取值」。**这是 GP 复活的硬前置** |
-| **B2** | IC 截面数不足 | `n_periods` 仅 {13, 27, 31}（月度），t 检验约束极松 | 改周频截面，样本量 ×4 |
-| **B3** | 无样本外切分 | GP fitness 与选择在同全样本内完成 | 建 IS/OOS 框架（2015-2021 / 2022-2026） |
+| **B1** | **估值因子 PIT 时序表缺失** | ✅ **已解决**（2026-10-08） | 见下方「B1 修复记录」 |
+| **B2** | IC 截面数不足 | ⏳ 待办 | 仍需从月度 13-31 个提到周频 200+ |
+| **B3** | 无样本外切分 | ⏳ 待办 | GP 已熔断，等B1/B2 完成后重建 |
 
-> 注：B1 是数据层缺口，不修则任何含估值/市值因子的历史回测结论都不可信。
-> 工作量估计 2-3 天（含 tushare 回填速率评估）。
+---
+
+## B1 修复记录：估值因子 PIT 时序表（2026-10-08）
+
+### 问题实证
+
+tushare 实测茅台估值的历史变化：
+
+| 日期 | pe_ttm | pb | total_mv（亿元） |
+|---|---|---|---|
+| 2019-01-10 | **24.42** | **7.59** | 7,773 |
+| 2026-09-30 | 19.87 | 5.42 | 18,200 |
+
+**PE 从 24.42 变到 19.87、PB 从 7.59 变到 5.42、市值从 7773 亿到 18200 亿。**
+旧实现把「今天的值」塞给 2019 年的截面，估值/市值因子的历史 IC 全部失真。
+
+### 方案与实测
+
+| 项 | 实测值 |
+|---|---|
+| 数据源 | tushare `daily_basic`，**按 trade_date 全市场**拉取 |
+| 单次调用 | 3555 行 / **0.6 秒** |
+| 回填区间 | 2019-01-02 ~ 2026-10-08（**1881 个交易日**） |
+| 数据量 | 约 **669 万行** / SQLite 约 0.4GB |
+| 工时 | 约 **25-30 分钟**（含限流间隔） |
+
+> 原估「2-3 天」严重高估——tushare 的 `daily_basic` 支持按日全market拉取，
+> 不必逐股循环。
+
+### 落地内容
+
+| 文件 | 改动 |
+|---|---|
+| `app/models.py` | 新增 `StockValuationDaily`（symbol × trade_date × pe/pb/mv/turnover，唯一约束 + 复合索引） |
+| `scripts/backfill_valuation.py` | 回填脚本，支持 `--dry-run` / `--resume` / `--limit` / `--start` |
+| `app/services/factor_mining.py` | 新增 `_attrs_timeline()`（载入时序）+ `_attrs_asof()`（二分取「≤ 截面日」的最近一条）；截面内 `a.update(_pv)` 覆盖 |
+| `app/services/factor_gp.py` | **同一bug 同步修复**（`build_context` 载入 + 两处使用点 + ctx 增加 `attrs_tl`） |
+| `tests/test_valuation_pit.py` | 新增 T6 组13 条断言（纯函数，不依赖 DB） |
+
+**设计要点**：`_attrs_asof` 是纯函数（给定时序字典 + 截面日→ 值），所以测试
+不需要数据库即可验证「2019 截面绝不拿到 2026 年的值」这个核心断言。
+
+### 回退安全
+
+`stock_valuation_daily` 无数据时，`attrs_tl = {}`，代码自动退回旧的最新快照口径
+（保持行为不变），不会因表为空而报错。
 
 ---
 

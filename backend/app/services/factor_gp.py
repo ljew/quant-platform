@@ -161,7 +161,8 @@ def mutate_expr(expr: str, rng: random.Random) -> str:
 def build_context(db: Session, start: str, end: str, forward: int, step: int,
                   pool_size: int | None = 200) -> dict:
     """一次性加载评估所需数据（多候选共享）。pool_size 抽样加速。"""
-    from app.services.factor_mining import _core_universe, _attrs_map, _es_map, _dates_in_range
+    from app.services.factor_mining import (_core_universe, _attrs_map, _es_map,
+                                           _dates_in_range, _attrs_timeline, _attrs_asof)
 
     ed = date.fromisoformat(end) if end else date.today()
     sd = date.fromisoformat(start) if start else ed - timedelta(days=400)
@@ -172,6 +173,8 @@ def build_context(db: Session, start: str, end: str, forward: int, step: int,
         syms = syms_all
 
     attrs = _attrs_map(db, syms)
+    # 估值 PIT 时序（B1，2026-10-08）：GP 侧同样修复「2019 截面用 2026 年 PE」
+    attrs_tl = _attrs_timeline(db, syms, sd, ed)
     es_map = _es_map(db, syms)
     load_from = sd - timedelta(days=300)
 
@@ -264,7 +267,12 @@ def build_context(db: Session, start: str, end: str, forward: int, step: int,
                     amap, vol_aligned.get(sym) or {}, amt_aligned.get(sym) or {}, slice_dates)
                 if len(seg) < 60:
                     continue
-                ns = make_ns(seg, bench_aligned[i0: idx + 1], attrs.get(sym, {}) or {},
+                a = dict(attrs.get(sym, {}) or {})
+                if attrs_tl:
+                    _pv = _attrs_asof(attrs_tl, sym, snap)
+                    if _pv:
+                        a.update(_pv)
+                ns = make_ns(seg, bench_aligned[i0: idx + 1], a,
                              esv=es_map.get(sym), vols=vseg, amts=aseg,
                              fin=fin_asof(fin_hist, sym, snap))
                 try:
@@ -291,7 +299,8 @@ def build_context(db: Session, start: str, end: str, forward: int, step: int,
         return _mean(vals) if vals else None
 
     return {
-        "syms": syms, "attrs": attrs, "es_map": es_map, "aligned": aligned,
+        "syms": syms, "attrs": attrs, "attrs_tl": attrs_tl, "es_map": es_map,
+        "aligned": aligned,
         "vol_aligned": vol_aligned, "amt_aligned": amt_aligned, "fin_hist": fin_hist,
         "axis_dates": axis_dates, "bench_aligned": bench_aligned, "snap_pairs": snap_pairs,
         "ortho_cache": ortho_cache,
@@ -375,7 +384,11 @@ def evaluate_candidate(expr: str, ctx: dict, groups: int,
             mkt_b = bench_seg_raw[-len(seg):]
             if len(mkt_b) != len(seg):
                 continue
-            a = ctx["attrs"].get(sym, {}) or {}
+            a = dict(ctx["attrs"].get(sym, {}) or {})
+            if ctx.get("attrs_tl"):
+                _pv = _attrs_asof(ctx["attrs_tl"], sym, snap)
+                if _pv:
+                    a.update(_pv)
             ns = make_ns(seg, bench_seg_raw, a,
                          news=ctx["news_lookup"](sym, snap),
                          esv=ctx["es_map"].get(sym), vols=vseg, amts=aseg,

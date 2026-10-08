@@ -55,6 +55,41 @@ class Stock(Base):
         return f"<Stock {self.symbol} {self.name}>"
 
 
+class StockValuationDaily(Base):
+    """估值时序表（symbol × trade_date），**PIT 因子挖掘的数据基础**。
+
+    为什么必须有这张表（B1，2026-10-08）：
+      `stocks` 表的 pe_ttm / pb / market_cap 是**最新一列快照**，被
+      `_attrs_map`（factor_mining.py）复用于所有历史截面 → 2019 年的截面
+      用的是 2026 年的 PE，属**明确前视偏差**。实测：茅台 2019-01-10 的
+      pe_ttm=24.42、pb=7.59，与今日值完全不同。
+
+    任何含估值/市值因子的历史结论，在本表回填前都不可信。
+
+    数据来源：tushare `daily_basic`（按 trade_date 全市场拉取，
+    实测 3555 行/0.6 秒，回填 2019 至今约 640 万行 / 0.4GB / 20 分钟）。
+
+    字段口径与 `stocks` 对齐（total_mv 单位：万元 → 存亿元）。
+    """
+
+    __tablename__ = "stock_valuation_daily"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True)
+    pe_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pb: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_mv: Mapped[float | None] = mapped_column(Float, nullable=True)   # 总市值（亿元）
+    circ_mv: Mapped[float | None] = mapped_column(Float, nullable=True)    # 流通市值（亿元）
+    turnover_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "trade_date", name="uq_svd_symbol_date"),
+        Index("ix_svd_date_symbol", "trade_date", "symbol"),
+    )
+
+
 class FundamentalsHistory(Base):
     """基本面历史快照（多报告期），用于时序类因子（如 PEAD 盈余惊喜）。
 
