@@ -741,9 +741,25 @@ export interface CardSuggestion {
   kind: "downgrade" | "retire" | "upgrade" | "demote_watch";
   to_state: string; text: string;
 }
+// —— 卡片信号详情（/research/cards/{id}/signals）——
+export interface CardSignalAction {
+  symbol: string; name?: string | null; action?: string | null;
+  streak?: number | null; resonance?: number | null;
+  close?: number | null; reason?: string | null;
+}
+export interface StatRow {
+  [k: string]: string | number | null | undefined;
+}
+export interface CardSignalsResp {
+  ok: boolean; error?: string; key?: string; name?: string; window_days?: number;
+  perf?: StatRow; by_month?: StatRow[]; by_streak?: StatRow[]; by_resonance?: StatRow[];
+  recent_days?: { date: string; count: number }[];
+  latest_date?: string | null; latest_total?: number; latest_actions?: CardSignalAction[];
+}
 export const researchApi = {
   cards: () => get<ResearchCardsResp>("/research/cards"),
   suggestions: () => get<{ total: number; items: CardSuggestion[] }>("/research/suggestions"),
   transition: (id: number, to_state: string, reason: string) =>
     post<{ ok: boolean; changed: boolean; state: string }>(`/research/cards/${id}/transition`, { to_state, reason }),
+  cardSignals: (id: number) => get<CardSignalsResp>(`/research/cards/${id}/signals`),
 };

@@ -6,7 +6,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { Badge, Btn, PageHeader } from "../components/ui";
-import { CardSuggestion, researchApi, ResearchCardItem } from "../api/client";
+import { CardSignalsResp, CardSuggestion, researchApi, ResearchCardItem, StatRow } from "../api/client";
 import { useTheme, ThemeColors } from "../theme";
 
 const STATE_META: Record<string, { label: string; color: string; desc: string }> = {
@@ -135,6 +135,162 @@ function TransitionBox({
   );
 }
 
+const ACTION_LABEL: Record<string, string> = {
+  BUY_STRONG: "买入", WATCH: "观察", SELL: "卖出", REDUCE: "减仓", EXIT: "离场", NEW: "新进",
+};
+
+/** 数字着色：正红负绿（A 股配色）。 */
+function Signed({ v, suffix = "%" }: { v?: number | null; suffix?: string }) {
+  const { colors } = useTheme();
+  if (v === null || v === undefined) return <span style={{ color: colors.muted }}>—</span>;
+  return (
+    <span style={{ color: v >= 0 ? colors.up : colors.down, fontVariantNumeric: "tabular-nums" }}>
+      {v > 0 ? "+" : ""}{v}{suffix}
+    </span>
+  );
+}
+
+function MiniTable({ head, rows, colors }: {
+  head: string[]; rows: (React.ReactNode)[][]; colors: ThemeColors;
+}) {
+  return (
+    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+      <thead>
+        <tr style={{ color: colors.muted }}>
+          {head.map((h, i) => (
+            <th key={i} style={{ textAlign: i === 0 ? "left" : "right", padding: "3px 8px", fontWeight: 500 }}>{h}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r, i) => (
+          <tr key={i} style={{ borderTop: `1px solid ${colors.border}` }}>
+            {r.map((c, j) => (
+              <td key={j} style={{ padding: "3px 8px", textAlign: j === 0 ? "left" : "right" }}>{c}</td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+/** 卡片详情里的「信号与分析」板块：绩效细分 + 信号列表 + 最新判定动作。 */
+function SignalAnalysis({ card, colors }: { card: ResearchCardItem; colors: ThemeColors }) {
+  const [data, setData] = useState<CardSignalsResp | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setData(null);
+    setErr(null);
+    researchApi.cardSignals(card.id)
+      .then((d) => { if (alive) d.ok ? setData(d) : setErr(d.error || "不可用"); })
+      .catch((e) => { if (alive) setErr(e instanceof Error ? e.message : String(e)); });
+    return () => { alive = false; };
+  }, [card.id]);
+
+  const sub = { fontSize: 12, fontWeight: 600 as const, color: colors.text, margin: "10px 0 4px" };
+
+  if (err) return <div style={{ fontSize: 12, color: colors.muted }}>信号分析：{err}</div>;
+  if (!data) return <div style={{ fontSize: 12, color: colors.muted }}>信号分析加载中（首次约几秒钟）…</div>;
+
+  const p = data.perf || {};
+  const months = (data.by_month ?? []).filter((r) => r.n_10 != null);
+  const streaks = (data.by_streak ?? []).filter((r) => r.n_10 != null);
+  const resos = (data.by_resonance ?? []).filter((r) => r.n_10 != null);
+
+  return (
+    <div>
+      {/* 绩效总览 */}
+      <div style={{ fontSize: 12.5, color: colors.muted, lineHeight: 1.9 }}>
+        近 {data.window_days} 日 · 信号 <b style={{ color: colors.text }}>{Number(p.n_10 ?? 0).toLocaleString()}</b> 条 ·
+        T+10 超额 <Signed v={p.exc_10 as number} /> · T+5 <Signed v={p.exc_5 as number} /> ·
+        胜率 <b style={{ color: colors.text }}>{p.win_10 ?? "—"}%</b> ·
+        t 值 <b style={{ color: colors.text }}>{typeof p.t_10 === "number" ? p.t_10.toFixed(2) : "—"}</b>
+      </div>
+
+      {/* 按月表现：识别 regime 依赖 */}
+      {months.length > 0 && (
+        <>
+          <div style={sub}>按月超额（看是否只靠某段行情）</div>
+          <MiniTable colors={colors} head={["月份", "信号数", "T+10 超额", "胜率"]}
+            rows={months.map((m: StatRow) => [
+              m.month as string, (m.n_10 as number)?.toLocaleString(),
+              <Signed v={m.exc_10 as number} />, `${m.win_10 ?? "—"}%`,
+            ])} />
+        </>
+      )}
+
+      <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+          {/* 连续天数细分 */}
+          {streaks.length > 0 && (
+            <div style={{ flex: 1, minWidth: 220 }}>
+              <div style={sub}>按连续在榜天数</div>
+              <MiniTable colors={colors} head={["连续天数", "信号数", "T+10 超额"]}
+                rows={streaks.map((r: StatRow) => [
+                  r.streak_bucket as string, (r.n_10 as number)?.toLocaleString(), <Signed v={r.exc_10 as number} />,
+                ])} />
+            </div>
+          )}
+          {/* 共振细分 */}
+          {resos.length > 0 && (
+            <div style={{ flex: 1, minWidth: 220 }}>
+              <div style={sub}>按同日共振策略数</div>
+              <MiniTable colors={colors} head={["共振", "信号数", "T+10 超额"]}
+                rows={resos.map((r: StatRow) => [
+                  r.reso_bucket as string, (r.n_10 as number)?.toLocaleString(), <Signed v={r.exc_10 as number} />,
+                ])} />
+            </div>
+          )}
+      </div>
+
+      {/* 最近信号日 */}
+      {(data.recent_days?.length ?? 0) > 0 && (
+        <>
+          <div style={sub}>最近信号（近 10 个有信号的交易日）</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {data.recent_days!.map((d) => (
+              <span key={d.date} style={{
+                fontSize: 11.5, border: `1px solid ${colors.border}`, borderRadius: 6,
+                padding: "2px 8px", color: colors.muted,
+              }}>
+                {d.date.slice(5)} · <b style={{ color: colors.text }}>{d.count}</b> 只
+              </span>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* 最新一日信号与判定 */}
+      {(data.latest_actions?.length ?? 0) > 0 && (
+        <>
+          <div style={sub}>
+            最新一日（{data.latest_date}）信号标的与判定
+            {(data.latest_total ?? 0) > (data.latest_actions?.length ?? 0) &&
+              <span style={{ color: colors.muted, fontWeight: 400 }}>
+                （共 {data.latest_total} 只，按动作优先级显示前 {data.latest_actions!.length} 只）
+              </span>}
+          </div>
+          <div style={{ maxHeight: 260, overflowY: "auto", border: `1px solid ${colors.border}`, borderRadius: 8 }}>
+            <MiniTable colors={colors} head={["标的", "判定", "连续", "收盘", "理由"]}
+              rows={data.latest_actions!.map((a) => [
+                <span>{a.name ?? ""} <span style={{ color: colors.muted, fontSize: 11 }}>{a.symbol}</span></span>,
+                a.action
+                  ? <Badge text={ACTION_LABEL[a.action] ?? a.action}
+                      color={a.action === "BUY_STRONG" ? colors.up : a.action === "SELL" || a.action === "REDUCE" ? colors.down : "#b9770e"} soft />
+                  : <span style={{ color: colors.muted }}>—</span>,
+                a.streak ?? "—",
+                a.close != null ? a.close.toFixed(2) : "—",
+                <span style={{ color: colors.muted, fontSize: 11 }}>{a.reason ?? "—"}</span>,
+              ])} />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /** 卡片详情弹层：8 个字段全量 + 周快照 + 完整决策历史 + 人工迁移操作。 */
 function CardDetail({ card, onClose, onChanged }: {
   card: ResearchCardItem; onClose: () => void; onChanged: () => void;
@@ -220,6 +376,8 @@ function CardDetail({ card, onClose, onChanged }: {
             )}
           </div>
         ))}
+        {!isFactor && row("📈 信号与分析（该策略的信号列表与绩效细分）",
+          <SignalAnalysis card={card} colors={colors} />)}
         {row("④ 成本", card.cost_note || "—")}
         {row("⑤ 容量与拥挤", card.crowd_note || "—")}
         {row("⑥ 失效条件（事先写好的「什么情况算它死了」）",

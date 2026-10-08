@@ -20,27 +20,37 @@ import pandas as pd
 from app.services.xq.data import Panel, load_panel
 
 HORIZONS = (1, 3, 5, 10, 20)
-_CACHE: dict = {"ts": 0.0, "data": None}
+_CACHE: dict[tuple, dict] = {}  # (days, strategy) → {"ts": float, "data": dict}
 _TTL = 600  # 10 分钟
 
 
-def _load_signals(db, days: int = 90) -> pd.DataFrame:
-    """signal_daily ⋈ signal_actions → 每条信号的策略/streak/共振/分级。"""
+def _load_signals(db, days: int = 90, strategy: str | None = None) -> pd.DataFrame:
+    """signal_daily ⋈ signal_actions → 每条信号的策略/streak/共振/分级。
+    strategy 传入时只取该策略（研究卡详情页的单策略分析用）。"""
     from sqlalchemy import select
 
     from app.models import SignalAction, SignalDaily
 
-    rows = db.execute(
-        select(SignalDaily.date, SignalDaily.symbol, SignalDaily.strategy)
-        .order_by(SignalDaily.date)
-    ).all()
+    q = select(SignalDaily.date, SignalDaily.symbol, SignalDaily.strategy)
+    if strategy:
+        q = q.where(SignalDaily.strategy == strategy)
+    rows = db.execute(q.order_by(SignalDaily.date)).all()
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows, columns=["date", "symbol", "strategy"])
-    uniq = sorted(df["date"].unique())
-    cutoff = uniq[max(0, len(uniq) - days)] if days and uniq else None
-    if cutoff:
-        df = df[df["date"] >= cutoff]
+    # 窗口口径 = 全市场最近 N 个信号交易日（不按策略自身稀疏信号数，
+    # 否则稀疏策略的「90 日」会悄悄拉长日历区间，与卡片证据对不上）
+    if days:
+        if strategy:
+            all_dates = db.execute(
+                select(SignalDaily.date).distinct().order_by(SignalDaily.date)
+            ).scalars().all()
+            uniq = sorted(all_dates)
+        else:
+            uniq = sorted(df["date"].unique())
+        cutoff = uniq[max(0, len(uniq) - days)] if uniq else None
+        if cutoff:
+            df = df[df["date"] >= cutoff]
 
     act_rows = db.scalars(select(SignalAction)).all()
     acts = pd.DataFrame(
@@ -76,12 +86,17 @@ def _forward_returns(panel: Panel) -> dict[int, pd.DataFrame]:
     return out
 
 
-def compute_stats(db, duckdb_path: str, days: int = 90, force: bool = False) -> dict:
-    """六维有效性统计（带 10 分钟缓存；AttributionAgent 与归因页共用）。"""
-    if not force and _CACHE["data"] and time.time() - _CACHE["ts"] < _TTL:
-        return _CACHE["data"]
+def compute_stats(db, duckdb_path: str, days: int = 90, force: bool = False,
+                  strategy: str | None = None) -> dict:
+    """六维有效性统计（带 10 分钟缓存；AttributionAgent 与归因页共用）。
 
-    signals = _load_signals(db, days=days)
+    strategy 传入时全部分析维度只统计该策略（研究卡详情页用）。"""
+    cache_key = (days, strategy)
+    hit = _CACHE.get(cache_key)
+    if not force and hit and time.time() - hit["ts"] < _TTL:
+        return hit["data"]
+
+    signals = _load_signals(db, days=days, strategy=strategy)
     if signals.empty:
         return {"ok": False, "error": "暂无信号历史，先运行流水线/回填"}
     panel = load_panel(duckdb_path, lookback=260)
@@ -159,7 +174,7 @@ def compute_stats(db, duckdb_path: str, days: int = 90, force: bool = False) -> 
         "by_tier": by_tier,
         "by_month": sorted(by_month, key=lambda r: r["month"]),
     }
-    _CACHE.update(ts=time.time(), data=result)
+    _CACHE[cache_key] = {"ts": time.time(), "data": result}
     return result
 
 

@@ -100,6 +100,85 @@ def pending_suggestions():
         db.close()
 
 
+@router.get("/cards/{card_id}/signals")
+def card_signals(card_id: int):
+    """单策略的信号列表 + 全面分析（研究卡详情页「信号与分析」板块）。
+
+    返回：90 日绩效行（含 t 值）、按月/连续天数/共振的细分、近 10 天信号量、
+    最新一日的信号标的与判定动作。因子卡无信号，返回提示。
+    """
+    from sqlalchemy import func
+
+    from app.config import DATA_DIR
+    from app.models import SignalAction, SignalDaily
+    from app.services.xq import stats as xq_stats
+
+    db = SessionLocal()
+    try:
+        card = db.get(ResearchCard, card_id)
+        if not card:
+            raise HTTPException(404, "研究卡不存在")
+        if card.card_type != "strategy":
+            return {"ok": False, "error": "因子卡没有选股信号（因子分析请去「因子实验室」）"}
+
+        stats = xq_stats.compute_stats(db, str(DATA_DIR / "quant.duckdb"),
+                                       strategy=card.key)
+        if not stats.get("ok"):
+            return {"ok": False, "error": stats.get("error", "统计不可用")}
+        perf = (stats.get("by_strategy") or [{}])[0]
+
+        # 近 10 个有信号的交易日及命中数
+        day_rows = db.execute(
+            select(SignalDaily.date, func.count())
+            .where(SignalDaily.strategy == card.key)
+            .group_by(SignalDaily.date)
+            .order_by(SignalDaily.date.desc()).limit(10)
+        ).all()
+        recent_days = [{"date": d.isoformat(), "count": c} for d, c in day_rows]
+
+        # 最新一日的信号标的 ⋈ 当日动作判定
+        latest_actions: list[dict] = []
+        total_latest = 0
+        if day_rows:
+            latest = day_rows[0][0]
+            picks = db.execute(
+                select(SignalDaily.symbol, SignalDaily.name)
+                .where(SignalDaily.date == latest, SignalDaily.strategy == card.key)
+            ).all()
+            total_latest = len(picks)
+            acts = {a.symbol: a for a in db.execute(
+                select(SignalAction).where(SignalAction.date == latest)).scalars().all()}
+            prio = {"BUY_STRONG": 0, "SELL": 1, "REDUCE": 2, "WATCH": 3}
+            for sym, name in picks:
+                a = acts.get(sym)
+                latest_actions.append({
+                    "symbol": sym, "name": name,
+                    "action": a.action if a else None,
+                    "streak": a.streak if a else None,
+                    "resonance": a.resonance if a else None,
+                    "close": a.close if a else None,
+                    "reason": a.reason if a else None,
+                })
+            latest_actions.sort(key=lambda r: (prio.get(r["action"] or "", 9),
+                                               -(r["streak"] or 0)))
+            latest_actions = latest_actions[:50]  # 密集策略截断，总数单独返回
+
+        return {
+            "ok": True, "key": card.key, "name": card.name,
+            "window_days": stats.get("window_days"),
+            "perf": perf,
+            "by_month": stats.get("by_month", []),
+            "by_streak": stats.get("by_streak", []),
+            "by_resonance": stats.get("by_resonance", []),
+            "recent_days": recent_days,
+            "latest_date": day_rows[0][0].isoformat() if day_rows else None,
+            "latest_total": total_latest,
+            "latest_actions": latest_actions,
+        }
+    finally:
+        db.close()
+
+
 class TransitionIn(BaseModel):
     to_state: str = Field(pattern="^(enabled|candidate|watch|downgraded|retired)$")
     reason: str = Field(min_length=2, max_length=500)
