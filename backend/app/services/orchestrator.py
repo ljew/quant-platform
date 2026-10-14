@@ -205,6 +205,25 @@ def _step_backtest(db: Session, run_id: int) -> None:
                step="portfolio", status="warn", level="warn")
     db.commit()
 
+    # 实验组合重演（fresh_ma 规则 + PIT regime 门控，2026-10-14 重新优化；
+    # paper sleeve，与经典镜像组合隔离并行，不接生产信号管道）
+    from app.services.xq import portfolio_fresh as xq_portfolio_fresh
+
+    t2 = time.time()
+    ef = xq_portfolio_fresh.run_portfolio_fresh(db, str(DATA_DIR / "quant.duckdb"))
+    if ef.get("ok"):
+        s = ef["summary"]
+        _event(db, run_id, "backtest",
+               f"实验组合重演（fresh_ma+门控）：净值 {s['total']:,.0f}"
+               f"（{s['return_pct']:+.2f}%）· 最大回撤 {s['max_drawdown_pct']:.2f}% · "
+               f"{s['n_trades']} 笔 · 门控开启 {s['gate_open_days']}/{s['days']} 天",
+               step="portfolio_exp", status="ok",
+               duration_ms=int((time.time() - t2) * 1000))
+    else:
+        _event(db, run_id, "backtest", f"实验组合不可用：{ef.get('error')}",
+               step="portfolio_exp", status="warn", level="warn")
+    db.commit()
+
 
 def _step_attribution(db: Session, run_id: int) -> None:
     """AttributionAgent：六维归因速览（明细由归因分析页展示）。"""

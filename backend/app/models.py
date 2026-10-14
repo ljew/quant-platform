@@ -797,6 +797,27 @@ class PortfolioState(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
+class PortfolioExpState(Base):
+    """实验组合快照（2026-10-14 重新优化）：fresh_ma 规则的第二条 paper sleeve。
+
+    与 portfolio_state（经典 BUY_STRONG 规则）完全隔离、并行运行，互不影响；
+    实验结论未稳定前不接入生产信号管道。按数据日 upsert（同日覆盖）。
+    equity/holdings/trades 均为 JSON 数组，前端直接渲染。
+    """
+
+    __tablename__ = "portfolio_exp_state"
+    __table_args__ = (UniqueConstraint("as_of_date", name="uq_portfolio_exp_d"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    as_of_date: Mapped[date] = mapped_column(Date)
+    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    equity_json: Mapped[str] = mapped_column(Text, default="[]")
+    holdings_json: Mapped[str] = mapped_column(Text, default="[]")
+    trades_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
 class AutoResearchRun(Base):
     """自动研究闭环运行记录（每日自动挖矿 / 每周自动复盘）。
 

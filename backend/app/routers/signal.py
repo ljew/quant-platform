@@ -330,3 +330,29 @@ def portfolio(db: Session = Depends(get_db)):
         "holdings": json.loads(row.holdings_json),
         "trades": json.loads(row.trades_json),
     }
+
+
+@router.get("/portfolio-exp")
+def portfolio_exp(db: Session = Depends(get_db)):
+    """实验组合最新快照（fresh_ma 规则 + PIT regime 门控，paper sleeve）。
+
+    与 /portfolio（经典 BUY_STRONG 规则）完全隔离；规则依据与门控设计见
+    app/services/xq/portfolio_fresh.py 模块 docstring。
+    """
+    from sqlalchemy import select as _select
+
+    from app.models import PortfolioExpState
+
+    row = db.scalars(
+        _select(PortfolioExpState).order_by(PortfolioExpState.as_of_date.desc()).limit(1)
+    ).first()
+    if not row:
+        return {"ok": False, "error": "尚无实验组合快照（流水线运行后生成）"}
+    return {
+        "ok": True, "as_of": row.as_of_date.isoformat(),
+        "summary": json.loads(row.summary_json),
+        "config": json.loads(row.config_json),
+        "equity": json.loads(row.equity_json),
+        "holdings": json.loads(row.holdings_json),
+        "trades": json.loads(row.trades_json),
+    }

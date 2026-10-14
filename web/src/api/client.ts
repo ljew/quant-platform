@@ -624,9 +624,12 @@ export const agentApi = {
 export interface PortfolioSnapshot {
   ok: boolean; error?: string; as_of: string;
   summary: { capital: number; total: number; return_pct: number;
-    max_drawdown_pct: number; n_trades: number; n_holdings: number; days: number };
+    max_drawdown_pct: number; n_trades: number; n_holdings: number; days: number;
+    gate_open_days?: number; gate_exc_now?: number | null; rule?: string;
+    enabled_strategies?: string[] };
   config: Record<string, number>;
-  equity: { date: string; total: number; cash: number; market_value: number; n_positions: number }[];
+  equity: { date: string; total: number; cash: number; market_value: number;
+    n_positions: number; gate_open?: boolean }[];
   holdings: { symbol: string; shares: number; entry_price: number; entry_date: string }[];
   trades: { date: string; symbol: string; side: string; shares: number;
     price: number; reason: string; pnl_pct?: number }[];
@@ -638,6 +641,7 @@ export interface NotifyConfig {
 
 export const signalApi = {
   portfolio: () => get<PortfolioSnapshot>("/signal/portfolio"),
+  portfolioExp: () => get<PortfolioSnapshot>("/signal/portfolio-exp"),
   notifyConfig: () => get<NotifyConfig>("/agent/notify-config"),
   updateNotifyConfig: (cfg: Record<string, unknown>) =>
     put<{ ok: boolean; config: NotifyConfig }>("/agent/notify-config", cfg),
