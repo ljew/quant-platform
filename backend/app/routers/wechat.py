@@ -199,7 +199,8 @@ def collect(limit: int = 0):
     if script is None:
         raise HTTPException(status_code=500, detail="找不到 collect_weread.py")
 
-    cmd = [sys.executable, str(script), "--interval", "3"]
+    # ⚠️ 间隔必须 6s（3s 会被微信读书限流，见 wechat_scheduler._run_crawl 注释）
+    cmd = [sys.executable, str(script), "--interval", "6"]
     if limit:
         cmd += ["--limit", str(limit)]
     subprocess.Popen(cmd, cwd=str(script.parent),

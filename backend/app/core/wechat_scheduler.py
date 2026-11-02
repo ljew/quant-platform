@@ -77,8 +77,10 @@ def _run_crawl() -> tuple[bool, str]:
     if script is None:
         return False, "找不到采集脚本（collect_weread.py / crawl_content.py）"
     if script.name == "collect_weread.py":
-        # 微信读书渠道：只取每个号最新一篇，幂等跳过；失败退出码 2 = 凭证失效
-        cmd = [sys.executable, str(script), "--interval", "3"]
+        # 微信读书渠道：只取每个号最新一篇，幂等跳过；失败退出码 2 = 凭证失效、3 = 疑似限流
+        # ⚠️ 间隔必须 6s：2026-11-02 实测 3s 跑到第 22 个号就被限流，剩下 89 个全失败，
+        # 而失败分支原本不 sleep，259s 就"跑完"并报成功 —— 静默失败。
+        cmd = [sys.executable, str(script), "--interval", "6"]
     else:
         cmd = [sys.executable, str(script), "--since-days", str(_SINCE_DAYS)]
     logger.info("公众号抓取开始：%s", " ".join(cmd))
