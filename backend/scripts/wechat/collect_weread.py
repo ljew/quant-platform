@@ -163,9 +163,34 @@ def main() -> int:
     # —— 单写者锁：定时任务与「立即采集」可能撞车，同时写 knowledge.db 不划算
     lock = STATE_FILE.parent / "collect.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
+    # 判锁要「存活 + 身份」双重校验，不能只看 mtime：
+    # 2026-11-02 容器被 OOM Killer 干掉时采集进程一起死，锁留了下来，
+    # 之后 900 秒内所有调度都回「另一个采集进程正在运行」而跳过（静默漏采）。
+    # 又因为容器重启后 PID 从 1 重新分配，光 os.kill(pid,0) 可能命中无关进程，
+    # 所以还要核对 /proc/<pid>/cmdline 里确实是本脚本。
     if lock.exists() and time.time() - lock.stat().st_mtime < 900:
-        print("另一个采集进程正在运行（锁未释放），本次跳过", file=sys.stderr)
-        return 3
+        try:
+            pid = int(lock.read_text(encoding="utf-8").strip() or 0)
+        except (ValueError, OSError):
+            pid = 0
+        alive = False
+        if pid > 0:
+            try:
+                os.kill(pid, 0)
+                alive = True
+            except OSError:
+                alive = False
+        if alive:
+            try:
+                cmd = Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", "ignore")
+            except OSError:
+                cmd = ""  # 非 Linux（宿主机 macOS）无 /proc，退回只判存活
+            if cmd and "collect_weread" not in cmd:
+                alive = False
+        if alive:
+            print("另一个采集进程正在运行（锁未释放），本次跳过", file=sys.stderr)
+            return 3
+        print(f"清理失效锁（pid={pid} 已不在运行），继续采集", file=sys.stderr)
     lock.write_text(str(os.getpid()), encoding="utf-8")
 
     t0 = time.time()

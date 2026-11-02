@@ -38,11 +38,13 @@ TIME_RE = re.compile(r'class="js_article_create_time[^"]*">(\d{9,11})<')
 
 
 def http(url: str, timeout: int = 30) -> str:
+    """只读前 1.6MB：公众号文章页整页约 3.4MB，但 __biz/album/js_content 都在 0.6MB 之前。
+    2026-11-02 用 4MB 全读跑批量回补，收尾时把容器顶到 OOM 被 kill（OOMKilled=true）。"""
     req = urllib.request.Request(
         url, headers={"User-Agent": UA, "Referer": "https://mp.weixin.qq.com/"}
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read(4_000_000).decode("utf-8", "ignore")
+        return r.read(1_600_000).decode("utf-8", "ignore")
 
 
 def album_url(biz: str, album: str, fmid: str = "", fidx: str = "") -> str:
