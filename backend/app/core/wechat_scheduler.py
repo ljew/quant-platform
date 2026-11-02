@@ -25,7 +25,10 @@ logger = logging.getLogger("wechat_scheduler")
 
 SLOTS = [(8, 20), (20, 40)]     # 每天两次
 _CHECK_INTERVAL = 60            # 秒
-_TIMEOUT = 3600                 # 单次抓取上限（历史上全量补抓约 40 分钟）
+_TIMEOUT = 5400                 # 单次抓取上限。2026-11-02 实测：interval=6s 时
+                                # 111 个号基础 666s，再加每个命中冷却的号 60s 退避，
+                                # 一轮实测 2513s（42 分钟）。原 3600s 余量太薄，
+                                # 一旦超时会被 kill 且当天该 slot 已记为 done，不再重试。
 _SINCE_DAYS = 7                 # 只抓近 7 天，留补抓窗口又不至于触发风控
 
 _status = {
