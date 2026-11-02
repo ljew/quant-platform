@@ -30,10 +30,16 @@ _PIPELINE_TIMEOUT = 1500
 # 结果写入 data/reports/strategy_verify_<key>.html|json，指标漂移第一时间可见。
 VERIFY_HOUR, VERIFY_MIN = 20, 30
 _VERIFY_TIMEOUT = 1800
-# 验证子进程的地址空间上限（KB）。容器整体 mem_limit=4g，后端自身常驻约 0.5g，
-# 留 3g 给回测；超限时子进程抛 MemoryError 退出，不再让内核 SIGKILL 拖死整个容器。
-_VERIFY_MEM_LIMIT_KB = int(os.getenv("QUANT_VERIFY_MEM_KB", str(3 * 1024 * 1024)))
-_VERIFY_STRATEGIES = os.getenv("QUANT_VERIFY_STRATEGIES", "jk001,jk002")
+# 验证子进程的地址空间上限（KB）。容器整体 mem_limit=5.5g，后端自身常驻约 0.5g。
+# 实测 jk001 全段回测在 3g 下会 MemoryError（13 秒就退出），4.5g 正常跑完
+# （收益 +99.53% / 夏普 0.550 / 回撤 -34.55%）。超限时子进程抛 MemoryError 退出，
+# 不再让内核 SIGKILL 把整个容器拖死。
+_VERIFY_MEM_LIMIT_KB = int(os.getenv("QUANT_VERIFY_MEM_KB", str(4608 * 1024)))
+_VERIFY_STRATEGIES = os.getenv("QUANT_VERIFY_STRATEGIES", "jk001")
+# 默认只验 jk001：jk002（全A池 5200 只）在 4.5g 地址空间下仍会 MemoryError，
+# 而它 2026-09-16 已判定「扩池失败、建议停用」（样本外 -21.17pp），
+# 每晚为它吃掉几个 G 不值得。要验就显式设 QUANT_VERIFY_STRATEGIES=jk001,jk002，
+# 同时调大 mem_limit 与 QUANT_VERIFY_MEM_KB。
 
 # 运行状态（供监控页查询）
 _status = {

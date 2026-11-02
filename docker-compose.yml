@@ -39,8 +39,8 @@ services:
     # （文章页 3.4MB/篇 + 400MB 库的 page cache）会把整个 VM 顶爆，
     # 内核可能在 VM 里随机挑进程杀 —— 2026-11-02 实测 OOMKilled=true。
     # 加了限之后超限只 OOM 本容器，再由 restart 策略拉起，爆炸半径限制在自己身上。
-    mem_limit: 4g
-    memswap_limit: 4g
+    mem_limit: 5500m
+    memswap_limit: 5500m
     environment:
       - QUANT_DATABASE_URL=sqlite:////data/quant_dev.db
       - QUANT_FRONTEND_DIR=/frontend
