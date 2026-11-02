@@ -352,6 +352,11 @@ def evaluate_candidate(expr: str, ctx: dict, groups: int,
                       回归取残差再算 IC —— 度量"增量预测能力"，惩罚重复发现。
     crisis_only=True：仅统计持有窗口内基准下跌(<-3%)的截面 —— 危机 Alpha。
     """
+    # ⚠️ 必须在这里导入：_attrs_asof 只在 build_context 内局部导入，
+    # 本函数作用域没有它 → 一旦 ctx 带 attrs_tl（有属性时间线时必然带）
+    # 就抛 NameError，整批 GP 候选全灭（2026-11-02 pyflakes 扫出）。
+    from app.services.factor_mining import _attrs_asof
+
     ok, err, _ = validate_expr(expr)
     if not ok:
         return {"error": err}

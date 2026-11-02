@@ -16,7 +16,7 @@ import threading
 import time
 from datetime import date, datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 

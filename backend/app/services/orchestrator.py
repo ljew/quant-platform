@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
@@ -102,7 +103,13 @@ def _run(run_id: int) -> None:
 
 def _step_data(db: Session, run_id: int) -> None:
     """数据采集与处理：子进程跑完整 datahub 管道（采集→清洗→因子→DuckDB 同步）。"""
-    backend = str(BASE_DIR / "backend")
+    # 后端根目录按**本文件位置**推导，不能用 BASE_DIR/"backend"：
+    # 容器内 app 包在 /app/app、后端根是 /app，BASE_DIR 会算成 "/"，
+    # 于是 cwd="/backend" 不存在 → [Errno 2]（2026-11-02 踩过，
+    # 每日流水线因此从未真正采到数据，也就从未发出过信号邮件）。
+    # 宿主机 backend/app/services/orchestrator.py → parents[2]=backend/
+    # 容器   /app/app/services/orchestrator.py → parents[2]=/app/
+    backend = str(Path(__file__).resolve().parents[2])
     code = ("from app.datahub.runner import run_pipeline;"
             "import sys; sys.stdout.flush();"
             "rid = run_pipeline('orchestrator');"
@@ -124,10 +131,20 @@ def _step_data(db: Session, run_id: int) -> None:
         raise
     rid_line = next((l for l in (proc.stdout or "").splitlines()
                      if l.startswith("PIPELINE_RID")), "")
-    ok = "SUCCESS" in (proc.stdout or "") or rid_line != ""
+    # ⚠️ 非零退出必须判失败并中断：原来只看 stdout 里有没有 "SUCCESS"，
+    # 子进程炸了也只是 warn、流水线照常往下跑 —— 数据没更新却发布信号，
+    # 这是无人值守系统里最坏的失效方式（静默陈旧）。
+    if proc.returncode != 0:
+        tail = ((proc.stderr or proc.stdout or "").strip().splitlines() or [""])[-1]
+        _event(db, run_id, "data",
+               f"数据管道失败（rc={proc.returncode}）：{tail[:200]}",
+               step="data", status="fail", level="error",
+               duration_ms=int((time.time() - t0) * 1000))
+        db.commit()
+        raise RuntimeError(f"数据管道失败 rc={proc.returncode}: {tail[:200]}")
     _event(db, run_id, "data",
            f"数据管道完成（{time.time()-t0:.0f}s，{rid_line or '无 run 记录'}）",
-           step="data", status="ok" if ok else "warn",
+           step="data", status="ok",
            duration_ms=int((time.time() - t0) * 1000))
     db.commit()
 
@@ -483,28 +500,52 @@ def start_daily_scheduler() -> None:
     与 19:00 的 data_scheduler 不冲突（均幂等，管道步骤对已新数据快速跳过）。
     """
     def _loop() -> None:
+        # ⚠️ 必须在此导入：本模块其它函数都是「函数内局部导入」，
+        # 模块作用域并无 SessionLocal —— 直接引用会抛 NameError，
+        # 而异常又被外层 try 吞掉只写进 last_error（2026-11-02 踩过：
+        # 每日定时自 09-30 上线起连续静默失败一个月，一封信号邮件都没发出去）。
+        from app.database import SessionLocal
+
+        def _fire(now: datetime, today: str) -> None:
+            """真正启动一次 run。只有成功才记账，失败留待下次重试。"""
+            db = SessionLocal()
+            try:
+                rid = start_run(db, trigger="scheduler")
+                _event(db, rid, "orchestrator",
+                       f"每日定时触发（{DAILY_HOUR:02d}:{DAILY_MINUTE:02d}）",
+                       step="schedule", status="ok")
+                db.commit()
+            finally:
+                db.close()
+            # 原实现把「今天已跑」写在 start_run 之前，一旦抛异常当天即被
+            # 标记完成、永不再重试 —— 这是这次静默失败的直接原因。
+            _daily_state["last_run_date"] = today
+            _daily_state["last_success"] = now.isoformat(timespec="seconds")
+            _daily_state["last_error"] = None
+
         while True:
             try:
                 now = datetime.now()
                 today = now.date().isoformat()
                 due = (now.hour, now.minute) >= (DAILY_HOUR, DAILY_MINUTE)
-                if due and _daily_state["last_run_date"] != today and not STATE["running"]:
+                pending = due and _daily_state["last_run_date"] != today
+                if pending and not STATE["running"]:
                     from app.core.trading_calendar import is_trading_day
 
-                    if is_trading_day(now.date()):
-                        _daily_state["last_run_date"] = today
-                        db = SessionLocal()
-                        try:
-                            rid = start_run(db, trigger="scheduler")
-                            _daily_state["last_error"] = None
-                            _event(db, rid, "orchestrator",
-                                   f"每日定时触发（{DAILY_HOUR:02d}:{DAILY_MINUTE:02d}）",
-                                   step="schedule", status="ok")
-                            db.commit()
-                        finally:
-                            db.close()
+                    if not is_trading_day(now.date()):
+                        _daily_state["last_run_date"] = today  # 非交易日，当天不再检查
                     else:
-                        _daily_state["last_run_date"] = today  # 非交易日跳过
+                        if _daily_state.get("attempts_date") != today:
+                            _daily_state["attempts_date"] = today  # 新的一天，重置重试计数
+                            _daily_state["attempts"] = 0
+                        if _daily_state.get("attempts", 0) >= 3:
+                            pass  # 当天连续失败 3 次后停手，last_error 供看门狗查看
+                        else:
+                            try:
+                                _fire(now, today)
+                            except Exception as exc:  # noqa: BLE001
+                                _daily_state["attempts"] = _daily_state.get("attempts", 0) + 1
+                                _daily_state["last_error"] = str(exc)[:300]
             except Exception as exc:  # noqa: BLE001
                 _daily_state["last_error"] = str(exc)[:300]
             time.sleep(60)

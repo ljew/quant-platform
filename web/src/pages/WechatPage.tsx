@@ -124,9 +124,24 @@ export default function WechatPage() {
         title="公众号"
         desc={sub}
         actions={
-          <Btn small onClick={() => { setQ(""); setQInput(""); setMpId(""); setRange(0); loadList(0, false); }} disabled={listBusy}>
-            {listBusy ? "刷新中…" : "重置"}
-          </Btn>
+          <div style={{ display: "flex", gap: 8 }}>
+            {/* 扫码不在本平台内：登录态由上游 wewe-rss 持有（launchd 常驻 :4000） */}
+            <a
+              href="http://localhost:4000/dash"
+              target="_blank"
+              rel="noreferrer"
+              style={{
+                padding: "5px 12px", borderRadius: 8, fontSize: 12.5, textDecoration: "none",
+                border: `1px solid ${colors.accent}`, color: colors.accent,
+                background: `${colors.accent}12`, whiteSpace: "nowrap",
+              }}
+            >
+              上游后台 · 扫码登录
+            </a>
+            <Btn small onClick={() => { setQ(""); setQInput(""); setMpId(""); setRange(0); loadList(0, false); }} disabled={listBusy}>
+              {listBusy ? "刷新中…" : "重置"}
+            </Btn>
+          </div>
         }
       />
 
@@ -138,6 +153,23 @@ export default function WechatPage() {
               {stats?.msg}
               <br />
               抓取命令：<code style={{ fontSize: 12.5 }}>cd backend/scripts/wechat &amp;&amp; python3 crawl_content.py --since-days 7</code>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* —— 停更提示：把「去哪扫码」直接写出来 —— */}
+      {stats?.available && stale > 3 && (
+        <Card colors={colors} style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 13, lineHeight: 1.85 }}>
+            <div style={{ fontWeight: 600, marginBottom: 4, color: colors.up }}>
+              已 {Math.round(stale)} 天没有新文章 —— 上游登录态大概率失效了
+            </div>
+            <div style={{ color: colors.muted }}>
+              本平台只负责「读 wewe-rss 抓到的库并整理展示」，<b>扫码登录在 wewe-rss 自己的后台</b>：
+              <br />① 点右上角「上游后台 · 扫码登录」→ 打开 <code>http://localhost:4000/dash</code>
+              <br />② 在「账号管理」里点「扫码添加」，用微信读书 App 扫码确认
+              <br />③ 登录恢复后点「重置」；每日 08:20 / 20:40 的自动抓取会把积压文章补齐
             </div>
           </div>
         </Card>
