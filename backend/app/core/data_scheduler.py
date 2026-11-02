@@ -30,6 +30,9 @@ _PIPELINE_TIMEOUT = 1500
 # 结果写入 data/reports/strategy_verify_<key>.html|json，指标漂移第一时间可见。
 VERIFY_HOUR, VERIFY_MIN = 20, 30
 _VERIFY_TIMEOUT = 1800
+# 验证子进程的地址空间上限（KB）。容器整体 mem_limit=4g，后端自身常驻约 0.5g，
+# 留 3g 给回测；超限时子进程抛 MemoryError 退出，不再让内核 SIGKILL 拖死整个容器。
+_VERIFY_MEM_LIMIT_KB = int(os.getenv("QUANT_VERIFY_MEM_KB", str(3 * 1024 * 1024)))
 _VERIFY_STRATEGIES = os.getenv("QUANT_VERIFY_STRATEGIES", "jk001,jk002")
 
 # 运行状态（供监控页查询）
@@ -289,16 +292,22 @@ def _refresh_membership_if_due(now: datetime) -> bool:
 
 
 def _run_verify(strategies: str) -> tuple[bool, str]:
-    """自动策略验证（子进程隔离 + 硬超时）。
+    """自动策略验证（子进程隔离 + 硬超时 + 内存上限）。
 
     必须在子进程里跑：回测是一次几十秒～几分钟的全市场计算，放在调度线程内
     会让整个调度循环停摆；且失败不影响日更结果，独立记录。
+
+    内存上限用 `ulimit -v` 包一层，而不是 preexec_fn —— 调度跑在后台线程里，
+    preexec_fn 在 fork 后、exec 前执行，此时若其他线程持有锁（logging 等）会死锁。
+    超过上限时子进程自己抛 MemoryError 退出，父进程只看到 rc!=0；
+    不再让内核 SIGKILL（rc=-9）把整个容器/VM 拖死（2026-11-02 实测过）。
     """
     backend = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     env = dict(os.environ)
     env["PYTHONPATH"] = backend
-    cmd = [sys.executable, "scripts/verify_strategy.py",
-           "--strategy", strategies, "--quick"]
+    inner = " ".join([sys.executable, "scripts/verify_strategy.py",
+                      "--strategy", strategies, "--quick"])
+    cmd = ["/bin/sh", "-c", f"ulimit -v {_VERIFY_MEM_LIMIT_KB}; exec {inner}"]
     try:
         proc = subprocess.run(cmd, env=env, cwd=backend, capture_output=True,
                               text=True, timeout=_VERIFY_TIMEOUT)
