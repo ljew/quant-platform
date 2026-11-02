@@ -6,6 +6,7 @@ import {
   WechatArticleDetail,
   WechatMp,
   WechatStats,
+  WechatUpstream,
   wechatApi,
 } from "../api/client";
 import { useTheme } from "../theme";
@@ -49,6 +50,9 @@ export default function WechatPage() {
   const [detailBusy, setDetailBusy] = useState(false);
 
   const [mpFilter, setMpFilter] = useState("");
+  /** lib = 读已抓下来的全文；upstream = 内嵌 wewe-rss 后台（扫码登录） */
+  const [view, setView] = useState<"lib" | "upstream">("lib");
+  const [upstream, setUpstream] = useState<WechatUpstream | null>(null);
   const reqSeq = useRef(0);
 
   // —— 初次加载：统计 + 号列表 ——
@@ -117,32 +121,87 @@ export default function WechatPage() {
         (stale > 3 ? `（已 ${Math.round(stale)} 天未更新）` : "")
       : "加载中…";
 
+  // 上游 wewe-rss 后台：与平台同机，另一个端口。用 hostname 拼，
+  // 避免「平台开在 127.0.0.1、iframe 写死 localhost」造成两个源。
+  const upstreamUrl = `http://${window.location.hostname || "localhost"}:4000/dash`;
+  const tabStyle = (on: boolean) => ({
+    padding: "5px 12px", borderRadius: 8, fontSize: 12.5, cursor: "pointer",
+    border: `1px solid ${on ? colors.accent : colors.border}`,
+    color: on ? colors.accent : colors.text,
+    background: on ? `${colors.accent}14` : "transparent",
+    whiteSpace: "nowrap" as const,
+  });
+  // 上游体检只在切到该视图时拉一次（探宿主机 wewe-rss 与二维码中转站）
+  useEffect(() => {
+    if (view === "upstream") {
+      wechatApi.upstream().then(setUpstream).catch(() => {});
+    }
+  }, [view]);
+
+  const tabs = (
+    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <button style={tabStyle(view === "lib")} onClick={() => setView("lib")}>文章库</button>
+      <button style={tabStyle(view === "upstream")} onClick={() => setView("upstream")}>上游管理 · 扫码</button>
+      {view === "lib" && (
+        <Btn small onClick={() => { setQ(""); setQInput(""); setMpId(""); setRange(0); loadList(0, false); }} disabled={listBusy}>
+          {listBusy ? "刷新中…" : "重置"}
+        </Btn>
+      )}
+    </div>
+  );
+
+  // —— 上游管理视图：内嵌后台，扫码就在这个 iframe 里做 ——
+  if (view === "upstream") {
+    return (
+      <div>
+        <PageHeader
+          title="公众号 · 上游管理"
+          desc="扫码登录、订阅号增删都在这里（内嵌 wewe-rss 后台 :4000，非本平台功能）"
+          actions={tabs}
+        />
+        <Card colors={colors} pad={0} style={{ overflow: "hidden" }}>
+          {upstream && (
+            <div style={{
+              padding: "8px 12px", fontSize: 12.5,
+              background: upstream.level === "ok" ? `${colors.down}0f`
+                : upstream.level === "fail" ? `${colors.up}12` : "#f59e0b12",
+              color: upstream.level === "ok" ? colors.down : colors.up,
+              borderBottom: `1px solid ${colors.border}`,
+            }}>
+              <b>上游体检：{upstream.verdict}</b>
+              <span style={{ color: colors.muted, marginLeft: 10 }}>
+                wewe-rss {upstream.wewe.ok ? "✓" : "✗"} · 二维码服务 {upstream.qr_platform.ok ? "✓" : "✗"}
+                {upstream.accounts.length > 0 &&
+                  ` · 账号 ${upstream.accounts_alive}/${upstream.accounts.length} 有效`}
+              </span>
+            </div>
+          )}
+          <div style={{
+            display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
+            borderBottom: `1px solid ${colors.border}`, fontSize: 12, color: colors.muted,
+          }}>
+            <span>入口：左侧「账号管理」→ 添加账号 → 用<b>微信读书 App</b> 扫码确认；登录恢复后回「文章库」看新抓的文章</span>
+            <a href={upstreamUrl} target="_blank" rel="noreferrer" style={{ color: colors.accent, marginLeft: "auto", whiteSpace: "nowrap" }}>
+              新窗口打开 ↗
+            </a>
+          </div>
+          <iframe
+            src={upstreamUrl}
+            title="wewe-rss 上游管理"
+            style={{ width: "100%", height: "calc(100vh - 250px)", border: "none", background: "#fff" }}
+          />
+        </Card>
+      </div>
+    );
+  }
+
   // —— 渲染 ——
   return (
     <div>
       <PageHeader
         title="公众号"
         desc={sub}
-        actions={
-          <div style={{ display: "flex", gap: 8 }}>
-            {/* 扫码不在本平台内：登录态由上游 wewe-rss 持有（launchd 常驻 :4000） */}
-            <a
-              href="http://localhost:4000/dash"
-              target="_blank"
-              rel="noreferrer"
-              style={{
-                padding: "5px 12px", borderRadius: 8, fontSize: 12.5, textDecoration: "none",
-                border: `1px solid ${colors.accent}`, color: colors.accent,
-                background: `${colors.accent}12`, whiteSpace: "nowrap",
-              }}
-            >
-              上游后台 · 扫码登录
-            </a>
-            <Btn small onClick={() => { setQ(""); setQInput(""); setMpId(""); setRange(0); loadList(0, false); }} disabled={listBusy}>
-              {listBusy ? "刷新中…" : "重置"}
-            </Btn>
-          </div>
-        }
+        actions={tabs}
       />
 
       {unavailable && (
@@ -167,7 +226,7 @@ export default function WechatPage() {
             </div>
             <div style={{ color: colors.muted }}>
               本平台只负责「读 wewe-rss 抓到的库并整理展示」，<b>扫码登录在 wewe-rss 自己的后台</b>：
-              <br />① 点右上角「上游后台 · 扫码登录」→ 打开 <code>http://localhost:4000/dash</code>
+              <br />① 点右上角 <b>「上游管理 · 扫码」</b>（就在本页，已内嵌后台，不用另开窗口）
               <br />② 在「账号管理」里点「扫码添加」，用微信读书 App 扫码确认
               <br />③ 登录恢复后点「重置」；每日 08:20 / 20:40 的自动抓取会把积压文章补齐
             </div>

@@ -818,8 +818,18 @@ export interface WechatDailyResp {
 }
 export interface WechatTrendResp { items: { date: string; n: number }[]; days: number }
 
+export interface WechatUpstream {
+  level: "ok" | "warn" | "fail";
+  verdict: string;
+  wewe: { ok: boolean; url: string; status: number | null; error: string };
+  qr_platform: { ok: boolean; url: string; status: number | null; error: string };
+  accounts: { name: string; status: number; updated_at: string }[];
+  accounts_alive: number;
+}
+
 export const wechatApi = {
   stats: () => get<WechatStats>("/wechat/stats"),
+  upstream: () => get<WechatUpstream>("/wechat/upstream"),
   mps: (limit = 300) => get<{ items: WechatMp[]; n: number }>(`/wechat/mps?limit=${limit}`),
   articles: (p: { mp_id?: string; q?: string; since_days?: number; limit?: number; offset?: number }) => {
     const qs = new URLSearchParams();
