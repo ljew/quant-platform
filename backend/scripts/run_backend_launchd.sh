@@ -16,7 +16,13 @@
 
 PORT=8000
 PY=/Users/happyljew/.workbuddy/binaries/python/envs/quant/bin/python
-BACKEND=/Users/happyljew/Desktop/kimiwork/Quant/quant-platform/backend
+
+# 清掉继承来的代理设置。
+# 原因：本机数据源（tushare/akshare）国内直连即可，不需要代理；而沙箱代理端口每次启动都会变，
+# 后端由 launchd 拉起时若带着旧端口的 HTTP_PROXY，代理进程一退出，ETL 就会全部打到死端口。
+# 实测 2026-11-02：残留 HTTP_PROXY=127.0.0.1:54460 导致 index_daily 自 10-30 起断链。
+unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy
+BACKEND=/Users/happyljew/quant-platform/backend
 
 if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   echo "$(date '+%Y-%m-%d %H:%M:%S') 端口 $PORT 已被占用，正常退出（不触发 KeepAlive 重启）"

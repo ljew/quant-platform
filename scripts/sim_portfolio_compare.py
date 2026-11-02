@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 from app.models import SignalAction
 from app.services.xq.data import load_panel
 
-DB = 'sqlite:////Users/happyljew/Desktop/kimiwork/Quant/quant-platform/data/quant_dev.db'
-DUCK = '/Users/happyljew/Desktop/kimiwork/Quant/quant-platform/data/quant.duckdb'
+DB = 'sqlite:////Users/happyljew/quant-platform/data/quant_dev.db'
+DUCK = '/Users/happyljew/quant-platform/data/quant.duckdb'
 
 eng = create_engine(DB)
 with Session(eng) as db:

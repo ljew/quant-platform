@@ -17,8 +17,8 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 from app.services.xq.data import load_panel
 
-DB = 'sqlite:////Users/happyljew/Desktop/kimiwork/Quant/quant-platform/data/quant_dev.db'
-DUCK = '/Users/happyljew/Desktop/kimiwork/Quant/quant-platform/data/quant.duckdb'
+DB = 'sqlite:////Users/happyljew/quant-platform/data/quant_dev.db'
+DUCK = '/Users/happyljew/quant-platform/data/quant.duckdb'
 COST_BUY, COST_SELL = 1 + 0.00025 + 0.00001 + 0.001, 1 - 0.00025 - 0.0005 - 0.00001 - 0.001
 CAPITAL = 2_000_000
 ENABLED = {'chan_buy', 'high_tight_flag'}
