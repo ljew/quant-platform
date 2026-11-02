@@ -35,6 +35,12 @@ services:
     container_name: quant-backend
     # 常驻：容器异常退出/机器重启后自动拉起（单写者，不再有双写风险）
     restart: unless-stopped
+    # 内存上限：Docker Desktop 的 VM 只有 7.75GiB。不设限时，批量抓取公众号
+    # （文章页 3.4MB/篇 + 400MB 库的 page cache）会把整个 VM 顶爆，
+    # 内核可能在 VM 里随机挑进程杀 —— 2026-11-02 实测 OOMKilled=true。
+    # 加了限之后超限只 OOM 本容器，再由 restart 策略拉起，爆炸半径限制在自己身上。
+    mem_limit: 4g
+    memswap_limit: 4g
     environment:
       - QUANT_DATABASE_URL=sqlite:////data/quant_dev.db
       - QUANT_FRONTEND_DIR=/frontend
@@ -50,6 +56,10 @@ services:
     volumes:
       - ./data:/data                # 复用现有 SQLite/DuckDB
       - ./config:/app/config        # 数据源配置（改 sources.yaml 无需重建镜像）
+      # 代码热挂载（2026-11-02 加入）：集成新策略时避免每次 docker compose build。
+      # 代价是改代码即时生效、没有 review 环节 —— 语法错误会让容器起不来，
+      # 出问题改回宿主机文件即可恢复，不必重建镜像。
+      - ./backend/app:/app/app
     ports:
       # 宿主 8000 直接对外（切换后宿主机不再跑 uvicorn）
       - "8000:8000"
