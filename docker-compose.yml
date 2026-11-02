@@ -21,6 +21,13 @@ services:
   #   ports:
   #     - "6379:6379"
 
+  # 公众号采集：**不引入额外容器**。
+  # 2026-11-02 评估过 we-mp-rss（WeRSS），最终没采用：它的公众号后台渠道已被微信封
+  # （2026-07-30），读书渠道与 wewe-rss 同源；而读书官方接口本身可以直连
+  # （/api/mp/cover + /web/mp/content），只需一份 Cookie。
+  # 采集就跑在 backend 容器内：backend/scripts/wechat/collect_weread.py
+  # （每日 08:20 / 20:40 由 wechat_scheduler 触发，页面上也能手动「立即采集」）。
+
   backend:
     build:
       context: .

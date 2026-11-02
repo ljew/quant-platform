@@ -52,24 +52,35 @@ def _today() -> str:
 
 
 def _crawl_script() -> Path | None:
-    """定位 crawl_content.py。容器内是 /app/scripts，本机是 <项目根>/backend/scripts。"""
+    """定位采集脚本（容器内 /app/scripts，本机 <项目根>/backend/scripts）。
+
+    优先 `collect_weread.py`（微信读书直连，2026-11-02 起的主力）：
+    wewe-rss 已停摆（中转站 502），它那套读 wewe-rss.db 待抓列表的
+    `crawl_content.py` 只剩兜底价值（历史遗留，没有新文章可抓）。
+    """
     here = Path(__file__).resolve()
-    cands = [
-        Path("/app/scripts/wechat/crawl_content.py"),                  # 容器
-        here.parents[3] / "scripts" / "wechat" / "crawl_content.py",   # 容器（按层级推）
-        here.parents[3] / "backend" / "scripts" / "wechat" / "crawl_content.py",  # 本机
+    roots = [
+        Path("/app/scripts/wechat"),                                    # 容器
+        here.parents[3] / "scripts" / "wechat",                         # 容器（按层级推）
+        here.parents[3] / "backend" / "scripts" / "wechat",             # 本机
     ]
-    for c in cands:
-        if c.exists():
-            return c
+    for d in roots:
+        for name in ("collect_weread.py", "crawl_content.py"):
+            c = d / name
+            if c.exists():
+                return c
     return None
 
 
 def _run_crawl() -> tuple[bool, str]:
     script = _crawl_script()
     if script is None:
-        return False, "找不到 crawl_content.py"
-    cmd = [sys.executable, str(script), "--since-days", str(_SINCE_DAYS)]
+        return False, "找不到采集脚本（collect_weread.py / crawl_content.py）"
+    if script.name == "collect_weread.py":
+        # 微信读书渠道：只取每个号最新一篇，幂等跳过；失败退出码 2 = 凭证失效
+        cmd = [sys.executable, str(script), "--interval", "3"]
+    else:
+        cmd = [sys.executable, str(script), "--since-days", str(_SINCE_DAYS)]
     logger.info("公众号抓取开始：%s", " ".join(cmd))
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=_TIMEOUT,

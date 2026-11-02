@@ -11,6 +11,8 @@ API 侧只负责查，所以这里没有任何写操作，也不需要锁。
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException, Query
 
 from app.services import wechat_svc
@@ -75,96 +77,132 @@ def schedule():
 
 @router.get("/upstream")
 def upstream():
-    """上游链路体检：wewe-rss 服务 / 二维码中转平台 / 已绑定的读书账号状态。
+    """采集链路体检：微信读书凭证 + 最近一次采集结果 + 订阅号数量。
 
-    为什么需要：扫码失败时原因可能在三处（本平台、wewe-rss、微信读书中转站），
-    页面只看到「二维码加载中」时无从判断。这里一次性探明，直接给结论。
+    为什么需要：这条路有三个失败面（Cookie 过期、微信改版、订阅清单丢了），
+    页面上只看到「很久没更新」时无从判断。这里一次性探明并给出结论。
 
-    ⚠️ 容器里访问宿主机 wewe-rss 必须用 host.docker.internal，127.0.0.1 是容器自身。
+    2026-11-02 起改为**直连微信读书官方接口**（wewe-rss 的中转站已停摆）：
+      /api/mp/cover?bookId=MP_WXS_xxx  → 该号最新一篇
+      /web/mp/content?reviewId=xxx     → 正文
     """
     import json as _json
     import urllib.error
     import urllib.request
 
-    from app.config import BASE_DIR
+    from app.config import settings
 
-    def _probe(url: str, timeout: float = 4.0) -> tuple[bool, int | None, str]:
+    data_dir = Path(settings.wechat_data_dir)
+    cookie_file = data_dir / "weread_cookie.json"
+    feeds_file = data_dir / "feeds.json"
+    state_file = data_dir / "state" / "weread_state.json"
+
+    # ① 最近一次采集结果
+    last: dict = {}
+    if state_file.exists():
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "quant-platform/upstream-probe"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                return True, r.status, ""
-        except urllib.error.HTTPError as e:
-            return False, e.code, f"HTTP {e.code}"
-        except Exception as e:  # noqa: BLE001
-            return False, None, f"{type(e).__name__}: {str(e)[:80]}"
+            last = _json.loads(state_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            last = {}
 
-    # ① wewe-rss 本体（宿主机 :4000）
-    wewe_url = "http://host.docker.internal:4000"
-    wewe_ok, wewe_code, wewe_err = _probe(f"{wewe_url}/dash")
+    # ② 订阅号数量
+    feeds = 0
+    if feeds_file.exists():
+        try:
+            feeds = len(_json.loads(feeds_file.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            feeds = 0
 
-    # ② 二维码中转平台：从 vendor 的 .env 读 PLATFORM_URL，读不到用默认
-    platform_url = "https://weread.111965.xyz"
-    env_path = BASE_DIR / "vendor" / "wechat-rss" / ".env"
-    try:
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            if line.startswith("PLATFORM_URL="):
-                platform_url = line.split("=", 1)[1].strip().strip('"').strip("'") or platform_url
-                break
-    except OSError:
-        pass
-    # 不要直接探 https://weread...：容器走 Cloudflare 会 403/502 抖动，宿主机却是另
-    # 一个结果，探不准。改为**让 wewe-rss（宿主机进程）发起真实的取二维码请求** ——
-    # 这正是用户点「添加账号」时走的同一条链路，成败即真相。
-    qr_ok, qr_code, qr_err = False, None, ""
-    try:
-        body = _json.dumps({"0": {"json": None}}).encode()
-        req = urllib.request.Request(
-            f"{wewe_url}/trpc/platform.createLoginUrl?batch=1",
-            data=body, method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=15) as r:
-            raw = r.read().decode("utf-8")
-        payload = _json.loads(raw)
-        if isinstance(payload, list) and payload and payload[0].get("result"):
-            qr_ok, qr_code = True, r.status
-        else:
-            msg = (payload[0].get("error", {}) or {}).get("message", "") if isinstance(payload, list) else ""
-            qr_code, qr_err = 502, msg or "取二维码失败"
-    except urllib.error.HTTPError as e:
-        qr_code, qr_err = e.code, f"HTTP {e.code}"
-    except Exception as e:  # noqa: BLE001
-        qr_err = f"{type(e).__name__}: {str(e)[:80]}"
-
-    # ③ 已绑定账号（tRPC account.list；status=1 有效、0 失效）
-    accounts: list[dict] = []
-    try:
-        q = "%7B%220%22%3A%7B%22json%22%3Anull%7D%7D"
-        with urllib.request.urlopen(f"{wewe_url}/trpc/account.list?batch=1&input={q}", timeout=6) as r:
-            payload = _json.loads(r.read().decode("utf-8"))
-        for it in payload[0]["result"]["data"]["items"]:
-            accounts.append({"name": it.get("name"), "status": it.get("status"),
-                             "updated_at": it.get("updatedAt")})
-    except Exception:  # noqa: BLE001
-        pass
-
-    alive = [a for a in accounts if a["status"] == 1]
-    if not wewe_ok:
-        verdict = f"wewe-rss 不可用（{wewe_err}）—— 公众号抓取与扫码都停摆"
-        level = "fail"
-    elif not qr_ok:
-        verdict = (f"二维码生成失败（{platform_url} → {qr_err or qr_code}）—— "
-                   f"扫码弹不出二维码；这是第三方中转站的问题，等它恢复或改 PLATFORM_URL")
-        level = "warn"
-    elif accounts and not alive:
-        verdict = f"{len(accounts)} 个读书账号全部失效，需要重新扫码登录"
-        level = "warn"
+    # ③ 凭证是否还有效：拿第一个号实测一次 cover（不写库、代价极小）
+    cookie_ok, cookie_err, cookie_vid = False, "", ""
+    if not cookie_file.exists():
+        cookie_err = "未配置 Cookie（data/wechat/weread_cookie.json）"
     else:
-        verdict = "上游正常"
+        try:
+            jar = _json.loads(cookie_file.read_text(encoding="utf-8"))
+            if isinstance(jar, str):
+                ck = jar
+            else:
+                ck = "; ".join(f"{c['name']}={c['value']}" for c in jar)
+                cookie_vid = next((c["value"] for c in jar if c["name"] == "wr_vid"), "")
+            probe = ""
+            if feeds_file.exists():
+                try:
+                    probe = _json.loads(feeds_file.read_text(encoding="utf-8"))[0]["mp_id"]
+                except (OSError, ValueError, IndexError, KeyError):
+                    probe = ""
+            if not probe:
+                cookie_err = "订阅清单为空"
+            else:
+                req = urllib.request.Request(
+                    f"https://weread.qq.com/api/mp/cover?bookId={probe}",
+                    headers={"Cookie": ck, "User-Agent": "Mozilla/5.0 quant-platform/probe",
+                             "Referer": "https://weread.qq.com/"},
+                )
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    payload = _json.loads(r.read().decode("utf-8", "ignore"))
+                if payload.get("statusCode") == 401 or payload.get("errcode") in (-2010, -2012, -2041):
+                    cookie_err = f"{payload.get('errcode')} {payload.get('errmsg', '')}".strip()
+                else:
+                    cookie_ok = True
+        except urllib.error.HTTPError as e:
+            cookie_err = f"HTTP {e.code}"
+        except Exception as e:  # noqa: BLE001
+            cookie_err = f"{type(e).__name__}: {str(e)[:80]}"
+
+    # ④ 结论
+    if not cookie_ok:
+        level = "fail"
+        verdict = f"微信读书凭证不可用（{cookie_err}）—— 公众号采集会全线失败，需重新扫码"
+    elif not feeds:
+        level = "warn"
+        verdict = "订阅清单为空（data/wechat/feeds.json），采集不会跑任何号"
+    elif not last:
+        level = "warn"
+        verdict = "尚未跑过采集（等 08:20 / 20:40 定时，或手动触发一次）"
+    elif last.get("error"):
+        level = "warn"
+        verdict = f"上次采集凭证失效：{last['error']}"
+    elif last.get("ok"):
         level = "ok"
+        verdict = (f"正常 · 上次 {last.get('at', '')} 新增 {last.get('new', 0)} 篇"
+                   f"（已最新 {last.get('skip', 0)}，失败 {last.get('fail', 0)}）")
+    else:
+        level = "warn"
+        verdict = "上次采集未成功，详见 last_run"
+
     return {
-        "level": level, "verdict": verdict,
-        "wewe": {"ok": wewe_ok, "url": wewe_url, "status": wewe_code, "error": wewe_err},
-        "qr_platform": {"ok": qr_ok, "url": platform_url, "status": qr_code, "error": qr_err},
-        "accounts": accounts, "accounts_alive": len(alive),
+        "level": level, "verdict": verdict, "source": "weread",
+        "cookie": {"ok": cookie_ok, "vid": cookie_vid, "error": cookie_err},
+        "feeds": feeds, "last_run": last,
     }
+
+
+@router.post("/collect")
+def collect(limit: int = 0):
+    """手动触发一次采集（子进程执行，接口立即返回）。
+
+    ⚠️ 必须子进程：采集要 6-8 分钟且带 3 秒限频，放进 uvicorn 线程会拖垮服务
+    （本项目定过规矩：长任务一律 subprocess + 独立进程）。
+    """
+    import subprocess
+    import sys
+    from pathlib import Path as _P
+
+    here = _P(__file__).resolve()
+    script = None
+    for d in (_P("/app/scripts/wechat"), here.parents[2] / "scripts" / "wechat",
+              here.parents[2] / "backend" / "scripts" / "wechat"):
+        if (d / "collect_weread.py").exists():
+            script = d / "collect_weread.py"
+            break
+    if script is None:
+        raise HTTPException(status_code=500, detail="找不到 collect_weread.py")
+
+    cmd = [sys.executable, str(script), "--interval", "3"]
+    if limit:
+        cmd += ["--limit", str(limit)]
+    subprocess.Popen(cmd, cwd=str(script.parent),
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+    return {"ok": True, "note": "采集已在后台启动，60 秒后刷新本页看结果"}

@@ -53,6 +53,8 @@ export default function WechatPage() {
   /** lib = 读已抓下来的全文；upstream = 内嵌 wewe-rss 后台（扫码登录） */
   const [view, setView] = useState<"lib" | "upstream">("lib");
   const [upstream, setUpstream] = useState<WechatUpstream | null>(null);
+  const [collectBusy, setCollectBusy] = useState(false);
+  const [collectMsg, setCollectMsg] = useState("");
   const reqSeq = useRef(0);
 
   // —— 初次加载：统计 + 号列表 ——
@@ -121,9 +123,6 @@ export default function WechatPage() {
         (stale > 3 ? `（已 ${Math.round(stale)} 天未更新）` : "")
       : "加载中…";
 
-  // 上游 wewe-rss 后台：与平台同机，另一个端口。用 hostname 拼，
-  // 避免「平台开在 127.0.0.1、iframe 写死 localhost」造成两个源。
-  const upstreamUrl = `http://${window.location.hostname || "localhost"}:4000/dash`;
   const tabStyle = (on: boolean) => ({
     padding: "5px 12px", borderRadius: 8, fontSize: 12.5, cursor: "pointer",
     border: `1px solid ${on ? colors.accent : colors.border}`,
@@ -141,7 +140,7 @@ export default function WechatPage() {
   const tabs = (
     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
       <button style={tabStyle(view === "lib")} onClick={() => setView("lib")}>文章库</button>
-      <button style={tabStyle(view === "upstream")} onClick={() => setView("upstream")}>上游管理 · 扫码</button>
+      <button style={tabStyle(view === "upstream")} onClick={() => setView("upstream")}>采集链路</button>
       {view === "lib" && (
         <Btn small onClick={() => { setQ(""); setQInput(""); setMpId(""); setRange(0); loadList(0, false); }} disabled={listBusy}>
           {listBusy ? "刷新中…" : "重置"}
@@ -150,46 +149,71 @@ export default function WechatPage() {
     </div>
   );
 
-  // —— 上游管理视图：内嵌后台，扫码就在这个 iframe 里做 ——
+  // —— 采集链路视图：凭证 / 订阅号 / 最近一次采集 + 手动触发 ——
   if (view === "upstream") {
+    const lr = upstream?.last_run || {};
+    const tone = upstream?.level === "ok" ? colors.down
+      : upstream?.level === "fail" ? colors.up : "#c2770a";
+    const refresh = () => wechatApi.upstream().then(setUpstream).catch(() => {});
+    const runCollect = async () => {
+      setCollectBusy(true);
+      setCollectMsg("");
+      try {
+        const r = await wechatApi.collect(0);
+        setCollectMsg(r.note || "已提交");
+        // 采集要 6-8 分钟，1 分钟后先刷一次看进度
+        setTimeout(refresh, 60000);
+      } catch (e) {
+        setCollectMsg(`触发失败：${(e as Error).message}`);
+      } finally {
+        setCollectBusy(false);
+      }
+    };
     return (
       <div>
         <PageHeader
-          title="公众号 · 上游管理"
-          desc="扫码登录、订阅号增删都在这里（内嵌 wewe-rss 后台 :4000，非本平台功能）"
+          title="公众号 · 采集链路"
+          desc="直连微信读书官方接口（wewe-rss 中转站已停摆，2026-11-02 切换）"
           actions={tabs}
         />
-        <Card colors={colors} pad={0} style={{ overflow: "hidden" }}>
-          {upstream && (
+        <Card colors={colors}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, fontSize: 13 }}>
             <div style={{
-              padding: "8px 12px", fontSize: 12.5,
-              background: upstream.level === "ok" ? `${colors.down}0f`
-                : upstream.level === "fail" ? `${colors.up}12` : "#f59e0b12",
-              color: upstream.level === "ok" ? colors.down : colors.up,
-              borderBottom: `1px solid ${colors.border}`,
+              padding: "10px 12px", borderRadius: 8,
+              background: `${tone}12`, border: `1px solid ${tone}`, color: tone,
             }}>
-              <b>上游体检：{upstream.verdict}</b>
-              <span style={{ color: colors.muted, marginLeft: 10 }}>
-                wewe-rss {upstream.wewe.ok ? "✓" : "✗"} · 二维码服务 {upstream.qr_platform.ok ? "✓" : "✗"}
-                {upstream.accounts.length > 0 &&
-                  ` · 账号 ${upstream.accounts_alive}/${upstream.accounts.length} 有效`}
+              <b>{upstream ? upstream.verdict : "体检中…"}</b>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
+              {[
+                { k: "微信读书凭证", v: upstream?.cookie.ok ? "有效" : "失效",
+                  h: upstream?.cookie.ok ? `vid ${upstream?.cookie.vid}` : (upstream?.cookie.error || "") },
+                { k: "订阅号", v: `${upstream?.feeds ?? 0} 个`, h: "data/wechat/feeds.json" },
+                { k: "上次采集", v: lr.at ? String(lr.at).slice(5, 16).replace("T", " ") : "从未",
+                  h: lr.at ? `新增 ${lr.new ?? 0} · 已最新 ${lr.skip ?? 0} · 失败 ${lr.fail ?? 0}` : "" },
+              ].map((x) => (
+                <div key={x.k} style={{
+                  border: `1px solid ${colors.border}`, borderRadius: 8, padding: "10px 12px",
+                }}>
+                  <div style={{ fontSize: 11.5, color: colors.muted }}>{x.k}</div>
+                  <div style={{ fontSize: 16, fontWeight: 600, marginTop: 3 }}>{x.v}</div>
+                  <div style={{ fontSize: 11, color: colors.muted, marginTop: 2 }}>{x.h}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <Btn onClick={runCollect} disabled={collectBusy}>
+                {collectBusy ? "已提交…" : "立即采集"}
+              </Btn>
+              <Btn kind="ghost" small onClick={refresh}>刷新状态</Btn>
+              <span style={{ color: colors.muted, fontSize: 12 }}>
+                每天 08:20 / 20:40 自动跑；只取每个号<b>最新一篇</b>（官方接口限制，无法回补历史）
               </span>
             </div>
-          )}
-          <div style={{
-            display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
-            borderBottom: `1px solid ${colors.border}`, fontSize: 12, color: colors.muted,
-          }}>
-            <span>入口：左侧「账号管理」→ 添加账号 → 用<b>微信读书 App</b> 扫码确认；登录恢复后回「文章库」看新抓的文章</span>
-            <a href={upstreamUrl} target="_blank" rel="noreferrer" style={{ color: colors.accent, marginLeft: "auto", whiteSpace: "nowrap" }}>
-              新窗口打开 ↗
-            </a>
+            {collectMsg && <div style={{ color: colors.accent, fontSize: 12 }}>{collectMsg}</div>}
           </div>
-          <iframe
-            src={upstreamUrl}
-            title="wewe-rss 上游管理"
-            style={{ width: "100%", height: "calc(100vh - 250px)", border: "none", background: "#fff" }}
-          />
         </Card>
       </div>
     );

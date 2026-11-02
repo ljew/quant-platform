@@ -821,15 +821,19 @@ export interface WechatTrendResp { items: { date: string; n: number }[]; days: n
 export interface WechatUpstream {
   level: "ok" | "warn" | "fail";
   verdict: string;
-  wewe: { ok: boolean; url: string; status: number | null; error: string };
-  qr_platform: { ok: boolean; url: string; status: number | null; error: string };
-  accounts: { name: string; status: number; updated_at: string }[];
-  accounts_alive: number;
+  source: string;                       // weread = 直连微信读书
+  cookie: { ok: boolean; vid: string; error: string };
+  feeds: number;
+  last_run: {
+    ok?: boolean; new?: number; skip?: number; fail?: number;
+    seconds?: number; at?: string; error?: string | null;
+  };
 }
 
 export const wechatApi = {
   stats: () => get<WechatStats>("/wechat/stats"),
   upstream: () => get<WechatUpstream>("/wechat/upstream"),
+  collect: (limit = 0) => post<{ ok: boolean; note: string }>(`/wechat/collect?limit=${limit}`, {}),
   mps: (limit = 300) => get<{ items: WechatMp[]; n: number }>(`/wechat/mps?limit=${limit}`),
   articles: (p: { mp_id?: string; q?: string; since_days?: number; limit?: number; offset?: number }) => {
     const qs = new URLSearchParams();
