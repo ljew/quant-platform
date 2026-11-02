@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
 from app.core.engine.base_strategy import Mode, PortfolioStrategy
+from app.core.rules.limit import limit_trigger
 
 logger = logging.getLogger("quant.portfolio")
 
@@ -293,6 +294,10 @@ class PortfolioBacktestEngine:
         self._pending_orders: list[dict] = []
         self._clamp_events: list[dict] = []      # 风险约束触发的截断记录（审计用）
         self.universe = list(data.keys())
+        # 当日有真实行情的标的集合。停牌 / 未上市标的只有 ffill 定价、没有真实成交：
+        # 估值可以继续用 ffill 价（见 _price_today），但撮合必须在 _order_target 前拦截。
+        # 依据：实盘侧 app/live/target.py 同样处理「停牌卖不出，持仓保留」。
+        self._tradable_today: set[str] = set()
 
         # 每只股票：date->close 映射 & 真实交易日收盘价历史（ffill 定价用 last_close）
         self.close_map = {
@@ -329,6 +334,11 @@ class PortfolioBacktestEngine:
         self.rebalance_first_error: str | None = None
 
     # ——— 行情访问 ———
+    def _symbol_name(self, symbol: str) -> str:
+        """标的证券名称（ST 识别用）。attributes 未注入 name 时返回空串，
+        此时 ST 退化为主板 10% 的涨跌停幅度（已知偏差，见 core/rules/limit.py）。"""
+        return str((self.attributes.get(symbol, {}) or {}).get("name") or "")
+
     def _price_today(self, symbol: str):
         return self._last_close.get(symbol)
 
@@ -355,6 +365,10 @@ class PortfolioBacktestEngine:
     # ——— 撮合 ———
     def _order_target(self, ctx: PortfolioContext, symbol: str, target_shares: float,
                       signal_type: str = "", signal_reason: str = "") -> None:
+        # 停牌 / 当日无行情：只有 ffill 定价，没有真实成交。卖出停牌股在实盘卖不掉，
+        # 买入停牌股也买不进；不拦截的话回测会凭空获得流动性，净值系统性偏乐观。
+        if symbol not in self._tradable_today:
+            return
         price = self._last_close.get(symbol)
         if price is None or price <= 0:
             return
@@ -363,15 +377,18 @@ class PortfolioBacktestEngine:
         if abs(delta) < 1e-6:
             return
         is_buy = delta > 0
-        # 涨跌停限制：涨停买不进、跌停卖不出（A股 ±10%，用 9.5% 阈值防浮点误差）
+        # 涨跌停限制：涨停买不进、跌停卖不出。幅度按板块取（主板 10% / 创业板科创板
+        # 20% / 北交所 30% / ST 5%），阈值含 0.5pp 缓冲。与实盘 live/guard.py 共用
+        # core/rules.limit —— 两侧口径不一致会让回测净值与实盘表现系统性背离。
         if self.limit_enabled:
             h = self.hist.get(symbol, [])
             prev = h[-2] if len(h) >= 2 else None
             if prev and prev > 0:
                 chg = price / prev - 1.0
-                if is_buy and chg >= 0.095:
+                band = limit_trigger(symbol, self._symbol_name(symbol))
+                if is_buy and chg >= band:
                     return
-                if (not is_buy) and chg <= -0.095:
+                if (not is_buy) and chg <= -band:
                     return
         # 最小交易单位（手）：向下取整到 lot_size 的整数倍
         if self.lot_size and self.lot_size > 1:
@@ -506,9 +523,11 @@ class PortfolioBacktestEngine:
         bench_last = self.bench_first
 
         for i, d in enumerate(self.dates):
+            self._tradable_today = set()
             for sym in self.universe:
                 c = self.close_map.get(sym, {}).get(d)
                 if c is not None:
+                    self._tradable_today.add(sym)   # 当日有真实行情 → 可成交
                     self._last_close[sym] = c
                     self.hist[sym].append(c)
                     self.hist_dates[sym].append(d)

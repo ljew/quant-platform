@@ -17,6 +17,7 @@ from typing import Any, List, Optional
 
 from app.core.engine import indicators as ind
 from app.core.engine.base_strategy import Mode, StandardStrategy
+from app.core.rules.limit import limit_trigger
 
 
 @dataclass
@@ -240,6 +241,7 @@ class BacktestEngine:
         limit_enabled: bool = True,
         stamp_tax: float = 0.0005,
         risk_free_rate: float = 0.025,
+        symbol: str = "",
     ):
         """事件驱动回测引擎（单标的、long-only）。
 
@@ -266,6 +268,9 @@ class BacktestEngine:
         self.min_commission = float(min_commission)  # 单笔最低佣金（元）
         self.lot_size = int(lot_size)                # 最小交易单位（A股 100 股/手）
         self.limit_enabled = bool(limit_enabled)     # 涨跌停限制（涨停买不进/跌停卖不出）
+        # 标的代码，用于按板块取涨跌停幅度（主板10%/创业板科创板20%/北交所30%/ST5%）。
+        # 不传则退化为主板 10% —— 对非主板标的会偏保守（误拦），不会放行买不到的票。
+        self.symbol = str(symbol or "")
         self.prev_close = float(bars[0]["close"]) if bars else 0.0
 
         self.cash = self.initial_cash
@@ -298,12 +303,14 @@ class BacktestEngine:
         if equity > 0 and abs(delta_shares) * price < equity * self.rebalance_tol:
             return
         is_buy = delta_shares > 0
-        # 涨跌停限制：涨停买不进、跌停卖不出（A股 ±10%，用 9.5% 阈值防浮点误差）
+        # 涨跌停限制：涨停买不进、跌停卖不出。幅度按板块取（见 core/rules/limit），
+        # 与组合引擎、实盘 guard 共用同一份规则；阈值已含 0.5pp 缓冲。
         if self.limit_enabled and prev_close and prev_close > 0:
             chg = price / prev_close - 1.0
-            if is_buy and chg >= 0.095:
+            band = limit_trigger(self.symbol)
+            if is_buy and chg >= band:
                 return
-            if (not is_buy) and chg <= -0.095:
+            if (not is_buy) and chg <= -band:
                 return
         # 最小交易单位（手）：向下取整到 lot_size 的整数倍
         if self.lot_size and self.lot_size > 1:

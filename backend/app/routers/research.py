@@ -54,6 +54,84 @@ def list_cards():
         db.close()
 
 
+class CardIn(BaseModel):
+    """新建/更新研究卡的入参。"""
+
+    card_type: str = Field(pattern="^(strategy|factor)$")
+    key: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=64)
+    hypothesis: str = ""
+    data_spec: str = ""
+    evidence: dict = Field(default_factory=dict)
+    cost_note: str = ""
+    crowd_note: str = ""
+    fail_condition: str = ""
+    state: str = Field(default="watch", pattern="^(enabled|candidate|watch|downgraded|retired)$")
+    history_note: str = ""          # 首条/本次流转理由
+    actor: str = "human"            # human / agent
+
+
+@router.post("/cards")
+def upsert_card(body: CardIn):
+    """新建或更新一张研究卡（按 card_type + key 幂等）。
+
+    用途：把一次研究结论——**包括已证伪的假设**——落成卡片，让它成为可追踪的资产。
+    失败结论同样有 value：它标记了一片已被排除的搜索空间。
+
+    边界：这里只写 research_cards，不动 factor_registry / STRATEGY_QUALITY。
+    卡片是否影响生产，由 research_card_svc 读取 state 决定（enabled 才算数）。
+    """
+    db = SessionLocal()
+    try:
+        card = db.execute(
+            select(ResearchCard).where(
+                ResearchCard.card_type == body.card_type,
+                ResearchCard.key == body.key,
+            )
+        ).scalar_one_or_none()
+
+        now = datetime.now()
+        note = body.history_note or ("新建卡片" if card is None else "更新卡片")
+
+        if card is None:
+            card = ResearchCard(
+                card_type=body.card_type,
+                key=body.key,
+                name=body.name,
+                state=body.state,
+                history_json=json.dumps(
+                    [{"at": now.strftime("%Y-%m-%d %H:%M"), "from": None,
+                      "to": body.state, "reason": note, "actor": body.actor}],
+                    ensure_ascii=False,
+                ),
+            )
+            db.add(card)
+        else:
+            history = json.loads(card.history_json or "[]")
+            if card.state != body.state:
+                history.append({
+                    "at": now.strftime("%Y-%m-%d %H:%M"), "from": card.state,
+                    "to": body.state, "reason": note, "actor": body.actor,
+                })
+                card.history_json = json.dumps(history, ensure_ascii=False)
+            card.state = body.state
+
+        card.name = body.name
+        card.hypothesis = body.hypothesis
+        card.data_spec = body.data_spec
+        card.evidence_json = json.dumps(body.evidence, ensure_ascii=False)
+        card.cost_note = body.cost_note
+        card.crowd_note = body.crowd_note
+        card.fail_condition = body.fail_condition
+        card.updated_at = now
+
+        db.commit()
+        db.refresh(card)
+        return _card_dict(card)
+    finally:
+        db.close()
+
+
 def _suggest_for(card: ResearchCard, ev: dict) -> dict | None:
     """根据卡片最新证据（每周复盘刷新）派生待确认建议；无需重算归因。"""
     exc = ev.get("exc_10")

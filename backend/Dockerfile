@@ -29,6 +29,10 @@ ENV PYTHONPATH=/app
 ENV QUANT_FRONTEND_DIR=/frontend
 ENV QUANT_DATABASE_URL=sqlite:////data/quant_dev.db
 ENV QUANT_DATA_SCHEDULE=1
+# ⚠️ 时区必须显式设置：基础镜像默认 UTC，否则所有定时任务（17:30 编排 / 19:00 ETL /
+#    20:47 挖矿 / 周六复盘）都会按 UTC 触发 = 北京时间凌晨，等于全错 8 小时。
+ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 VOLUME /data
 EXPOSE 8000

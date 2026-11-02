@@ -757,7 +757,9 @@ class ResearchRun(Base):
     gate_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 闸门倒计时截止时刻：超过则自动放行（保证无人值守），人工放行/否决可提前
     gate_deadline: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # 注意：必须用 datetime.now（本地时区），与 orchestrator 的 finished_at 口径一致。
+    # 曾误用 utcnow，导致 started_at 比 finished_at 早 8 小时，所有 run 耗时虚增。
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -863,3 +865,148 @@ class ResearchCard(Base):
     history_json: Mapped[str] = mapped_column(Text, default="[]")    # 状态迁移留痕
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 实盘系统（L3-L7，docs/LIVE-TRADING-DESIGN.md）
+#
+# 与 paper_* / broker_orders 物理隔离：实盘数据不可重算，不能被研究流水线
+# 覆盖，也不能与「重演型」模拟盘混用语义。
+# 唯一事实源：live_position 只由成交回报（live_fill）驱动，绝不由模型推演写入。
+# ══════════════════════════════════════════════════════════════════════
+
+
+class LivePosition(Base):
+    """实盘实际持仓（唯一事实源）。
+
+    entry_date / peak_close 是策略风控的状态变量（硬止损、移动止损、时间止损），
+    必须随持仓一起维护——回测里这些是内存变量，实盘必须落库，否则重启即丢。
+    """
+
+    __tablename__ = "live_position"
+    __table_args__ = (UniqueConstraint("strategy_key", "symbol", name="uq_live_pos"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    strategy_key: Mapped[str] = mapped_column(String(32), default="fresh_ma")
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    name: Mapped[str] = mapped_column(String(64), default="")
+    shares: Mapped[int] = mapped_column(Integer, default=0)
+    avg_cost: Mapped[float] = mapped_column(Float, default=0.0)      # 未复权成交均价
+    entry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    peak_close: Mapped[float] = mapped_column(Float, default=0.0)    # 持仓期最高收盘（未复权）
+    last_mark_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now,
+                                                 onupdate=datetime.now)
+
+
+class LiveDecisionSnapshot(Base):
+    """决策快照（不可变，可复现的锚点）。
+
+    为什么必须存：候选资格依赖 resolve_strategy_quality(db)，而卡片档位会变。
+    今天的 enabled 集合与三个月后回看时算出来的不是同一套——不冻结就永远无法回答
+    「那天为什么买这只」。
+    """
+
+    __tablename__ = "live_decision_snapshot"
+    __table_args__ = (UniqueConstraint("trade_date", "strategy_key", name="uq_live_snap"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True)
+    strategy_key: Mapped[str] = mapped_column(String(32), default="fresh_ma")
+    data_date: Mapped[date | None] = mapped_column(Date, nullable=True)   # 行情实际最新日
+    data_ok: Mapped[int] = mapped_column(Integer, default=0)              # 完整性闸门 0/1
+    data_note: Mapped[str] = mapped_column(Text, default="")
+    enabled_json: Mapped[str] = mapped_column(Text, default="[]")         # 当日 enabled 策略
+    card_tiers_json: Mapped[str] = mapped_column(Text, default="{}")      # 九策略档位
+    gate_open: Mapped[int] = mapped_column(Integer, default=0)
+    gate_exc: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gate_n: Mapped[int] = mapped_column(Integer, default=0)
+    candidates_json: Mapped[str] = mapped_column(Text, default="[]")      # 候选池明细
+    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class LiveOrderIntent(Base):
+    """订单意图 = 目标持仓 − 实际持仓。
+
+    幂等键 (trade_date, strategy_key, symbol, side)：同一天重复跑流水线只更新
+    不新增，这是「重跑无害」的基础。
+    状态机：DRAFT → APPROVED → SENT → FILLED / PARTIAL / REJECTED / EXPIRED
+    """
+
+    __tablename__ = "live_order_intent"
+    __table_args__ = (
+        UniqueConstraint("trade_date", "strategy_key", "symbol", "side",
+                         name="uq_live_intent"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True)     # 信号日（次日执行）
+    exec_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    strategy_key: Mapped[str] = mapped_column(String(32), default="fresh_ma")
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    name: Mapped[str] = mapped_column(String(64), default="")
+    side: Mapped[str] = mapped_column(String(4))                   # BUY / SELL
+    target_shares: Mapped[int] = mapped_column(Integer, default=0)
+    actual_shares: Mapped[int] = mapped_column(Integer, default=0)
+    qty: Mapped[int] = mapped_column(Integer, default=0)
+    ref_price: Mapped[float] = mapped_column(Float, default=0.0)   # 未复权参考价（收盘）
+    limit_price: Mapped[float] = mapped_column(Float, default=0.0) # 建议限价
+    est_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    priority: Mapped[int] = mapped_column(Integer, default=100)
+    status: Mapped[str] = mapped_column(String(16), default="DRAFT")
+    reject_reason: Mapped[str] = mapped_column(Text, default="")
+    filled_qty: Mapped[int] = mapped_column(Integer, default=0)
+    filled_price: Mapped[float] = mapped_column(Float, default=0.0)
+    snapshot_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now,
+                                                 onupdate=datetime.now)
+
+
+class LiveFill(Base):
+    """成交回报（人工录入 / 对账单 CSV 导入）。
+
+    source: manual / csv / broker。对账以本表为准，不以 intent 为准。
+    """
+
+    __tablename__ = "live_fill"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    intent_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True)
+    strategy_key: Mapped[str] = mapped_column(String(32), default="fresh_ma")
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    side: Mapped[str] = mapped_column(String(4))
+    qty: Mapped[int] = mapped_column(Integer, default=0)
+    price: Mapped[float] = mapped_column(Float, default=0.0)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    commission: Mapped[float] = mapped_column(Float, default=0.0)
+    stamp_tax: Mapped[float] = mapped_column(Float, default=0.0)
+    transfer_fee: Mapped[float] = mapped_column(Float, default=0.0)
+    source: Mapped[str] = mapped_column(String(12), default="manual")
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class LiveEquity(Base):
+    """每日净值：实盘 + 影子对照。
+
+    divergence_pct = 实盘累计收益 − 影子累计收益，等于执行成本的度量。
+    这个值长期稳定在成本量级 = 系统健康；突然扩大 = 执行或数据出问题。
+    """
+
+    __tablename__ = "live_equity"
+    __table_args__ = (UniqueConstraint("trade_date", "strategy_key", name="uq_live_eq"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True)
+    strategy_key: Mapped[str] = mapped_column(String(32), default="fresh_ma")
+    cash: Mapped[float] = mapped_column(Float, default=0.0)
+    market_value: Mapped[float] = mapped_column(Float, default=0.0)
+    total: Mapped[float] = mapped_column(Float, default=0.0)
+    n_positions: Mapped[int] = mapped_column(Integer, default=0)
+    shadow_total: Mapped[float | None] = mapped_column(Float, nullable=True)
+    divergence_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)

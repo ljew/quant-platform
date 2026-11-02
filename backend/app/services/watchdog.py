@@ -27,8 +27,6 @@ from datetime import datetime
 from app.database import SessionLocal
 from app.services.framework_health import OK
 
-logger = logging.getLogger(__name__)
-
 CHECK_INTERVAL_SEC = 600          # 体检间隔：10 分钟
 COOLDOWN_SEC = 6 * 3600           # 同指纹告警冷却：6 小时
 HEAL_AFTER_HOUR, HEAL_AFTER_MIN = 17, 35
@@ -42,6 +40,10 @@ _state: dict = {
     "last_heal": None,
     "last_error": None,
 }
+
+# 用 uvicorn 的 logger：应用自建的 logger 在容器里没有 handler，日志会石沉大海
+# （`docker logs` 看不到，等于没法确认看门狗到底跑没跑）。
+logger = logging.getLogger("uvicorn.error")
 
 
 def _fp(health: dict) -> str:

@@ -1,46 +1,62 @@
-# 个人量化投研平台 — 一键部署（设计 v1.0）
-# 用法：docker compose up -d --build
-# 访问：http://localhost:8001 （后端托管 React 构建产物 + /api）
-# ⚠️ 前置：先停掉本机 uvicorn（kill 占用 8000 的 python 进程），否则两边同写 data/quant_dev.db 会损坏数据库。
-# 数据：./data 目录 bind 挂载（复用本机 SQLite/DuckDB，容器内外一致）
-# 调度：QUANT_DATA_SCHEDULE=1 → 每交易日 19:00 ETL 自动增量 + 因子落库 + 断供自愈 + 成分月度刷新
+# 个人量化投研平台 — 一键部署（2026-11-02 Docker 常驻化）
+#
+# 用法：
+#   docker compose up -d --build       # 首次构建并启动
+#   docker compose logs -f backend     # 看日志
+#   docker compose restart backend     # 重启
+#
+# 访问：http://localhost:8000 （后端托管 React 构建产物 + /api）
+#
+# ⚠️ 与宿主机 uvicorn 二选一
+#   ./data 是 bind 挂载，容器与本机 uvicorn 会**同时写** quant_dev.db → 损坏
+#   （2026-09-10 事故：file is not a database）。切到 Docker 前必须：
+#     launchctl bootout gui/$(id -u)/com.quant.backend
+#   否则 launchd 的 StartInterval 巡检会把宿主进程再拉起来，形成双写。
 services:
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    # 预留：完整版任务队列 Celery broker（当前后端用轻量线程池，未依赖 redis 也能跑）
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
+  # redis 预留（完整版任务队列 Celery broker）—— 当前后端用轻量线程池，代码里无任何
+  # redis 引用。常驻一个没人用的容器只会污染 `docker ps`、占 6379；需要时取消注释即可。
+  # redis:
+  #   image: redis:7-alpine
+  #   restart: unless-stopped
+  #   ports:
+  #     - "6379:6379"
 
   backend:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    restart: "no"                  # ⚠️ 不要改成 unless-stopped：容器会通过 ./data bind mount
-                                   #    与本机 uvicorn 同时写 quant_dev.db，导致 SQLite 损坏
-                                   #    （2026-09-10 事故：file is not a database / disk image is malformed）。
-                                   #    需要 Docker 部署时：先停本机 uvicorn，再 docker compose up -d --build
+    container_name: quant-backend
+    # 常驻：容器异常退出/机器重启后自动拉起（单写者，不再有双写风险）
+    restart: unless-stopped
     environment:
       - QUANT_DATABASE_URL=sqlite:////data/quant_dev.db
       - QUANT_FRONTEND_DIR=/frontend
       - QUANT_TUSHARE_TOKEN=${QUANT_TUSHARE_TOKEN:-}
-      - QUANT_DATA_SCHEDULE=1       # ETL 每晚 19:00 自动增量 + 因子落库 + 断供自愈 + 成分月度刷新
+      - QUANT_DATA_SCHEDULE=1
       - QUANT_DEBUG=false
       - QUANT_SOURCES_YAML=/app/config/sources.yaml
+      # 公众号全文库：代码在 /app/data 是空目录，真实数据挂在 /data（bind mount），
+      # 必须显式指向，否则 /wechat 页面会报「未找到 knowledge.db」
+      - QUANT_WECHAT_DATA_DIR=/data/wechat
+      # 时区：所有定时任务（17:30 编排 / 19:00 ETL / 20:47 挖矿）按北京时间触发
+      - TZ=Asia/Shanghai
     volumes:
-      - ./data:/data                # bind 挂载本机数据（复用现有 SQLite/DuckDB）
+      - ./data:/data                # 复用现有 SQLite/DuckDB
       - ./config:/app/config        # 数据源配置（改 sources.yaml 无需重建镜像）
     ports:
-      # ⚠️ 宿主 8000 留给本机 uvicorn（最新代码）。容器改挂 8001，避免抢占 8000。
-      # ⚠️ 更重要：容器与本机 uvicorn 共用同一个 data/quant_dev.db（bind mount），
-      #    两个进程同时写会损坏 SQLite（2026-09-10 已发生过：file is not a database）。
-      #    二者只能二选一常驻：用 Docker 就必须先停本机 uvicorn，反之亦然。
-      - "8001:8000"
-    depends_on:
-      redis:
-        condition: service_healthy
+      # 宿主 8000 直接对外（切换后宿主机不再跑 uvicorn）
+      - "8000:8000"
+    healthcheck:
+      # 用 /openapi.json 而非 /health：后者会调 check_akshare()（联网校验），
+      # 可能拖到超时，造成容器被反复判死。
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=5); sys.exit(0)"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 90s            # 启动要载入 DuckDB/初始化表，给足 90 秒
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

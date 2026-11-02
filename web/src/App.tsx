@@ -9,6 +9,7 @@ import SignalPage from "./pages/SignalPage";
 import AttributionPage from "./pages/AttributionPage";
 import AutoResearchHubPage from "./pages/AutoResearchHubPage";
 import DataSystemPage from "./pages/DataSystemPage";
+import WechatPage from "./pages/WechatPage";
 import { Hub } from "./components/Hub";
 import { sidebarTheme, useTheme } from "./theme";
 
@@ -25,6 +26,7 @@ const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; lab
   { key: "today", label: "今日观点", icon: "☀", tabs: [
     { key: "today", label: "今日观点" },
     { key: "market", label: "行情看板" },
+    { key: "wechat", label: "公众号" },
   ] },
   { key: "research", label: "策略研究", icon: "⚗", tabs: [
     { key: "cards", label: "研究卡" },
@@ -61,10 +63,17 @@ function findHub(sub: string): { hub: HubKey; sub: string } | null {
   return null;
 }
 
+/** 读地址栏 hash 作为初始页面：#wechat / #btopt 等，非法值回落到今日观点。 */
+function initialNav(): { hub: HubKey; sub: string } {
+  const raw = typeof window !== "undefined" ? window.location.hash.replace(/^#/, "") : "";
+  return (raw && findHub(raw)) || { hub: "today", sub: "today" };
+}
+
 function HubContent({ sub }: { sub: string }) {
   switch (sub) {
     case "today": return <TodayPage />;
     case "market": return <MarketPage />;
+    case "wechat": return <WechatPage />;
     case "cards": return <ResearchCardsPage />;
     case "btopt": return <BacktestOptimizePage />;
     case "factorlab": return <FactorMinePage />;
@@ -79,10 +88,18 @@ function HubContent({ sub }: { sub: string }) {
 
 /** 应用骨架：左侧 4 入口导航 + 枢纽页（二级 Tab）。 */
 export default function App() {
-  const [hub, setHub] = useState<HubKey>("today");
-  const [sub, setSub] = useState<string>("today");
+  const [{ hub, sub }, setNav] = useState<{ hub: HubKey; sub: string }>(initialNav);
+  const setHub = (h: HubKey) => setNav((n) => ({ ...n, hub: h }));
+  const setSub = (s: string) => setNav((n) => ({ ...n, sub: s }));
   const { mode, colors, toggle } = useTheme();
   const sb = sidebarTheme;
+
+  // 地址栏 hash 跟随当前页：刷新不回首页、也方便存链接直达（如 /#wechat）
+  useEffect(() => {
+    if (window.location.hash.replace(/^#/, "") !== sub) {
+      window.history.replaceState(null, "", `#${sub}`);
+    }
+  }, [sub]);
 
   // 跨页跳转：dispatch(new CustomEvent("quant-nav", { detail: { tab } }))，tab 可为新旧任意 tab 名
   useEffect(() => {

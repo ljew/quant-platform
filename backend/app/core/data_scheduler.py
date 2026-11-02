@@ -397,6 +397,11 @@ def start_data_scheduler(enabled: bool | None = None) -> threading.Thread:
     """启动调度 daemon 线程。enabled 缺省读 env QUANT_DATA_SCHEDULE。"""
     if enabled is None:
         enabled = os.getenv("QUANT_DATA_SCHEDULE", "0") == "1"
+    # 启动时先清理上次遗留的 RUNNING 僵尸。
+    # 原逻辑只在「下次 ETL 超时」的异常分支里清，成功路径不清 →
+    # 一旦某次管道卡死、之后每次都成功，那条 RUNNING 会永远挂着，监控一直误判。
+    # 服务刚启动时不可能有真正在跑的管道（子进程已随旧进程退出），此处清理安全。
+    _mark_zombie_runs_failed()
     _status["enabled"] = enabled
     t = threading.Thread(target=_loop, args=(enabled,), daemon=True, name="data-scheduler")
     t.start()

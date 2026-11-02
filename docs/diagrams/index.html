@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>实盘系统架构图集</title>
+<style>
+body{margin:0;padding:32px;background:#F7F7F5;color:#2C2C2A;font-family:system-ui,-apple-system,'PingFang SC',sans-serif;}
+h1{font-size:18px;font-weight:500;margin:0 0 6px;}
+p.sub{font-size:13px;color:#5F5E5A;margin:0 0 28px;}
+figure{margin:0 0 36px;background:#fff;border:1px solid rgba(0,0,0,.12);border-radius:12px;padding:20px;overflow:auto;}
+figcaption{font-size:14px;font-weight:500;margin-bottom:4px;}
+figure p{font-size:12px;color:#5F5E5A;margin:0 0 16px;}
+figure img{display:block;width:100%;max-width:680px;}
+</style>
+</head>
+<body>
+<h1>实盘系统架构图集</h1>
+<p class="sub">quant-platform · 生成于 2026-10-31 · 合规前提：平台侧决策，终端侧执行，人工摆渡为唯一通道</p>
+
+<figure>
+<figcaption>1 · 整体技术架构</figcaption>
+<p>外部数据源 → 平台侧 L1–L7 → 人工摆渡 → 终端侧 QMT 沙箱 → 券商柜台 / 交易所</p>
+<img src="overview-architecture.svg" alt="整体技术架构图">
+</figure>
+
+<figure>
+<figcaption>2 · 数据流程（一日闭环）</figcaption>
+<p>T 日 17:00 到 T+1 日 20:00，每步标注真正落地的数据实体；红框为人工搬运环节</p>
+<img src="data-flow.svg" alt="数据流程图">
+</figure>
+
+<figure>
+<figcaption>3 · 平台与终端的边界</figcaption>
+<p>终端封闭后两侧的职能切分与唯一通道</p>
+<img src="live-architecture.svg" alt="平台与终端边界图">
+</figure>
+
+<figure>
+<figcaption>4 · 平台侧分层细节</figcaption>
+<p>L0–L4 Medallion 分层与 ETL / API / 前端的对应关系</p>
+<img src="live-platform-layers.svg" alt="平台分层图">
+</figure>
+
+<figure>
+<figcaption>5 · 终端侧下单链路</figcaption>
+<p>策略 → QMT 客户端 → 券商柜台 → 交易所 四段链路</p>
+<img src="live-terminal-chain.svg" alt="终端下单链路图">
+</figure>
+</body>
+</html>

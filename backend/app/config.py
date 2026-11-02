@@ -76,6 +76,16 @@ class Settings(BaseSettings):
     # 可用环境变量 QUANT_FRONTEND_DIR 显式覆盖。
     frontend_dir: str = str(BASE_DIR / "web" / "dist")
 
+    # —— 公众号模块数据目录 ——
+    # 存放 knowledge.db（全文库）、vault/（Markdown 镜像）、state/。
+    # 容器内代码在 /app、数据挂载在 /data，compose 用 QUANT_WECHAT_DATA_DIR=/data/wechat 覆盖；
+    # 本机运行则自动落到 <项目根>/data/wechat。
+    wechat_data_dir: str = str(DATA_DIR / "wechat")
+
+    # 公众号每日增量抓取调度（每天 08:20 / 20:40 两次，只抓近 7 天）。
+    # crawl_content.py 只读挂载的 wewe-rss.db，不依赖宿主机 HTTP 服务，所以能跑在容器里。
+    wechat_schedule: bool = True
+
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")

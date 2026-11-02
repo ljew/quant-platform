@@ -187,6 +187,7 @@ def _run_single(db, req, meta, params, start=None, end=None):
     engine = BacktestEngine(
         bars, initial_cash=req.initial_cash,
         commission=req.commission, slippage=req.slippage,
+        symbol=req.symbol,   # 按板块取涨跌停幅度，避免一刀切固定 10%
     )
     try:
         return engine.run(meta["cls"], params)

@@ -134,6 +134,22 @@ def data_health_endpoint():
     return run_rules(SessionLocal())
 
 
+@router.get("/framework-health")
+def framework_health_endpoint():
+    """框架四层体检（调度 / 编排 / 数据 / 研究）—— 驾驶舱状态带的数据源。
+
+    与 scripts/daily_health.py 同源（app.services.framework_health），
+    命令行和页面看到的结论一致。
+    """
+    from app.services.framework_health import framework_health
+
+    db = SessionLocal()
+    try:
+        return framework_health(db)
+    finally:
+        db.close()
+
+
 @router.get("/holiday-mode")
 def holiday_mode_get():
     """节假日静默状态：auto=非交易日自动静默，on/off=手动覆盖。"""

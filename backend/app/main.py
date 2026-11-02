@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings, BASE_DIR
 from app.database import init_db
-from app.routers import data, market, strategy, paper, hedge, monitor, factor, llm, signal, agent, news, auto, research
+from app.routers import data, market, strategy, paper, hedge, monitor, factor, llm, signal, agent, news, auto, research, live_ops, wechat
 from app.schemas import HealthResponse
 
 import os
@@ -28,15 +28,18 @@ app.include_router(data.router, prefix=settings.api_prefix)
 app.include_router(strategy.router, prefix=settings.api_prefix)
 app.include_router(paper.router, prefix=settings.api_prefix)
 app.include_router(hedge.router, prefix=settings.api_prefix)
-# 实盘路由按 2026-09-30 决策摘除（合并设计中 P1-1）：平台范围不含实盘。
-# 代码保留在 app/routers/live.py，需要时恢复下面一行即可。
-# app.include_router(live.router, prefix=settings.api_prefix)
+# 实盘：2026-09-30 曾按「平台范围不含实盘」摘除（live.py，单笔下单 demo）。
+# 2026-10-28 决策变更——上实盘，但形态不同：平台只做「数据与决策」，不做下单。
+# 因此启用 live_ops（只读 + 成交录入），旧的 live.py 仍不启用：
+# 它硬编码 SimulatedBroker 且提供下单接口，与「个人不得外接券商」的合规边界冲突。
+app.include_router(live_ops.router, prefix=settings.api_prefix)
 app.include_router(monitor.router, prefix=settings.api_prefix)
 app.include_router(factor.router, prefix=settings.api_prefix)
 app.include_router(llm.router, prefix=settings.api_prefix)
 app.include_router(signal.router, prefix=settings.api_prefix)
 app.include_router(agent.router, prefix=settings.api_prefix)
 app.include_router(news.router, prefix=settings.api_prefix)
+app.include_router(wechat.router, prefix=settings.api_prefix)
 app.include_router(auto.router, prefix=settings.api_prefix)
 app.include_router(research.router, prefix=settings.api_prefix)
 
@@ -60,6 +63,19 @@ def on_startup():
     # 自动研究闭环：每日挖矿（交易日 20:47）+ 每周复盘（周六 10:15），均幂等可补跑
     from app.services.auto_research import start_auto_scheduler
     start_auto_scheduler()
+    # 看门狗：每 10 分钟四层体检（调度/编排/数据/研究），异常发邮件告警；
+    # 交易日 17:35 后仍无当日编排 → 自动补跑一次（幂等）。进程挂掉由 launchd 兜。
+    from app.services.watchdog import start_watchdog
+    start_watchdog()
+    # 公众号每日增量抓取（08:20 / 20:40）：只读挂载的 wewe-rss.db 抓正文进 knowledge.db，
+    # 不依赖宿主机 wewe-rss 的 HTTP 接口，所以能在这里跟着后端常驻。
+    try:
+        from app.core.wechat_scheduler import start_wechat_scheduler
+        start_wechat_scheduler()
+    except Exception as _e:  # noqa: BLE001
+        # 公众号是附加模块，起不来不能拖垮主服务
+        import logging
+        logging.getLogger(__name__).warning("公众号调度器启动失败：%s", _e)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["meta"])

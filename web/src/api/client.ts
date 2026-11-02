@@ -169,6 +169,7 @@ export const api = {
     post<LlmTestResult>("/llm/test", p),
   // 数据健康度 + 数据流全景
   monitorHealth: () => get<HealthReport>(`/monitor/health-report`),
+  frameworkHealth: () => get<FrameworkHealth>(`/monitor/framework-health`),
   holidayMode: () => get<HolidayMode>(`/monitor/holiday-mode`),
   setHolidayMode: (mode: "auto" | "on" | "off") =>
     put<HolidayMode>(`/monitor/holiday-mode`, { mode }),
@@ -331,6 +332,24 @@ export interface HolidayMode {
   trading_day: boolean;
   next_trading_day: string | null;
 }
+/** 框架四层体检（调度/编排/数据/研究）—— /monitor/framework-health */
+export interface FrameworkHealthItem {
+  label: string;
+  status: "OK" | "WARN" | "FAIL";
+  detail: string;
+}
+export interface FrameworkHealthLayer {
+  key: string;
+  name: string;
+  status: "OK" | "WARN" | "FAIL";
+  items: FrameworkHealthItem[];
+}
+export interface FrameworkHealth {
+  checked_at: string;
+  worst: "OK" | "WARN" | "FAIL";
+  layers: FrameworkHealthLayer[];
+}
+
 export interface HealthReport {
   overall_score: number;
   overall_status: "healthy" | "warn" | "error";
@@ -768,4 +787,50 @@ export const researchApi = {
   card: (id: number) => get<ResearchCardItem>(`/research/cards/${id}`),
   cardSignals: (id: number, date?: string) =>
     get<CardSignalsResp>(`/research/cards/${id}/signals${date ? `?date=${date}` : ""}`),
+};
+
+// —— 公众号阅读（/wechat/*，数据来自 knowledge.db 全文库）——
+export interface WechatStats {
+  available: boolean; msg?: string;
+  n?: number; mps?: number;
+  first_date?: string; last_date?: string; stale_days?: number | null;
+  today?: number; last7d?: number; total_chars?: number;
+}
+export interface WechatMp {
+  mp_id: string; mp_name: string; n: number; last_ts: number;
+  last_date: string; n7d: number;
+}
+export interface WechatArticle {
+  id: string; mp_id: string; mp_name: string; title: string;
+  author?: string; publish_time: number; publish_date?: string;
+  url: string; cover?: string;
+  digest: string; chars: number;
+}
+export interface WechatArticleDetail extends Omit<WechatArticle, "digest"> {
+  content_text: string; fetched_date?: string;
+}
+export interface WechatListResp {
+  items: WechatArticle[]; total: number; offset?: number; limit?: number;
+  db_missing?: boolean; error?: string;
+}
+export interface WechatDailyResp {
+  date: string; items: WechatArticle[]; n?: number; error?: string;
+}
+export interface WechatTrendResp { items: { date: string; n: number }[]; days: number }
+
+export const wechatApi = {
+  stats: () => get<WechatStats>("/wechat/stats"),
+  mps: (limit = 300) => get<{ items: WechatMp[]; n: number }>(`/wechat/mps?limit=${limit}`),
+  articles: (p: { mp_id?: string; q?: string; since_days?: number; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (p.mp_id) qs.set("mp_id", p.mp_id);
+    if (p.q) qs.set("q", p.q);
+    if (p.since_days) qs.set("since_days", String(p.since_days));
+    qs.set("limit", String(p.limit ?? 30));
+    qs.set("offset", String(p.offset ?? 0));
+    return get<WechatListResp>(`/wechat/articles?${qs.toString()}`);
+  },
+  article: (id: string) => get<WechatArticleDetail>(`/wechat/article/${encodeURIComponent(id)}`),
+  daily: (date = "") => get<WechatDailyResp>(`/wechat/daily${date ? `?date=${date}` : ""}`),
+  trend: (days = 14) => get<WechatTrendResp>(`/wechat/trend?days=${days}`),
 };
