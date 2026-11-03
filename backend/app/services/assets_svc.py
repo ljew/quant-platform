@@ -279,12 +279,29 @@ def assets_report(db, force: bool = False) -> dict:
         "status": "ok" if enabled_reg else "empty",
     }
 
+    # —— 「没有启用中的挖掘因子」不是数据故障 ——
+    # factor_mined_daily 的内容来自 factor_registry 里 status=enabled 的表达式。
+    # 一条启用因子都没有时，compute_mined_factors 跑出来必然是 0 行，数据集就停在
+    # 上次有因子的日期；旧逻辑把它判 stale、把注册表判 empty，于是页面长期挂着
+    # 「2 项异常」，一键修复每次都跑一遍必然 0 行的管道，永远修不好 —— 它在修一个
+    # 不存在的问题。2026-11-03 实测：注册表只有一条 disabled 的 test 因子。
+    # 这里降级为 na（不参与 verdict、不进 _bad_datasets、不作为修复目标）。
+    if not items.get("factor_registry", {}).get("rows"):
+        reg = items.get("factor_registry")
+        if reg:
+            reg["status"] = "na"
+            reg["note"] = f"共登记 {reg['symbols']} 个，启用 0 个（无启用因子，属正常状态）"
+        mined = items.get("factor_mined_daily")
+        if mined:
+            mined["status"] = "na"
+            mined["note"] = "无启用挖掘因子，无需更新"
+
     # —— 分组输出 ——
     groups = []
     for key, label, desc in _GROUPS:
         gitems = [v for v in items.values() if v["group"] == key]
         # 组内排序：有问题的排前面
-        order = {"empty": 0, "stale": 1, "warn": 2, "ok": 3}
+        order = {"empty": 0, "stale": 1, "warn": 2, "ok": 3, "na": 4}
         gitems.sort(key=lambda x: order.get(x["status"], 9))
         n_bad = sum(1 for x in gitems if x["status"] in ("stale", "empty"))
         groups.append({

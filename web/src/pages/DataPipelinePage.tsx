@@ -5,13 +5,16 @@ import { useTheme, ThemeColors } from "../theme";
 
 /** 数据管道页：数据资产 → 源头 → 血缘 → 处理步骤 → 任务执行 → 健康度。 */
 
-type Status = "ok" | "warn" | "stale" | "empty" | "RUNNING";
+type Status = "ok" | "warn" | "stale" | "empty" | "na" | "RUNNING";
 
 const STATUS_META: Record<string, { text: string; short: string }> = {
   ok: { text: "已更新至最新交易日", short: "最新" },
   warn: { text: "滞后", short: "滞后" },
   stale: { text: "已过期", short: "过期" },
   empty: { text: "无数据", short: "空" },
+  // na：这类数据集当前「压根没有需要算的东西」（如没有启用中的挖掘因子），
+  // 不是故障，也不该进一键修复；显示成中性灰而不是红。
+  na: { text: "无需更新（不适用）", short: "不适用" },
 };
 
 function statusColor(s: string, c: ThemeColors): string {

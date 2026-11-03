@@ -31,8 +31,21 @@ function RunRow({ r, onView }: { r: AutoRun; onView: (id: number) => void }) {
         </span>
       </td>
       <td style={{ padding: "8px 10px", borderBottom: `1px solid ${colors.border}` }}>
-        <Badge text={r.status === "SUCCESS" ? "成功" : r.status === "RUNNING" ? "运行中" : "失败"}
-          color={r.status === "SUCCESS" ? "#1e8449" : r.status === "RUNNING" ? "#b9770e" : "#c0392b"} soft />
+        <Badge
+          text={
+            r.status === "SUCCESS" ? "成功"
+              : r.status === "RUNNING" ? "运行中"
+              : r.status === "SKIPPED" ? "已暂停"
+              : "失败"
+          }
+          // SKIPPED = 任务被主动暂停（如 GP 挖矿 M2-1），不是异常，
+          // 显示中性灰，避免一屏红把真正的失败淹掉。
+          color={
+            r.status === "SUCCESS" ? "#1e8449"
+              : r.status === "RUNNING" ? "#b9770e"
+              : r.status === "SKIPPED" ? "#7f8c8d"
+              : "#c0392b"
+          } soft />
       </td>
       <td style={{ padding: "8px 10px", borderBottom: `1px solid ${colors.border}`, fontSize: 12.5, color: colors.muted }}>
         {r.error ? <span style={{ color: colors.up }}>{r.error}</span> : brief}

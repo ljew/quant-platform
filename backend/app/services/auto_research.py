@@ -84,12 +84,19 @@ def _new_run(db: Session, job: str, trigger: str):
 
 
 def _finish_run(db: Session, run_id: int, ok: bool, summary: dict,
-                report_path: str | None = None, error: str | None = None) -> None:
+                report_path: str | None = None, error: str | None = None,
+                status: str | None = None) -> None:
+    """记账。status 可显式指定，用于 SKIPPED（主动跳过≠失败）。
+
+    为什么要有第三态：GP 挖矿 2026-10-08 起被主动暂停（M2-1），但调度器每天照常
+    触发、代码把它当异常抛出 → 运行记录里每天一条「失败」，页面上看就是一屏红。
+    主动跳过和真的跑挂了必须区分，否则告警和人工巡检都会被噪音淹没。
+    """
     from app.models import AutoResearchRun
 
     run = db.get(AutoResearchRun, run_id)
     if run:
-        run.status = "SUCCESS" if ok else "FAILED"
+        run.status = status or ("SUCCESS" if ok else "FAILED")
         run.summary_json = json.dumps(summary, ensure_ascii=False, default=str)
         run.report_path = report_path
         run.error = (error or "")[:500] or None
@@ -124,6 +131,10 @@ def _mining_body(db: Session, run_id: int, cfg: dict) -> dict:
         db, pop_size=int(cfg["mining_pop"]), generations=int(cfg["mining_gens"]),
         top_k=int(cfg["mining_top_k"]),
     )
+    if result.get("disabled"):
+        # 主动暂停：不是失败。返回标记，由调用方记成 SKIPPED。
+        return {"paused": True, "reason": result.get("error", "GP 挖矿已暂停"),
+                "resume_hint": result.get("resume_hint", "")}
     if not result.get("ok"):
         raise RuntimeError(result.get("error", "GP 挖掘失败"))
 
@@ -207,7 +218,11 @@ def run_mining(trigger: str = "manual") -> int:
         db = SessionLocal()
         try:
             summary = _mining_body(db, run.id, load_config())
-            _finish_run(db, run.id, True, summary)
+            if summary.get("paused"):
+                _finish_run(db, run.id, True, summary, status="SKIPPED",
+                            error=summary.get("reason"))
+            else:
+                _finish_run(db, run.id, True, summary)
         except Exception as exc:  # noqa: BLE001
             logger.exception("自动挖矿失败")
             _finish_run(db, run.id, False, {}, error=str(exc))
@@ -426,8 +441,43 @@ def _already_ran_today(job: str) -> bool:
         db.close()
 
 
+def _reap_zombie_runs(older_than_hours: int = 2) -> int:
+    """把卡在 RUNNING 的历史运行标成 FAILED（进程被杀/重启导致没写结束时间）。
+
+    不加这条的后果：2026-10-08 有一条挖矿 RUNNING 卡了 26 天，页面「最近一次挖矿」
+    永远显示「运行中」，既看不出真实状态，也让 _RUN_LOCK 之外的状态全不可信。
+    """
+    from app.database import SessionLocal
+    from app.models import AutoResearchRun
+
+    cutoff = datetime.now() - timedelta(hours=older_than_hours)
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            select(AutoResearchRun).where(
+                AutoResearchRun.status == "RUNNING",
+                AutoResearchRun.started_at < cutoff,
+            )
+        ).scalars().all()
+        for r in rows:
+            r.status = "FAILED"
+            r.error = r.error or f"进程中断，重启时清理（卡住超过 {older_than_hours}h）"
+            r.finished_at = datetime.now()
+        if rows:
+            db.commit()
+            logger.warning("清理了 %d 条卡住的自动研究运行记录", len(rows))
+        return len(rows)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("清理僵尸运行记录失败: %s", e)
+        return 0
+    finally:
+        db.close()
+
+
 def start_auto_scheduler() -> None:
     """自动研究调度线程（60s 一跳，幂等 + 当日/当周补跑）。"""
+    _reap_zombie_runs()          # 启动先清理上一条进程留下的 RUNNING
+
     def _loop() -> None:
         while True:
             try:
