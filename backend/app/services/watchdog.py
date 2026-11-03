@@ -20,10 +20,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import threading
 from datetime import datetime
+from pathlib import Path
 
+from app.config import DATA_DIR
 from app.database import SessionLocal
 from app.services.framework_health import OK
 
@@ -40,6 +43,35 @@ _state: dict = {
     "last_heal": None,
     "last_error": None,
 }
+
+# 告警记账持久化。为什么必须落盘：_state 在内存里，容器一重启 last_fp/last_sent_at
+# 就归零 → 同一个故障会重新发一轮告警（2026-11-02 夜间 OOM 反复重启，
+# 同一指纹连发 5 封，是典型的「狼来了」制造机）。
+_STATE_FILE = Path(DATA_DIR) / "state" / "watchdog.json"
+
+
+def _load_state() -> None:
+    try:
+        if _STATE_FILE.exists():
+            saved = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+            for k in ("last_fp", "last_sent_at", "last_status", "last_heal"):
+                if k in saved:
+                    _state[k] = saved[k]
+    except Exception as e:  # noqa: BLE001
+        logger.warning("看门狗状态读取失败（按全新处理）：%s", e)
+
+
+def _save_state() -> None:
+    try:
+        _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _STATE_FILE.write_text(
+            json.dumps({k: _state[k] for k in
+                        ("last_fp", "last_sent_at", "last_status", "last_heal")},
+                       ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("看门狗状态写入失败：%s", e)
 
 # 用 uvicorn 的 logger：应用自建的 logger 在容器里没有 handler，日志会石沉大海
 # （`docker logs` 看不到，等于没法确认看门狗到底跑没跑）。
@@ -144,6 +176,7 @@ def check_once(send_mail: bool = True) -> dict:
                                            dedup_key=f"watchdog-recover|{health['checked_at'][:10]}")
                 summary["mail"] = "recovered" if r.get("ok") and not r.get("skipped") else "skip"
             _state.update(last_fp="", last_status=OK)
+            _save_state()
             return summary
 
         summary["heal"] = _maybe_heal(db, health)
@@ -153,13 +186,14 @@ def check_once(send_mail: bool = True) -> dict:
             subject, html = _render(health)
             r = mailer.send_email_html(
                 db, subject, html,
-                dedup_key=f"watchdog|{fp}|{health['checked_at'][:13]}",  # 同小时不重复
+                dedup_key=f"watchdog|{fp}|{health['checked_at'][:10]}",  # 同指纹每天最多一封
             )
             ok = bool(r.get("ok")) and not r.get("skipped")
             summary["mail"] = "sent" if ok else ("skipped" if r.get("skipped") else "fail")
             if ok:
                 _state["last_sent_at"] = now_ts
         _state.update(last_fp=fp, last_status=health["worst"])
+        _save_state()
         return summary
     finally:
         db.close()
@@ -168,6 +202,8 @@ def check_once(send_mail: bool = True) -> dict:
 def start_watchdog(interval_sec: int | None = None) -> None:
     """启动看门狗线程（daemon，随进程退出）。"""
     interval = int(interval_sec or CHECK_INTERVAL_SEC)
+
+    _load_state()
 
     def _loop() -> None:
         # 启动后先等 2 分钟：避免与 init_db/调度器启动抢资源，也避开冷启动噪音

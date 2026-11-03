@@ -19,6 +19,10 @@ logger = logging.getLogger("data_scheduler")
 # 每个交易日 19:00 后执行一次数据管道（tushare 收盘数据就绪 + 因子计算）
 RUN_HOUR, RUN_MIN = 19, 0  # tushare 日线晚间就绪，19:00 保证当日数据可得
 _CHECK_INTERVAL = 60  # 秒
+# 失败重试策略：不要把「瞬时故障」升级成「当天不再跑」。
+# 2026-09~11 这个模式在采集/编排/验证上各踩过：记账写在成功之前 = 一次抖动吃掉一整天。
+_MAX_RETRY = 3        # 同一任务每天最多重试 3 次
+_RETRY_GAP = 900      # 重试最小间隔 15 分钟（ETL 要打 tushare，不能每 60s 重来）
 # 当日日线数据的发布时点（A 股 15:00 收盘，各源通常 16:00 后可得）
 _DATA_READY_HOUR = 16
 # 管道单次整体超时（秒）：数据源在发布临界/网络黑洞时可能长时间无进展，
@@ -356,15 +360,26 @@ def _orchestrator_ran_today() -> bool:
 
 def _loop(enabled: bool) -> None:
     last_run_date = ""
+    # 当日失败重试记账。为什么必须有：last_run_date 只要写在"成功之前"，
+    # 一次瞬时故障（数据源抖动、瞬时 DNS）就会吃掉当天全部重试机会 ——
+    # 这个模式在公众号采集、编排器、验证上各踩过一次（2026-09~11 共四次）。
+    retry = {"date": "", "etl_n": 0, "etl_ts": 0.0, "ver_n": 0, "ver_ts": 0.0}
     while True:
         try:
             now = datetime.now()
+            if retry["date"] != _today_str():
+                retry = {"date": _today_str(), "etl_n": 0, "etl_ts": 0.0,
+                         "ver_n": 0, "ver_ts": 0.0}
             if enabled:
                 # 定时触发（交易日 19:00 后）或断供自愈（只要该有的数据没到就补跑）
                 due = (_is_trading_day(now)
                        and (now.hour, now.minute) >= (RUN_HOUR, RUN_MIN))
                 stale = _is_stale(now)
-                if (due or stale) and last_run_date != _today_str():
+                etl_ready = (
+                    retry["etl_n"] < _MAX_RETRY
+                    and (not retry["etl_ts"] or now.timestamp() - retry["etl_ts"] >= _RETRY_GAP)
+                )
+                if (due or stale) and last_run_date != _today_str() and etl_ready:
                     # P4 去重（2026-09-30）：研究流水线（Orchestrator，17:30）已包含
                     # 完整数据管道；若其今天已 SUCCESS 则 19:00 这轮数据日更跳过
                     # （策略验证仍照常），避免同一份数据一天跑两遍。
@@ -378,31 +393,59 @@ def _loop(enabled: bool) -> None:
                                     "断供自愈" if (stale and not due) else "定时")
                         _status["last_run_at"] = now.isoformat(timespec="seconds")
                         _status["runs_total"] += 1
-                        _run_update()  # 数据日更（失败已内部降级并记录）
+                        ok = _run_update()
+                        if ok:
+                            last_run_date = _today_str()
+                            retry.update(etl_n=0, etl_ts=0.0)
+                        else:
+                            retry["etl_n"] += 1
+                            retry["etl_ts"] = now.timestamp()
+                            left = _MAX_RETRY - retry["etl_n"]
+                            logger.warning("数据日更失败（第 %d/%d 次），%s",
+                                           retry["etl_n"], _MAX_RETRY,
+                                           f"{_RETRY_GAP // 60} 分钟后重试" if left > 0
+                                           else "今日不再重试")
+                            if left <= 0:
+                                last_run_date = _today_str()  # 放弃今日，避免每 60s 空转
                     # 指数成分(PIT)月度快照：当日更成功后巡检当月是否缺快照（幂等，月频）
                     try:
                         _refresh_membership_if_due(now)
                     except Exception as e:  # noqa: BLE001
                         logger.warning("成分快照巡检异常: %s", e)
 
-                    # 策略自动验证：数据更新之后、每晚一次（20:30 后）
+                    # 策略自动验证：数据更新之后、每晚一次（20:30 后）。
+                    # 成功才记 last_run_date；失败按 _RETRY_GAP 重试，最多 _MAX_RETRY 次。
                     v = _status["verify"]
+                    ver_ready = (
+                        retry["ver_n"] < _MAX_RETRY
+                        and (not retry["ver_ts"]
+                             or now.timestamp() - retry["ver_ts"] >= _RETRY_GAP)
+                    )
                     if (now.hour, now.minute) >= (VERIFY_HOUR, VERIFY_MIN) \
-                            and v.get("last_run_date") != _today_str():
-                        v["last_run_date"] = _today_str()
+                            and v.get("last_run_date") != _today_str() and ver_ready:
                         v["last_run_at"] = now.isoformat(timespec="seconds")
                         ok, msg = _run_verify(_VERIFY_STRATEGIES)
                         if ok:
+                            v["last_run_date"] = _today_str()
                             v["last_success"] = now.isoformat(timespec="seconds")
                             v["last_error"] = None
                             v["reports"] = [
                                 f"data/reports/strategy_verify_{k.strip()}.html"
                                 for k in _VERIFY_STRATEGIES.split(",") if k.strip()
                             ]
+                            retry.update(ver_n=0, ver_ts=0.0)
                             logger.info("策略验证完成：%s", _VERIFY_STRATEGIES)
                         else:
                             v["last_error"] = msg
-                    last_run_date = _today_str()
+                            retry["ver_n"] += 1
+                            retry["ver_ts"] = now.timestamp()
+                            if retry["ver_n"] >= _MAX_RETRY:
+                                v["last_run_date"] = _today_str()
+                                logger.warning("策略验证连续失败 %d 次，今日不再重试",
+                                               retry["ver_n"])
+                            else:
+                                logger.warning("策略验证失败（第 %d/%d 次），%s 分钟后重试",
+                                               retry["ver_n"], _MAX_RETRY, _RETRY_GAP // 60)
         except Exception as e:  # noqa: BLE001
             logger.error("数据调度循环异常: %s", e)
         time.sleep(_CHECK_INTERVAL)

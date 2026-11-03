@@ -1,4 +1,4 @@
-"""框架体检：四层健康状态的统一数据源。
+"""框架体检：五层健康状态的统一数据源。
 
 被两处消费：
   - scripts/daily_health.py   命令行体检（退出码可接 cron）
@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -185,13 +187,69 @@ def _check_research(db) -> dict[str, Any]:
     return {"key": "research", "name": "研究层", "status": _worst([i["status"] for i in items]), "items": items}
 
 
+# ── 5. 运行时（磁盘 / 库可用性 / 采集新鲜度）──────────────
+def _check_runtime(db) -> dict[str, Any]:
+    """补上最容易「悄悄坏掉」的三项：磁盘满、SQLite 打不开、采集静默停摆。
+
+    为什么不查 quick_check：主库 5GB，全表校验要几十秒且每次体检都跑，
+    会把看门狗拖成负担。这里只做「能打开 + 能读 schema」，真正坏掉的库
+    连 sqlite_master 都读不了，够用。
+    """
+    items = []
+    # 1) 磁盘水位
+    try:
+        from app.config import DATA_DIR
+
+        st = os.statvfs(str(DATA_DIR))
+        free_pct = st.f_bavail / max(st.f_blocks, 1) * 100
+        free_gb = st.f_bavail * st.f_frsize / 1024 ** 3
+        s = OK if free_pct >= 15 else (WARN if free_pct >= 8 else FAIL)
+        items.append(_item("磁盘剩余", s, f"{free_gb:.0f} GB · {free_pct:.0f}%"))
+    except Exception as e:  # noqa: BLE001
+        items.append(_item("磁盘剩余", WARN, f"读取失败 {type(e).__name__}"))
+
+    # 2) 两个库能不能打开
+    for label, name in (("SQLite 主库", "quant_dev.db"), ("公众号库", "wechat/knowledge.db")):
+        try:
+            from app.config import DATA_DIR
+
+            p = Path(DATA_DIR) / name
+            if not p.exists():
+                items.append(_item(label, WARN, "文件不存在"))
+                continue
+            con = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=5)
+            con.execute("SELECT count(*) FROM sqlite_master").fetchone()
+            con.close()
+            items.append(_item(label, OK, f"{p.stat().st_size / 1024 ** 3:.1f} GB"))
+        except Exception as e:  # noqa: BLE001
+            items.append(_item(label, FAIL, f"{type(e).__name__}: {str(e)[:40]}"))
+
+    # 3) 采集新鲜度：公众号连续两天无新增 → 大概率凭据失效或调度挂了
+    try:
+        from app.config import DATA_DIR
+
+        p = Path(DATA_DIR) / "wechat" / "knowledge.db"
+        con = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=5)
+        last = con.execute("SELECT max(fetched_at) FROM articles").fetchone()[0]
+        con.close()
+        if last:
+            hours = (datetime.now().timestamp() - last) / 3600
+            s = OK if hours <= 30 else (WARN if hours <= 54 else FAIL)
+            items.append(_item("采集新鲜度", s, f"{hours:.0f} 小时前写入"))
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {"key": "runtime", "name": "运行时", "status": _worst([i["status"] for i in items]), "items": items}
+
+
 def framework_health(db) -> dict[str, Any]:
-    """四层体检总入口。返回 {checked_at, worst, layers:[...]}"""
+    """五层体检总入口。返回 {checked_at, worst, layers:[...]}"""
     layers = [
         _check_scheduler(db),
         _check_orchestrator(db),
         _check_data(),
         _check_research(db),
+        _check_runtime(db),
     ]
     return {
         "checked_at": datetime.now().isoformat(timespec="seconds"),
