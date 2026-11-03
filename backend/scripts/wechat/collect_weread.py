@@ -215,8 +215,10 @@ def main() -> int:
 
     new = skip = fail = 0
     auth_error = ""
-    consec_fail = 0      # 连续「取列表」失败数，>=5 判为被限流
+    consec_fail = 0      # 连续「取列表」失败数（HTTP 层），>=5 判为被限流
+    consec_net = 0       # 连续网络错误（DNS/连接），>=3 判为网络不可用
     throttle = ""
+    net_error = ""
     for i, f in enumerate(feeds, 1):
         mp_id, mp_name = f["mp_id"], f.get("mp_name", "")
         try:
@@ -225,16 +227,30 @@ def main() -> int:
             # 2026-11-02 教训：interval=3s 时跑到第 22 个号就被限流，之后 89 个 cover
             # 请求全部秒失败，而原代码跳过 sleep 直接 continue —— 259s 就把 111 个号
             # 跑完并报「完成」，scheduler 判成功、last_error=null，是最坏的静默失败。
+            # 2026-11-03 教训：Mac 睡眠唤醒瞬间 DNS 未就绪（Name or service not known）
+            # 也被当成"限流"熔断，且该 slot 被记成 done → 整个上午不再重试。故两类分开。
             fail += 1
-            consec_fail += 1
-            print(f"[{i}/{len(feeds)}] 取列表失败 {mp_name}: {type(e).__name__}: {str(e)[:80]}")
-            if consec_fail >= 5:
-                throttle = (f"连续 {consec_fail} 个号取列表失败，疑似被限流"
-                            f"（已处理 {i}/{len(feeds)} 个号）")
-                break
+            msg = str(e)
+            is_net = not isinstance(e, urllib.error.HTTPError) and (
+                isinstance(e, urllib.error.URLError) or "Name or service not known" in msg
+            )
+            if is_net:
+                consec_net += 1
+                print(f"[{i}/{len(feeds)}] 网络不可用 {mp_name}: {msg[:70]}")
+                if consec_net >= 3:
+                    net_error = f"网络不可用（DNS/连接失败）：{msg[:90]}"
+                    break
+            else:
+                consec_fail += 1
+                print(f"[{i}/{len(feeds)}] 取列表失败 {mp_name}: {type(e).__name__}: {msg[:80]}")
+                if consec_fail >= 5:
+                    throttle = (f"连续 {consec_fail} 个号取列表失败，疑似被限流"
+                                f"（已处理 {i}/{len(feeds)} 个号）")
+                    break
             time.sleep(args.interval)   # 失败也要间隔，别把限流窗口打得更长
             continue
         consec_fail = 0
+        consec_net = 0
 
         if cover.get("errcode") in AUTH_ERR or cover.get("statusCode") == 401:
             auth_error = f"{cover.get('errcode')} {cover.get('errmsg', '')}"
@@ -302,16 +318,19 @@ def main() -> int:
     con.close()
     lock.unlink(missing_ok=True)
     secs = round(time.time() - t0, 1)
-    # 限流也算失败：111 个号里 89 个因限流没取到，绝不能报「完成 = 成功」
-    ok = not auth_error and not throttle
-    err = auth_error or throttle or None
+    # 限流/网络故障也算失败：111 个号里 89 个没取到，绝不能报「完成 = 成功」
+    ok = not auth_error and not throttle and not net_error
+    err = auth_error or throttle or net_error or None
     save_state(ok=ok, new=new, skip=skip, fail=fail,
                feeds=len(feeds), seconds=secs, error=err)
-    tail = f"｜{throttle}" if throttle else ""
+    tail = f"｜{throttle or net_error}" if (throttle or net_error) else ""
     print(f"完成：新增 {new} / 已最新 {skip} / 失败 {fail}，耗时 {secs}s{tail}")
     if auth_error:
         print("凭证失效 —— 需要重新扫码登录微信读书并更新 Cookie", file=sys.stderr)
         return 2
+    if net_error:
+        print(net_error, file=sys.stderr)
+        return 4
     if throttle:
         print(throttle, file=sys.stderr)
         return 3

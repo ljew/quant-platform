@@ -41,13 +41,22 @@ _status = {
     "runs_total": 0,
 }
 
-_done: set[str] = set()          # 已完成的时间点（形如 2026-11-02#08:20）
+_done: set[str] = set()          # 已完成（成功）的时间点（形如 2026-11-02#08:20）
+_retry: dict[str, dict] = {}     # 失败重试记账：key -> {attempts, last_ts}
+_MAX_ATTEMPTS = 3                # 同一 slot 每天最多试 3 次
+_RETRY_GAP = 600                 # 失败后至少隔 10 分钟再试（避开唤醒瞬间网络未就绪）
 _lock = threading.Lock()
 
 
 def get_status() -> dict:
     with _lock:
-        return {**_status, "done_today": sorted(k for k in _done if k.startswith(_today()))}
+        return {
+            **_status,
+            "done_today": sorted(k for k in _done if k.startswith(_today())),
+            "retry_today": {k: v["attempts"] for k, v in _retry.items()
+                            if k.startswith(_today())},
+            "max_attempts": _MAX_ATTEMPTS,
+        }
 
 
 def _today() -> str:
@@ -114,23 +123,36 @@ def _loop(enabled: bool) -> None:
                 now = datetime.now()
                 for h, m in SLOTS:
                     key = f"{_today()}#{h:02d}:{m:02d}"
-                    # 到点且今天这个 slot 还没跑 → 跑（服务在时间点之后才启动也会补跑）
-                    if (now.hour, now.minute) >= (h, m) and key not in _done:
-                        with _lock:
+                    if (now.hour, now.minute) < (h, m) or key in _done:
+                        continue
+                    # 失败不再当天一票否决：2026-11-03 Mac 睡眠唤醒瞬间 DNS 未就绪，
+                    # 08:20 那轮 5 个号就熔断退出，而 slot 已被记 done → 整个上午不再重试，
+                    # 当天 0 篇。改成「成功才记 done，失败最多重试 3 次、间隔 10 分钟」。
+                    st = _retry.get(key, {"attempts": 0, "last_ts": 0.0})
+                    if st["attempts"] >= _MAX_ATTEMPTS:
+                        continue
+                    if st["last_ts"] and now.timestamp() - st["last_ts"] < _RETRY_GAP:
+                        continue
+                    st["attempts"] += 1
+                    _retry[key] = st
+                    with _lock:
+                        _status["last_run_at"] = now.isoformat(timespec="seconds")
+                        _status["runs_total"] += 1
+                    ok, msg = _run_crawl()
+                    with _lock:
+                        if ok:
                             _done.add(key)
-                            _status["last_run_at"] = now.isoformat(timespec="seconds")
-                            _status["runs_total"] += 1
-                        ok, msg = _run_crawl()
-                        with _lock:
-                            if ok:
-                                _status["last_success"] = datetime.now().isoformat(timespec="seconds")
-                                _status["last_summary"] = msg
-                                _status["last_error"] = None
-                                logger.info("公众号抓取完成：%s", msg)
-                            else:
-                                _status["last_error"] = msg
-                                logger.warning("公众号抓取失败：%s", msg)
-                        break  # 一轮只处理一个 slot
+                            _retry.pop(key, None)
+                            _status["last_success"] = datetime.now().isoformat(timespec="seconds")
+                            _status["last_summary"] = msg
+                            _status["last_error"] = None
+                            logger.info("公众号抓取完成：%s", msg)
+                        else:
+                            st["last_ts"] = now.timestamp()
+                            _status["last_error"] = msg
+                            logger.warning("公众号抓取失败（第 %s/%s 次）：%s",
+                                           st["attempts"], _MAX_ATTEMPTS, msg)
+                    break  # 一轮只处理一个 slot
         except Exception as e:  # noqa: BLE001
             logger.warning("公众号调度循环异常：%s", e)
         threading.Event().wait(_CHECK_INTERVAL)
