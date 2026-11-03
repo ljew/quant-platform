@@ -315,9 +315,14 @@ def assets_report(db, force: bool = False) -> dict:
 
     # —— 顶层结论 ——
     kline = items["kline_daily"]
-    # 财报的滞后是按季披露的结构性结果，不应占据「最滞后」位置
+    # 财报的滞后是按季披露的结构性结果，不应占据「最滞后」位置；
+    # status=na（如无启用挖掘因子，属「不适用」）与 status=ok（已达标）同样不占位。
+    # 「最滞后」只用于指路真正需要处理的数据集，否则会出现 verdict=ok、
+    # 顶部却仍挂「最滞后：挖掘因子（GP）滞后 19 个交易日」的自相矛盾（2026-11-03）。
     dated = [v for v in items.values()
-             if v.get("lag_trading_days") is not None and not v.get("by_period")]
+             if v.get("lag_trading_days") is not None
+             and not v.get("by_period")
+             and v["status"] not in ("na", "ok")]
     worst = max(dated, key=lambda x: x["lag_trading_days"]) if dated else None
     n_stale = sum(1 for v in items.values() if v["status"] == "stale")
     n_empty = sum(1 for v in items.values() if v["status"] == "empty")
