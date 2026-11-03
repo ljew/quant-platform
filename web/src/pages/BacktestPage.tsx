@@ -56,6 +56,12 @@ export default function BacktestPage() {
     setKey(k);
     const s = strategies.find((x) => x.key === k);
     if (s) {
+      // 策略声明了基准指数（如 national_team → sh000300）时，标的跟着切过去。
+      // 否则用户选了择时策略、标的却还留着默认个股，回测实际跑在茅台上，结论没意义。
+      if (s.index_symbol && s.index_symbol !== symbol) {
+        setSymbol(s.index_symbol);
+        setSug([]);
+      }
       setParams(defaultParams(s));
       setResult(null);
       setLastRun(null);
@@ -292,8 +298,11 @@ export default function BacktestPage() {
                 <KpiCard label="Calmar" value={calmar === null ? "—" : calmar.toFixed(2)}
                   sub="总收益 / |最大回撤|"
                   tone={(calmar ?? 0) >= 1 ? "accent" : "neutral"} colors={colors} />
+                <KpiCard label="基准收益" value={`${((result.benchmark_total_return || 0) * 100).toFixed(2)}%`}
+                  sub={`买入持有 ${result.benchmark_symbol || result.symbol}`}
+                  tone="neutral" colors={colors} />
                 <KpiCard label="超额收益" value={`${((result.excess_return || 0) * 100).toFixed(2)}%`}
-                  sub="vs 基准指数"
+                  sub="策略 − 基准"
                   tone={(result.excess_return || 0) >= 0 ? "up" : "down"} colors={colors} />
               </div>
 

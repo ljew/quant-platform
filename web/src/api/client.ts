@@ -47,6 +47,8 @@ export interface StrategyInfo {
   param_schema: ParamField[];
   multi_asset?: boolean;
   index_name?: string | null;
+  /** 该策略的基准指数行情代码（如 sh000300）。回测页切策略时用来自动填标的。 */
+  index_symbol?: string | null;
 }
 
 export interface KlineBar {
@@ -80,6 +82,8 @@ export interface BacktestResult {
   max_drawdown: number;
   trade_count?: number;
   benchmark_total_return?: number;
+  /** 基准的行情代码，单标的回测里就是标的自买入持有。 */
+  benchmark_symbol?: string;
   excess_return?: number;
   equity_curve?: { date: string; equity: number }[];
   trades?: {

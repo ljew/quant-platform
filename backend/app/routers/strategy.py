@@ -180,6 +180,17 @@ def _run_single(db, req, meta, params, start=None, end=None):
     _e = end or req.end
     bars = _load_bars(db, req.symbol, _s, _e, req.adj)
     if not bars:
+        # 单标的策略允许以「指数」为标的（如 national_team 的择时信号在 sh000300 上验证）。
+        # 个股表查不到时回退指数表，避免为指数新建一套并行链路。
+        # 指数无复权概念，adj 传 "none" 即可，_load_index_bars 内部会忽略它。
+        try:
+            bars = _load_index_bars(
+                db, req.symbol,
+                date.fromisoformat(_s), date.fromisoformat(_e), "none",
+            )
+        except Exception:  # noqa: BLE001
+            bars = []
+    if not bars:
         raise HTTPException(
             status_code=404,
             detail=f"未获取到 {req.symbol} 的行情数据（{_s}~{_e}）",
@@ -188,6 +199,9 @@ def _run_single(db, req, meta, params, start=None, end=None):
         bars, initial_cash=req.initial_cash,
         commission=req.commission, slippage=req.slippage,
         symbol=req.symbol,   # 按板块取涨跌停幅度，避免一刀切固定 10%
+        # 指数按「份」交易，没有 100 股/手 的约束。若沿用 lot_size=100，
+        # 沪深300(≈3000点)一手就是 30 万，仓位精度只剩 30%，调仓几乎全部被取整吃掉。
+        lot_size=1 if req.symbol.startswith(("sh000", "sz399")) else 100,
     )
     try:
         return engine.run(meta["cls"], params)
@@ -562,6 +576,18 @@ def _cache_index_bars(db: Session, symbol: str, fetched: list[dict]) -> None:
 # ——— 落库 ———
 def _persist(db, req, meta, params, result) -> Backtest:
     multi = meta.get("multi_asset", False)
+    # 单标的基准：引擎在每条净值点上已经带了 benchmark（标的自身买入持有），
+    # 但从未汇总成总收益率 → 库里 benchmark_total_return 恒 0，
+    # 前端「超额收益」于是永远显示 0.00%，看起来像没算。这里就地汇总。
+    bench_total = getattr(result, "benchmark_total_return", 0.0)
+    excess = getattr(result, "excess_return", 0.0)
+    if not multi:
+        eq = getattr(result, "equity_curve", None) or []
+        first = next((p for p in eq if getattr(p, "benchmark", 0)), None)
+        last = next((p for p in reversed(eq) if getattr(p, "benchmark", 0)), None)
+        if first and last and first.benchmark:
+            bench_total = last.benchmark / first.benchmark - 1
+            excess = result.total_return - bench_total
     record = Backtest(
         symbol=req.symbol,
         strategy_key=req.strategy,
@@ -583,9 +609,9 @@ def _persist(db, req, meta, params, result) -> Backtest:
         multi_asset=multi,
         universe_size=getattr(result, "universe_size", 0),
         symbols_used=getattr(result, "symbols_used", 0),
-        benchmark_symbol=meta.get("index_symbol", "") if multi else "",
-        benchmark_total_return=getattr(result, "benchmark_total_return", 0.0),
-        excess_return=getattr(result, "excess_return", 0.0),
+        benchmark_symbol=(meta.get("index_symbol", "") if multi else req.symbol),
+        benchmark_total_return=bench_total,
+        excess_return=excess,
         info_ratio=getattr(result, "info_ratio", 0.0),
         equity_curve_json=json.dumps(
             [{"date": e.date, "equity": e.equity, "benchmark": e.benchmark,
@@ -611,7 +637,7 @@ def _persist(db, req, meta, params, result) -> Backtest:
                 # 基准缺失标记（M1-4，2026-10-08）：excess_return=0 有两种含义——
                 # 「真实超额为零」与「从未计算基准」。旧实现两者都存 0，汇总时无法
                 # 区分，导致未设基准的回测混进效果统计。显式落库后可在筛选层隔离。
-                "benchmark_missing": not bool(meta.get("index_symbol", "") if multi else ""),
+                "benchmark_missing": not bool(bench_total),
                 "holdings": getattr(result, "holdings", []),
                 "industry_distribution": getattr(result, "industry_distribution", {}),
                 "factor_analysis": getattr(result, "factor_analysis", None),
@@ -1021,6 +1047,7 @@ def _to_result(r: Backtest, name: str, multi: bool) -> BacktestResult:
         win_rate=r.win_rate,
         trade_count=r.trade_count,
         round_trips=r.round_trips,
+        benchmark_symbol=r.benchmark_symbol or "",
         benchmark_total_return=r.benchmark_total_return,
         excess_return=r.excess_return,
         info_ratio=r.info_ratio,
@@ -1038,3 +1065,21 @@ def _to_result(r: Backtest, name: str, multi: bool) -> BacktestResult:
         hedged_max_drawdown=hedged.get("max_drawdown", 0.0),
         created_at=r.created_at.isoformat() if r.created_at else None,
     )
+
+
+# ——— NSI 信号运维（2026-11-03）———
+# national_team 策略依赖 /data/research/nsi_signal.csv。调度器每交易日 19:30 刷新，
+# 这里额外暴露查询与手动触发，便于排查「策略读数停在某天」这类问题。
+@router.get("/nsi/status", tags=["strategy"])
+def nsi_status():
+    """NSI 信号调度器状态 + 最近一次读数。"""
+    from app.core import nsi_scheduler
+    return nsi_scheduler.get_status()
+
+
+@router.post("/nsi/refresh", tags=["strategy"])
+def nsi_refresh():
+    """立即刷新 NSI 信号（同步执行，约 30–60s）。"""
+    from app.core import nsi_scheduler
+    ok, msg = nsi_scheduler.run_now()
+    return {"ok": ok, "message": msg, "status": nsi_scheduler.get_status()}

@@ -139,6 +139,7 @@ class BacktestResult(BaseModel):
     win_rate: float
     trade_count: int
     round_trips: int
+    benchmark_symbol: str = ""
     benchmark_total_return: float = 0.0
     excess_return: float = 0.0
     info_ratio: float = 0.0

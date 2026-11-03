@@ -40,6 +40,7 @@ from app.core.strategies.multi_factor import EnhancedFactorStrategy
 from app.core.strategies.chan_strategy import ChanStrategy
 from app.core.strategies.jk_series import JKFactorStrategy
 from app.core.strategies.xq_signal import XqSignalStrategy
+from app.core.strategies.national_team import NationalTeamStrategy
 
 
 def _int(key, label, default, mn, mx, step=1, group=None):
@@ -477,6 +478,38 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             _int("bi_gap", "笔最小间隔(根K线)", 4, 2, 20),
             _int("need_trend", "一买所需下降笔数", 2, 1, 5),
             _int("use_sell", "用缠论卖点平仓(1开/0关)", 1, 0, 1),
+        ],
+    },
+    "national_team": {
+        "key": "national_team",
+        "name": "国家队介入强度择时",
+        "description": (
+            "用宽基ETF份额的日频变化衡量「有组织承接资金」的介入强度（0-100分），"
+            "在基础仓位上只做加法：信号触发后 N 个交易日内满仓，其余时间回落到基础仓位。"
+            "信号源含 5 只核心宽基ETF份额 + 位置惩罚（750日分位压制牛市高位的假放量）。"
+            "实测（2018-2026，沪深300，10bp成本）：年化 1.52% vs 恒定70%仓位 0.27%，"
+            "累计换手 9 次/8年，年度胜率 5/9。⚠️ 该策略不预测涨跌，只在托底期提高仓位，"
+            "牛市年可能跑输满仓。详见 docs/NSI-SPEC.md。"
+        ),
+        "cls": NationalTeamStrategy,
+        "index_code": "000300",
+        "index_symbol": "sh000300",
+        "index_name": "沪深300",
+        "default_params": {
+            "signal_csv": "/data/research/nsi_signal.csv",
+            "base_position": 0.70,
+            "boost_position": 1.00,
+            "hold_days": 20,
+            "threshold": 0.0,
+            "hhi_threshold": 0.0,
+            "warmup_days": 0,
+        },
+        "param_schema": [
+            _float("base_position", "基础仓位", 0.70, 0.0, 1.0, 0.05, group="择时仓位"),
+            _float("boost_position", "触发后仓位", 1.00, 0.0, 1.0, 0.05, group="择时仓位"),
+            _int("hold_days", "触发后持续(交易日)", 20, 1, 60, 1, group="信号参数"),
+            _float("threshold", "阈值覆盖(0=用信号文件)", 0.0, 0.0, 100.0, 1.0, group="信号参数"),
+            _float("hhi_threshold", "申购集中度上限(0=关)", 0.0, 0.0, 1.0, 0.01, group="信号参数"),
         ],
     },
 }

@@ -60,6 +60,9 @@ services:
       # 代价是改代码即时生效、没有 review 环节 —— 语法错误会让容器起不来，
       # 出问题改回宿主机文件即可恢复，不必重建镜像。
       - ./backend/app:/app/app
+      # 前端产物也挂进来：改完 `cd web && npm run build` 只需 restart，
+      # 不必重建镜像（原来 dist 烤在镜像里，每次改 UI 都要 build 一遍）。
+      - ./web/dist:/frontend:ro
     ports:
       # 宿主 8000 直接对外（切换后宿主机不再跑 uvicorn）
       - "8000:8000"

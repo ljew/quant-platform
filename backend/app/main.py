@@ -77,6 +77,15 @@ def on_startup():
         import logging
         logging.getLogger(__name__).warning("公众号调度器启动失败：%s", _e)
 
+    # 国家队介入强度指数（NSI）每日信号：19:30 刷新 nsi_signal.csv，
+    # 供 national_team 策略读取。脚本缺失/更新失败只影响该策略，不影响主服务。
+    try:
+        from app.core.nsi_scheduler import start_nsi_scheduler
+        start_nsi_scheduler()
+    except Exception as _e:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("NSI 调度器启动失败：%s", _e)
+
 
 @app.get("/health", response_model=HealthResponse, tags=["meta"])
 def health():
