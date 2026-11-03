@@ -15,6 +15,24 @@ import os
 
 app = FastAPI(title=settings.app_name, version="0.2.0", debug=settings.debug)
 
+
+@app.middleware("http")
+async def _cache_headers(request, call_next):
+    """前端缓存策略：index.html 绝不缓存，带 hash 的静态资源长缓存。
+
+    为什么必须显式设置：StaticFiles 默认只给 ETag/Last-Modified，浏览器可以
+    启发式复用 index.html —— 于是「代码已更新、页面还是旧的」。2026-11-03
+    实测过：后端接口和产物都已经是新版，用户浏览器仍显示旧界面（连新增的
+    「基准收益」卡片都看不到），排查了半天。
+    """
+    resp = await call_next(request)
+    path = request.url.path
+    if path.startswith("/assets/"):
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif resp.headers.get("content-type", "").startswith("text/html"):
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
