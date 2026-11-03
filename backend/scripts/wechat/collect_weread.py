@@ -152,6 +152,41 @@ def save_state(**kw) -> None:
 
 # ─────────────────────────── 主流程 ───────────────────────────
 
+def _proc_starttime(pid: int) -> str:
+    """读进程启动时刻（/proc/<pid>/stat 第 22 字段），用作「同一个进程」的唯一标识。
+
+    为什么需要：容器重启后 PID 从 1 重新分配，只比对 pid 会把「上一个容器里的
+    同号进程」误认成自己 —— 2026-11-03 实测残留锁写的是 pid 31，而新容器的采集
+    进程自己也拿到 pid 31，于是锁被判定为「被别人占用」，采集一整个上午没跑起来。
+    """
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            fields = f.read().decode("utf-8", "ignore").rsplit(")", 1)[1].split()
+        return fields[19]      # starttime：第 22 字段减去前 3 个定位项
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _lock_owner_alive(pid: int, starttime: str) -> bool:
+    if pid <= 0 or pid == os.getpid():
+        return False           # 空 pid / 锁指向自己 → 一定是残留
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    if not os.path.isdir("/proc"):
+        return True            # 非 Linux（宿主机 macOS 无 /proc）：只能判存活
+    try:
+        cmd = Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", "ignore")
+    except OSError:
+        return False           # 内核线程没有 cmdline，不可能是本脚本
+    if "collect_weread" not in cmd:
+        return False
+    if starttime and _proc_starttime(pid) != starttime:
+        return False           # 同号不同命：PID 被复用给了别的进程
+    return True
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--interval", type=float, default=6.0, help="正文请求间隔（秒，>=2）")
@@ -169,29 +204,25 @@ def main() -> int:
     # 又因为容器重启后 PID 从 1 重新分配，光 os.kill(pid,0) 可能命中无关进程，
     # 所以还要核对 /proc/<pid>/cmdline 里确实是本脚本。
     if lock.exists() and time.time() - lock.stat().st_mtime < 900:
+        raw = ""
         try:
-            pid = int(lock.read_text(encoding="utf-8").strip() or 0)
-        except (ValueError, OSError):
+            raw = lock.read_text(encoding="utf-8").strip()
+        except OSError:
+            raw = ""
+        pid_s, _, st_s = raw.partition(":")
+        try:
+            pid = int(pid_s or 0)
+        except ValueError:
             pid = 0
-        alive = False
-        if pid > 0:
-            try:
-                os.kill(pid, 0)
-                alive = True
-            except OSError:
-                alive = False
-        if alive:
-            try:
-                cmd = Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", "ignore")
-            except OSError:
-                cmd = ""  # 非 Linux（宿主机 macOS）无 /proc，退回只判存活
-            if cmd and "collect_weread" not in cmd:
-                alive = False
-        if alive:
+        if _lock_owner_alive(pid, st_s):
             print("另一个采集进程正在运行（锁未释放），本次跳过", file=sys.stderr)
             return 3
-        print(f"清理失效锁（pid={pid} 已不在运行），继续采集", file=sys.stderr)
-    lock.write_text(str(os.getpid()), encoding="utf-8")
+        print(f"清理失效锁（pid={pid} 已不在运行 / PID 被复用），继续采集", file=sys.stderr)
+    elif lock.exists():
+        # 绝对超时兜底：单轮最长 ~42 分钟，超过 2 小时的锁一定是残留（进程被 kill、
+        # 容器重启、或机器睡眠导致时断时续），不清理就会一直挡着。
+        print("清理超期锁（>2h），继续采集", file=sys.stderr)
+    lock.write_text(f"{os.getpid()}:{_proc_starttime(os.getpid())}", encoding="utf-8")
 
     t0 = time.time()
     cookie = load_cookie()
