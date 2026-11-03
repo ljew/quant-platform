@@ -32,7 +32,11 @@ _PIPELINE_TIMEOUT = 1500
 # —— 策略验证（移植/JK 系列一条流水线）——
 # 每天数据管道跑完后自动复跑一遍策略验证，与聚宽实测数字带容差对照，
 # 结果写入 data/reports/strategy_verify_<key>.html|json，指标漂移第一时间可见。
-VERIFY_HOUR, VERIFY_MIN = 20, 30
+# 策略验证时刻。原 20:30 与 20:47 的自动挖矿只隔 17 分钟：
+# 验证子进程要 4.5G，挖矿（factor_gp）也要几个 G，两者叠在 5.5G 的容器上限上
+# 就是必然 OOM（2026-11-02 的连续 OOM 里就有这一层）。提前到 20:05，
+# 与 ETL(19:00 起，通常 20~40 分钟)、挖矿(20:47)、采集(20:40) 都错开。
+VERIFY_HOUR, VERIFY_MIN = 20, 5
 _VERIFY_TIMEOUT = 1800
 # 验证子进程的地址空间上限（KB）。容器整体 mem_limit=5.5g，后端自身常驻约 0.5g。
 # 实测 jk001 全段回测在 3g 下会 MemoryError（13 秒就退出），4.5g 正常跑完
