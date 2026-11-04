@@ -95,6 +95,26 @@ def _check_scheduler(db) -> dict[str, Any]:
             items.append(_item("最近 ETL", FAIL, "无运行记录"))
     except Exception as e:
         items.append(_item("最近 ETL", FAIL, f"读取失败 {type(e).__name__}"))
+
+    # 策略验证报告新鲜度：每晚 20:05（含周末）跑一次，漏跑或连续失败会静默停更。
+    # 2026-11-03 实测：20:05 那轮没产出报告，文件停在 11-02，而 verify.last_error
+    # 只是进程内存值、重启即清零 —— 等于没人看得见。这里用报告文件 mtime 兜底。
+    try:
+        from app.config import DATA_DIR
+
+        reps = list((Path(DATA_DIR) / "reports").glob("strategy_verify_*.json"))
+        if not reps:
+            items.append(_item("策略验证", WARN, "尚无验证报告（每晚 20:05 应产出）"))
+        else:
+            newest = max(reps, key=lambda p: p.stat().st_mtime)
+            age_h = (datetime.now().timestamp() - newest.stat().st_mtime) / 3600
+            # 40h ≈ 漏掉一晚；72h ≈ 连漏两晚
+            st = OK if age_h <= 40 else (WARN if age_h <= 72 else FAIL)
+            items.append(_item("策略验证", st,
+                               f"{newest.name} · {age_h:.1f} 小时前更新"))
+    except Exception as e:  # noqa: BLE001
+        items.append(_item("策略验证", WARN, f"读取失败 {type(e).__name__}"))
+
     return {"key": "scheduler", "name": "调度层", "status": _worst([i["status"] for i in items]), "items": items}
 
 
