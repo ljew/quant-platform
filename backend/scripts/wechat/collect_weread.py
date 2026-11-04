@@ -283,8 +283,12 @@ def main() -> int:
         consec_fail = 0
         consec_net = 0
 
-        if cover.get("errcode") in AUTH_ERR or cover.get("statusCode") == 401:
-            auth_error = f"{cover.get('errcode')} {cover.get('errmsg', '')}"
+        # 微信读书实际返回驼峰 errCode（2026-11-04 实测 {"errCode":-2012,"errMsg":"登录超时"}）。
+        # 旧代码只认小写 errcode → Cookie 过期被当成普通失败：65 个号各退避 60s，
+        # 空转 73 分钟、最后还报 ok=true（静默失败）。两种拼写都认。
+        cover_ec = cover.get("errCode", cover.get("errcode"))
+        if cover_ec in AUTH_ERR or cover.get("statusCode") == 401:
+            auth_error = f"{cover_ec} {cover.get('errMsg') or cover.get('errmsg', '')}"
             print(f"❌ 凭证失效：{auth_error}（第 {i} 个号）")
             break
 
@@ -308,12 +312,27 @@ def main() -> int:
                 html = http_text(f"https://weread.qq.com/web/mp/content?reviewId={rid}", cookie)
             except Exception as e:  # noqa: BLE001
                 print(f"[{i}/{len(feeds)}] 正文请求失败 {mp_name}: {type(e).__name__}（第 {attempt} 次）")
+            # 未登录/登录超时时，正文接口返回 JSON 而非 HTML：
+            # {"errCode":-2012,"errMsg":"登录超时"}。必须立刻识别并结束整轮，
+            # 否则每个号都白等 60 秒退避（2026-11-04：65 个号空转 73 分钟）。
+            if html and html.lstrip().startswith("{"):
+                try:
+                    ej = json.loads(html)
+                except Exception:  # noqa: BLE001
+                    ej = {}
+                ec = ej.get("errCode", ej.get("errcode"))
+                if ec in AUTH_ERR:
+                    auth_error = f"{ec} {ej.get('errMsg') or ej.get('errmsg', '')}"
+                    print(f"❌ 凭证失效：{auth_error}（正文接口，第 {i} 个号）")
+                    break
             if html and "js_content" in html:
                 break
             if attempt == 1:
                 print(f"[{i}/{len(feeds)}] 命中冷却页 {mp_name}，退避 60s 后重试")
                 time.sleep(60)
                 html = ""
+        if auth_error:
+            break            # 凭证失效与具体号无关，直接结束整轮
         if not html or "js_content" not in html:
             fail += 1
             print(f"[{i}/{len(feeds)}] 仍无正文 {mp_name}，跳过")
