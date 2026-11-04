@@ -65,6 +65,7 @@ class NationalTeamStrategy(StandardStrategy):
         "hold_days": 20,
         "threshold": 0.0,          # 0 = 用 csv 的 position 列；>0 = 用 score 重算
         "hhi_threshold": 0.0,      # 0 = 关闭；>0 = 申购集中度高于此值时不加仓
+        "hhi_confirm_days": 1,     # 连续多少个交易日超阈值才取消加仓（1=当天即取消）
         "warmup_days": 0,
     }
 
@@ -77,6 +78,8 @@ class NationalTeamStrategy(StandardStrategy):
         self.hold_days = max(1, int(p.get("hold_days", 20)))
         self.threshold = float(p.get("threshold", 0.0) or 0.0)
         self.hhi_threshold = float(p.get("hhi_threshold", 0.0) or 0.0)
+        self.hhi_confirm_days = max(1, int(p.get("hhi_confirm_days", 1) or 1))
+        self._hhi_over_days = 0
 
         self.scores: dict[date, float] = {}
         self.positions: dict[date, float] = {}
@@ -165,10 +168,14 @@ class NationalTeamStrategy(StandardStrategy):
 
         # 拥挤度过滤（2026-11-03）：申购过度集中于单只 ETF 时，流入更像套利/单一机构，
         # 不是多只同步的国家队行为 —— 此时不加仓。实测低 HHI 组 IC +0.128、高 HHI 组 -0.068。
-        if self.hhi_threshold > 0 and hhi is not None and hhi > self.hhi_threshold \
-                and target > self.base + 1e-9:
-            reason += f"（HHI {hhi:.3f} > {self.hhi_threshold:.3f}，申购集中于单只，取消加仓）"
-            target = self.base
+        if self.hhi_threshold > 0 and hhi is not None:
+            # 迟滞计数：连续 N 日超阈值才生效，避免 HHI 在阈值附近抖动导致反复取消/恢复加仓
+            # （2026-11-03 实测无迟滞时换手 28->44，样本内年化 -0.43pp）
+            self._hhi_over_days = self._hhi_over_days + 1 if hhi > self.hhi_threshold else 0
+            if self._hhi_over_days >= self.hhi_confirm_days and target > self.base + 1e-9:
+                reason += (f"（HHI {hhi:.3f} > {self.hhi_threshold:.3f} 连续 "
+                           f"{self._hhi_over_days} 日，申购集中于单只，取消加仓）")
+                target = self.base
 
         if abs(target - getattr(self, "_last_target", -1.0)) > 1e-9:
             self._last_target = target

@@ -502,6 +502,7 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             "hold_days": 20,
             "threshold": 0.0,
             "hhi_threshold": 0.0,
+            "hhi_confirm_days": 1,
             "warmup_days": 0,
         },
         "param_schema": [
@@ -510,6 +511,7 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             _int("hold_days", "触发后持续(交易日)", 20, 1, 60, 1, group="信号参数"),
             _float("threshold", "阈值覆盖(0=用信号文件)", 0.0, 0.0, 100.0, 1.0, group="信号参数"),
             _float("hhi_threshold", "申购集中度上限(0=关)", 0.0, 0.0, 1.0, 0.01, group="信号参数"),
+            _int("hhi_confirm_days", "集中度连续确认(日)", 1, 1, 30, 1, group="信号参数"),
         ],
     },
 }
