@@ -851,6 +851,10 @@ export const wechatApi = {
   article: (id: string) => get<WechatArticleDetail>(`/wechat/article/${encodeURIComponent(id)}`),
   daily: (date = "") => get<WechatDailyResp>(`/wechat/daily${date ? `?date=${date}` : ""}`),
   trend: (days = 14) => get<WechatTrendResp>(`/wechat/trend?days=${days}`),
+  /** 新增/更新订阅号：写 feeds.json，下一轮采集生效。 */
+  addFeed: (mp_id: string, mp_name: string) =>
+    post<{ ok: boolean; created: boolean; mp_id: string; mp_name: string; verified?: string; total: number }>(
+      "/wechat/feeds", { mp_id, mp_name }),
 };
 
 // ══════════════════════════════════════════════════════════════════
@@ -997,6 +1001,14 @@ export interface EtfFlowForward {
   points: EtfFlowForwardPoint[];
   /** 按托底时的估值分位分组后的后市表现 */
   by_valuation: EtfFlowForwardGroup[];
+  /** 稳健性：按「托底段」去重（连续多日只取首日）后的 T+60 */
+  dedup?: {
+    segments: number;
+    days: number;
+    low: { n: number; up: number; win: number; median: number; mean: number } | null;
+    mid: { n: number; up: number; win: number; median: number; mean: number } | null;
+    high: { n: number; up: number; win: number; median: number; mean: number } | null;
+  };
 }
 
 /** 全市场估值（滚动 5 年分位），供「估值 × 资金流」条件判断 */

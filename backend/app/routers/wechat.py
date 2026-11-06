@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from app.services import wechat_svc
 
@@ -207,3 +208,22 @@ def collect(limit: int = 0):
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      start_new_session=True)
     return {"ok": True, "note": "采集已在后台启动，60 秒后刷新本页看结果"}
+
+
+# ───────────────────────── 订阅号管理 ─────────────────────────
+
+class FeedCreate(BaseModel):
+    mp_id: str
+    mp_name: str
+
+
+@router.post("/feeds")
+def add_feed(req: FeedCreate):
+    """新增订阅号：写入 feeds.json，下一轮采集生效。
+
+    mp_id 形如 `MP_WXS_3698093049`，可在微信读书文章链接的 reviewId 前缀里找到。
+    """
+    try:
+        return wechat_svc.add_feed(req.mp_id, req.mp_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
