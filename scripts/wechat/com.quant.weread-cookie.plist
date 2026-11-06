@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  微信读书 Cookie 每日续期（07:40，早于 08:20 的公众号采集）
+  安装：launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.quant.weread-cookie.plist
+  卸载：launchctl bootout gui/$(id -u)/com.quant.weread-cookie
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.quant.weread-cookie</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>/Users/happyljew/quant-platform/scripts/wechat/refresh_weread_cookie.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>7</integer>
+    <key>Minute</key><integer>40</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>/Users/happyljew/quant-platform/data/logs/weread-cookie.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/happyljew/quant-platform/data/logs/weread-cookie.err.log</string>
+</dict>
+</plist>
