@@ -111,6 +111,16 @@ class JKFactorStrategy(PortfolioStrategy):
         # —— 调仓 ——
         self.reb_thresh = float(p.get("reb_thresh", 0.02))
 
+        # —— R 版（聚宽 jk001_R版_实盘_干净.py）新增 ——
+        # 权重模式：'equal'=等权（原行为）；'rank'=按打分名次线性倾斜，与等权按 tilt 混合
+        self.weight_mode = str(p.get("weight_mode", "equal"))
+        self.weight_tilt = max(0.0, min(1.0, float(p.get("weight_tilt", 1.0))))
+        # 银行单独上限（0=不限制）。R 版实测：全期银行平均 5.7 只、最多顶到 10 只
+        # （= 33% 仓位押单一子行业）；收到 8 只收益中性、回撤更好。
+        self.max_bank_num = int(p.get("max_bank_num", 0))
+        # 择时总开关：0=不做周线趋势择时、恒满仓（R 版实盘用；原版 jk001 为 1）
+        self.enable_market_timing = int(p.get("enable_market_timing", 1)) == 1
+
         # —— 运行时状态 ——
         self.market_trend = "neutral"
         self._trend_position = self.neutral_position    # 趋势档位（周更）
@@ -120,14 +130,19 @@ class JKFactorStrategy(PortfolioStrategy):
         self._last_trend_week = None
         self._peak: dict[str, float] = {}       # 建仓以来最高价（移动止损基准）
         self._hold_days: dict[str, int] = {}    # 已持仓交易日数（阶梯止损用）
+        self._last_scores: dict[str, float] = {}  # 最近一次选股原始打分（rank 加权用）
 
     # ==================== 日频：趋势 + 止损 ====================
     def on_bar(self, ctx, date: str) -> None:
         """非调仓日的日频回调：周线趋势检查 + 波动率约束 + 每日止损。"""
-        self._update_trend(ctx, date)
-        self._update_vol_scale(ctx, date)
-        self._recalc_position()
-        if self.bear_immediate and self.position_ratio <= 0.01:
+        if self.enable_market_timing:
+            self._update_trend(ctx, date)
+            self._update_vol_scale(ctx, date)
+            self._recalc_position()
+        else:
+            self.position_ratio = 1.0     # R 版关闭择时 → 恒满仓，不随趋势减仓
+            self.market_trend = "neutral"
+        if self.enable_market_timing and self.bear_immediate and self.position_ratio <= 0.01:
             self._clear_all(ctx, "jk_bearish", "趋势看空清仓观望")
         else:
             self._check_stop_loss(ctx, date)
@@ -457,6 +472,12 @@ class JKFactorStrategy(PortfolioStrategy):
         def _ind(sym: str) -> str:
             return self._ind_of(ctx, sym)
 
+        # R 版：银行单独上限（银行集中到 33% 仓位时风险过于集中）
+        def _cap_of(iname: str) -> int:
+            if self.max_bank_num > 0 and "银行" in iname:
+                return self.max_bank_num
+            return self.max_industry_num
+
         picked, icnt = [], {}
         for s, _sc, mom in scored:
             if len(picked) >= self.stock_num:
@@ -468,7 +489,7 @@ class JKFactorStrategy(PortfolioStrategy):
             if chg.get(s, 0.0) > self.max_intraday_chg:
                 continue                                   # 不追高
             iname = _ind(s)
-            if icnt.get(iname, 0) >= self.max_industry_num:
+            if icnt.get(iname, 0) >= _cap_of(iname):
                 continue
             picked.append(s)
             icnt[iname] = icnt.get(iname, 0) + 1
@@ -481,30 +502,51 @@ class JKFactorStrategy(PortfolioStrategy):
                 if s in picked:
                     continue
                 iname = _ind(s)
-                if icnt.get(iname, 0) >= max(self.max_industry_num, 1):
+                if icnt.get(iname, 0) >= max(_cap_of(iname), 1):
                     continue
                 picked.append(s)
                 icnt[iname] = icnt.get(iname, 0) + 1
+
+        # rank 加权必须用「真实打分」重排：picked 的顺序不严格等于打分降序
+        # （兜底阶段补进来的排在末尾），直接按下标加权会错。
+        self._last_scores = {s: sc for s, sc, _ in scored}
         return picked
 
     def _weights(self, selected: list[str]) -> dict[str, float]:
-        """等权 + 单只上限，再整体按目标仓位缩放（同原版 allocate_weights）。"""
+        """权重分配（同原版 allocate_weights）。
+
+        equal：等权 + 单只上限（原行为）。
+        rank ：按打分名次线性倾斜 —— 第 1 名 n 份、第 n 名 1 份，再与等权按
+               weight_tilt 线性混合（tilt=0 严格等于等权，保证开关不改变基线）。
+        """
         if not selected or self.position_ratio <= 0.01:
             return {}
-        w = 1.0 / len(selected)
-        cap = self.max_stock_weight if self.max_stock_weight > 0 else w
-        weights = {s: min(w, cap) for s in selected}
-        tot = 0.0
-        for v in weights.values():
-            tot += v
+        n = len(selected)
+        if self.weight_mode == "rank" and n > 1:
+            ordered = sorted(selected,
+                             key=lambda s: self._last_scores.get(s, -1e9), reverse=True)
+            eq = 1.0 / n
+            tot_raw = n * (n + 1) / 2.0
+            weights = {s: eq * (1.0 - self.weight_tilt)
+                       + (float(n - i) / tot_raw) * self.weight_tilt
+                       for i, s in enumerate(ordered)}
+        else:
+            w = 1.0 / n
+            cap = self.max_stock_weight if self.max_stock_weight > 0 else w
+            weights = {s: min(w, cap) for s in selected}
+        tot = sum(weights.values())
         if tot <= 0:
             return {}
         return {s: v / tot * self.position_ratio for s, v in weights.items()}
 
     def rebalance(self, ctx, date: str) -> None:
-        self._update_trend(ctx, date)
-        self._update_vol_scale(ctx, date)
-        self._recalc_position()
+        if self.enable_market_timing:
+            self._update_trend(ctx, date)
+            self._update_vol_scale(ctx, date)
+            self._recalc_position()
+        else:
+            self.position_ratio = 1.0
+            self.market_trend = "neutral"
 
         if self.position_ratio <= 0.01:
             self._clear_all(ctx, "jk_bearish", "趋势看空清仓观望")

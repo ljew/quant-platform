@@ -1010,3 +1010,165 @@ class LiveEquity(Base):
     shadow_total: Mapped[float | None] = mapped_column(Float, nullable=True)
     divergence_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ETF 资金流（国家队 ETF 资金看板）
+#
+# 定位：**观察视图**，不是信号。信号仍是 NSI（`data/research/nsi_signal.csv`，
+# 5 只核心 ETF 份额口径，T+1 开盘执行，见 docs/NSI-SPEC.md）。
+# 本组表格把覆盖面从 5 只扩到 20 只、并补上 NSI 明确放弃的盘中量能，
+# 用于回答「今天资金在买哪一类宽基、量能是否异常」，不参与任何仓位决策。
+#
+# 单位约定（统一在入库时换算好，查询侧不再二次换算）：
+#   fd_share   万份（tushare 原单位，不做复权——份额本身无复权概念）
+#   unit_nav   元/份
+#   amount / turnover / net_inflow  亿元
+# ══════════════════════════════════════════════════════════════════════
+
+
+class EtfUniverse(Base):
+    """重点宽基 ETF 样本池（20 只，按规模+成交额自动筛选，可人工覆盖）。
+
+    category 是归一化后的宽基类别（沪深300/中证A500/科创50…），不是 tushare 的
+    benchmark 原文 —— 后者写法极不统一（「上海证券交易所50成份指数」=上证50、
+    「中证小盘500指数」=中证500），必须走别名表映射，否则主力 ETF 会漏掉。
+    """
+
+    __tablename__ = "etf_universe"
+
+    symbol: Mapped[str] = mapped_column(String(16), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), default="")
+    category: Mapped[str] = mapped_column(String(16), index=True, default="")
+    scale: Mapped[float] = mapped_column(Float, default=0.0)   # 存量规模（亿元）
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class EtfShareDaily(Base):
+    """ETF 份额日频（一级申赎数据，T 日盘后 → T+1 盘前可见）。
+
+    ⚠️ 份额折算是这张表最大的坑：2024-09-20 易方达沪深300ETF（510310）做 1:2
+    合并，净值 1.60→3.20、份额腰斩。直接用「Δ份额 × 净值」会算出 −1906 亿的
+    假赎回。判据：份额与净值同时大幅反向变动、且两者乘积≈1 → 该日该只不计入
+    净流入（见 services/etf_flow.py 的 split 检测）。
+    """
+
+    __tablename__ = "etf_share_daily"
+    __table_args__ = (
+        UniqueConstraint("symbol", "trade_date", name="uq_etf_share_symbol_date"),
+        Index("ix_etf_share_date", "trade_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(16), nullable=False)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    fd_share: Mapped[float] = mapped_column(Float, nullable=False)   # 万份
+    unit_nav: Mapped[float | None] = mapped_column(Float, nullable=True)  # 元/份
+
+
+class EtfMinuteBar(Base):
+    """ETF 与指数的 1 分钟线（仅最近 25 个交易日，用于同期对比与形态分析）。
+
+    tushare 的 `stk_mins` 对 `000001.SH` 同样有效，指数分钟线一并落在这里，
+    symbol 用 `000001.SH` 区分。盘中取不到当日数据（返回空），只能盘后补；
+    盘中成交额走 `etf_quote_intraday` 的累计值差分。
+    """
+
+    __tablename__ = "etf_minute_bar"
+    __table_args__ = (
+        UniqueConstraint("symbol", "trade_time", name="uq_etf_min_symbol_time"),
+        Index("ix_etf_min_time", "trade_time"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(16), nullable=False)
+    trade_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)   # 该分钟成交额（亿元）
+    close: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+class EtfFlowDaily(Base):
+    """20 只 ETF 汇总的日度资金流（看板第三条主线）。
+
+    与 nsi_signal.csv 的区别：口径更宽（20 只 / 9 类宽基 vs 5 只核心），
+    且含主题 ETF 的自发申购噪声 —— 所以**不能拿来当信号**，
+    只用于观察「护盘重心在哪一类」。
+    """
+
+    __tablename__ = "etf_flow_daily"
+    __table_args__ = (UniqueConstraint("trade_date", name="uq_etf_flow_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    turnover: Mapped[float] = mapped_column(Float, default=0.0)     # 20 只成交额合计（亿元）
+    net_inflow: Mapped[float] = mapped_column(Float, default=0.0)   # 20 只净流入合计（亿元）
+    index_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    index_chg: Mapped[float | None] = mapped_column(Float, nullable=True)  # 涨跌幅（%）
+
+
+class EtfCategoryDaily(Base):
+    """12 类宽基 ETF 的分类日度净申赎（看板热力矩阵）。
+
+    按 tushare `fund_basic.benchmark` 的归一化别名归类，覆盖全市场被动股票型 ETF，
+    比 20 只样本更全 —— 样本池只取每类前几名，矩阵反映的是整类资金的进出。
+    """
+
+    __tablename__ = "etf_category_daily"
+    __table_args__ = (
+        UniqueConstraint("trade_date", "category", name="uq_etf_cat_date"),
+        Index("ix_etf_cat_date", "trade_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    category: Mapped[str] = mapped_column(String(16), nullable=False)
+    net_inflow: Mapped[float] = mapped_column(Float, default=0.0)   # 亿元
+    turnover: Mapped[float] = mapped_column(Float, default=0.0)     # 亿元
+    scale: Mapped[float] = mapped_column(Float, default=0.0)        # 该类存量规模（亿元）
+
+
+class EtfQuoteIntraday(Base):
+    """盘中实时采样（`realtime_quote` 的累计成交额，逐分钟落一行）。
+
+    为什么需要它：tushare 盘中不提供 1min 线，而看板要「今天到现在成交了多少」。
+    一次采样拿 20 只 ETF + 1 个指数（**1 次接口调用**，不是 21 次），
+    相邻两次的 cum_amount 差分即为该分钟成交额。
+    收盘后由当日完整 1min 线覆盖，所以这张表只保留当日数据。
+    """
+
+    __tablename__ = "etf_quote_intraday"
+    __table_args__ = (
+        UniqueConstraint("symbol", "sample_time", name="uq_etf_quote_symbol_time"),
+        Index("ix_etf_quote_time", "sample_time"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(16), nullable=False)
+    sample_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cum_amount: Mapped[float | None] = mapped_column(Float, nullable=True)  # 当日累计成交额（亿元）
+    pre_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class EtfDailyBar(Base):
+    """单只 ETF 的日线（支撑看板里的「单只 ETF 当日表现」拆解）。
+
+    为什么单独一张表：`etf_flow_daily` 只存 20 只的汇总，看不出「到底是谁在放量」。
+    拆开之后才能判断资金是「越跌越买」（防御性托底）还是「追涨」（进攻性抢筹）——
+    这比只看总量更能区分资金性质。
+
+    单位：amount 亿元（tushare 原单位千元，入库已换算），pct_chg 百分数原值。
+    """
+
+    __tablename__ = "etf_daily_bar"
+    __table_args__ = (
+        UniqueConstraint("symbol", "trade_date", name="uq_etf_bar_symbol_date"),
+        Index("ix_etf_bar_date", "trade_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(16), nullable=False)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    close: Mapped[float] = mapped_column(Float, default=0.0)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)     # 成交额（亿元）
+    pct_chg: Mapped[float | None] = mapped_column(Float, nullable=True)

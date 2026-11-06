@@ -6,6 +6,7 @@ import PaperPage from "./pages/PaperPage";
 import FactorMinePage from "./pages/FactorMinePage";
 import ResearchCardsPage from "./pages/ResearchCardsPage";
 import SignalPage from "./pages/SignalPage";
+import EtfFlowPage from "./pages/EtfFlowPage";
 import AttributionPage from "./pages/AttributionPage";
 import AutoResearchHubPage from "./pages/AutoResearchHubPage";
 import DataSystemPage from "./pages/DataSystemPage";
@@ -26,6 +27,8 @@ const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; lab
   { key: "today", label: "今日观点", icon: "☀", tabs: [
     { key: "today", label: "今日观点" },
     { key: "market", label: "行情看板" },
+    // 资金流：20 只宽基 ETF 的日度/分钟资金观察（观察口径，非信号；信号见 NSI）
+    { key: "etfflow", label: "资金流" },
     { key: "wechat", label: "公众号" },
   ] },
   { key: "research", label: "策略研究", icon: "⚗", tabs: [
@@ -53,6 +56,8 @@ const LEGACY_TAB_MAP: Record<string, string> = {
   cockpit: "auto",        // 研究驾驶舱 → 自动研究 · 流水线实况
   pipeline: "datasys",
   monitor: "datasys",
+  etf_flow: "etfflow",
+  etf: "etfflow",
 };
 
 function findHub(sub: string): { hub: HubKey; sub: string } | null {
@@ -73,6 +78,7 @@ function HubContent({ sub }: { sub: string }) {
   switch (sub) {
     case "today": return <TodayPage />;
     case "market": return <MarketPage />;
+    case "etfflow": return <EtfFlowPage />;
     case "wechat": return <WechatPage />;
     case "cards": return <ResearchCardsPage />;
     case "btopt": return <BacktestOptimizePage />;

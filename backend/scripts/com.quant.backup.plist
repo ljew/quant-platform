@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  数据库每日热备份（03:00，SQLite online backup，不锁库不中断服务）
+  安装：launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.quant.backup.plist
+  卸载：launchctl bootout gui/$(id -u)/com.quant.backup
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.quant.backup</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>/Users/happyljew/quant-platform/backend/scripts/backup_db.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>3</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>/Users/happyljew/quant-platform/data/logs/backup.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/happyljew/quant-platform/data/logs/backup.err.log</string>
+</dict>
+</plist>

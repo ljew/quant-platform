@@ -313,6 +313,90 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             _int("min_list_days", "最少上市天数", 250, 0, 1000, 10),
         ],
     },
+    "jk001r": {
+        "key": "jk001r",
+        "name": "jk001r · 自由现金流+低波动(R版·实盘)",
+        "description": (
+            "聚宽实盘 jk001_R版_实盘_干净.py 的移植版（2026-11-06 集成）。相对 jk001 的差异："
+            "① 权重按打分名次线性倾斜（tilt=1：第1名 6.45% … 第30名 0.22%），不再等权；"
+            "② 银行单独上限 8 只（原版不限，实测银行曾占 33% 仓位）；"
+            "③ 含金融股（exclude_financial=0，alpha 高度依赖金融）；"
+            "④ 不做阶梯止损，固定 15% + 移动 10%；"
+            "⑤ 关闭周线趋势择时、恒满仓。"
+            "聚宽口径业绩 2019-01-02~2026-10-26：+154.58%/年化13.25%/MDD-22.20%/夏普0.948（R口径，statDate 取数）；"
+            "修正前视后（AS 口径）+123.58%/年化10.85%/MDD-21.88%/夏普0.828。"
+            "平台按公告日 PIT 取数，对应 AS 口径，回测结果应与后者同量级。"
+        ),
+        "cls": JKFactorStrategy,
+        "multi_asset": True,
+        "index_code": "000300",
+        "index_symbol": "sh000300",
+        "index_name": "沪深300",
+        "default_params": {
+            "rebalance_period": 21, "stock_num": 30, "max_stock_weight": 0.10,
+            "max_industry_num": 10, "max_bank_num": 8,
+            "w_fundamental": 0.5, "w_lowvol": 0.5,
+            "w_price_volume": 0.0, "w_momentum": 0.0,
+            "enable_trend_filter": 1, "max_intraday_chg": 0.05,
+            "stop_loss_pct": 0.15,
+            # R 版不做阶梯止损（v5 配方上加阶梯会掉 9.7pp）
+            "enable_ladder_stop": 0, "ladder_hold_days": 10, "ladder_trailing_pct": 0.15,
+            "trailing_stop_pct": 0.10,
+            # R 版关闭择时 → 恒满仓（中性 0.60 仅在开启择时时才有意义）
+            "bullish_position": 1.0, "neutral_position": 0.60, "bearish_position": 0.0,
+            "enable_market_timing": 0,
+            "trend_bear_mode": "ma", "bear_immediate": 1,
+            "vol_target": 0.0, "vol_lookback": 60, "vol_min_scale": 0.3,
+            "vol_max_scale": 1.0, "vol_react_thresh": 0.05,
+            # R 版核心：按名次线性加权
+            "weight_mode": "rank", "weight_tilt": 1.0,
+            "reb_thresh": 0.02, "allow_star_market": 0,
+            # R 版含金融（exclude_finance=False）
+            "exclude_financial": 0, "exclude_st": 0, "min_list_days": 250,
+            "industry_level": 1,
+            "max_position_pct": 0.0, "max_gross_exposure": 0.0,
+            "warmup_days": 270,
+        },
+        "param_schema": [
+            _int("rebalance_period", "调仓周期(交易日)", 21, 5, 60, 1),
+            _int("stock_num", "持股数量", 30, 5, 100, 1),
+            _float("max_stock_weight", "单只最大权重", 0.10, 0.02, 0.5, 0.01),
+            _int("max_industry_num", "单一行业最多只数", 10, 1, 50, 1),
+            _int("max_bank_num", "银行最多只数(0=不限)", 8, 0, 30, 1),
+            _float("w_fundamental", "FCF/OE 因子权重", 0.5, 0.0, 1.0, 0.05),
+            _float("w_lowvol", "低波动因子权重", 0.5, 0.0, 1.0, 0.05),
+            _opt("weight_mode", "权重模式", "rank", ["rank", "equal"],
+                 "rank=按打分名次线性倾斜（R 版实盘口径）；equal=等权（jk001 原行为）"),
+            _float("weight_tilt", "名次倾斜强度(1=完全线性)", 1.0, 0.0, 1.0, 0.05),
+            _int("enable_trend_filter", "站上MA20准入(1开/0关)", 1, 0, 1),
+            _float("max_intraday_chg", "当日涨幅上限(不追高)", 0.05, 0.01, 0.2, 0.01),
+            _float("stop_loss_pct", "固定止损(%)", 0.15, 0.02, 0.5, 0.01),
+            _int("enable_ladder_stop", "阶梯移动止损(1开/0关)", 0, 0, 1),
+            _int("ladder_hold_days", "阶梯切换(持有交易日)", 10, 1, 60, 1),
+            _float("ladder_trailing_pct", "阶梯后段回撤阈值", 0.15, 0.02, 0.5, 0.01),
+            _float("trailing_stop_pct", "移动止损回撤阈值", 0.10, 0.02, 0.5, 0.01),
+            _int("enable_market_timing", "趋势择时(1开/0关)", 0, 0, 1),
+            _float("bullish_position", "看多仓位", 1.0, 0.0, 1.0, 0.05),
+            _float("neutral_position", "中性仓位", 0.6, 0.0, 1.0, 0.05),
+            _float("bearish_position", "看空仓位", 0.0, 0.0, 1.0, 0.05),
+            _float("reb_thresh", "调仓偏离阈值", 0.02, 0.0, 0.2, 0.005),
+            _opt("trend_bear_mode", "空头判据", "ma", ["ma", "origin"],
+                 "ma=MA空头排列额外-2分；origin=原版 score<=-2"),
+            _int("bear_immediate", "看空即时清仓(1开/0关)", 1, 0, 1),
+            _float("vol_target", "波动率目标(年化,0=关闭)", 0.0, 0.0, 0.4, 0.01),
+            _int("vol_lookback", "波动率回看(交易日)", 60, 20, 120, 5),
+            _float("vol_min_scale", "波动率缩放下限", 0.30, 0.0, 1.0, 0.05),
+            _float("vol_max_scale", "波动率缩放上限(≤1不加杠杆)", 1.00, 0.0, 1.0, 0.05),
+            _float("vol_react_thresh", "波动率减仓触发阈值", 0.05, 0.01, 0.3, 0.01),
+            _int("allow_star_market", "允许科创板(1开/0关)", 0, 0, 1),
+            _int("industry_level", "行业口径(1申万一级/0东财细分)", 1, 0, 1),
+            _opt("momentum_filter_mode", "动量准入口径", "m121", ["m121", "avg"],
+                 "m121=只用12-1动量（与聚宽原版代码一致）；avg=12-1与6-1各半"),
+            _int("financial_pit", "财务PIT(1公告日/0报告期)", 1, 0, 1),
+            _int("exclude_financial", "剔除金融股(1开/0关)", 0, 0, 1),
+            _int("min_list_days", "最少上市天数", 250, 0, 1000, 10),
+        ],
+    },
     "jk002": {
         "key": "jk002",
         "name": "jk002 · 自由现金流+低波动(中证全指)",
@@ -591,14 +675,16 @@ GROUP_ORDER = [
 # vol_lookback 按 `_lookback$` 判进「因子参数」，但它其实属于「波动率目标」。
 _JK_GROUPS: dict[str, set[str]] = {
     "组合构建": {"rebalance_period", "stock_num", "max_stock_weight",
-                 "max_industry_num", "reb_thresh"},
+                 "max_industry_num", "max_bank_num", "weight_mode",
+                 "weight_tilt", "reb_thresh"},
     "因子权重": {"w_fundamental", "w_lowvol"},
     "准入过滤": {"enable_trend_filter", "max_intraday_chg", "momentum_filter_mode",
                  "allow_star_market", "industry_level", "exclude_financial",
                  "min_list_days", "financial_pit"},
     "风控止损": {"stop_loss_pct", "enable_ladder_stop", "ladder_hold_days",
                  "ladder_trailing_pct", "trailing_stop_pct", "bear_immediate"},
-    "择时仓位": {"bullish_position", "neutral_position", "bearish_position", "trend_bear_mode"},
+    "择时仓位": {"bullish_position", "neutral_position", "bearish_position",
+                 "trend_bear_mode", "enable_market_timing"},
     "波动率目标": {"vol_target", "vol_lookback", "vol_min_scale",
                    "vol_max_scale", "vol_react_thresh"},
 }
@@ -620,7 +706,7 @@ _DEFAULT_GROUP = "信号参数"
 
 
 def _group_of(key: str, strategy_key: str) -> str:
-    if strategy_key in ("jk001", "jk002"):
+    if strategy_key in ("jk001", "jk001r", "jk002"):
         for gname, keys in _JK_GROUPS.items():
             if key in keys:
                 return gname
