@@ -46,6 +46,9 @@ services:
       - QUANT_FRONTEND_DIR=/frontend
       - QUANT_TUSHARE_TOKEN=${QUANT_TUSHARE_TOKEN:-}
       - QUANT_DATA_SCHEDULE=1
+      # 每晚 20:05 自动验证的策略（逗号分隔）。jk001r 是聚宽 R 版移植，
+      # 与 jk001 分开留档，便于对比「等权 vs 名次加权」的指标漂移。
+      - QUANT_VERIFY_STRATEGIES=jk001,jk001r
       - QUANT_DEBUG=false
       - QUANT_SOURCES_YAML=/app/config/sources.yaml
       # 公众号全文库：代码在 /app/data 是空目录，真实数据挂在 /data（bind mount），
