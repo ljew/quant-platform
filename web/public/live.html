@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>实盘看板 · fresh_ma</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23185FA5'/%3E%3Cpath d='M3 11l3-4 3 2 4-5' stroke='white' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#F5F5F3; --card:#FFFFFF; --line:#E5E4E0; --line2:#F0EFEC;
+  --t1:#2C2C2A; --t2:#6B6A66; --t3:#9A9994;
+  --up:#C0392B; --down:#1E7B4B; --warn:#B0740A; --info:#185FA5;
+  --shadow:0 1px 2px rgba(0,0,0,.04);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif;
+  background:var(--bg); color:var(--t1); font-size:13px; line-height:1.6;
+  padding:20px 24px 40px;
+}
+.wrap{max-width:1360px;margin:0 auto}
+
+/* ── 顶部 ── */
+header{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:12px}
+h1{font-size:19px;font-weight:600;letter-spacing:.2px}
+h1 span{font-size:13px;font-weight:400;color:var(--t2);margin-left:10px}
+.status{display:flex;gap:16px;flex-wrap:wrap}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--t2)}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block}
+.dot.ok{background:#3B9E5F}.dot.bad{background:var(--up)}.dot.idle{background:var(--t3)}
+.pill b{color:var(--t1);font-weight:500}
+
+/* ── KPI ── */
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:12px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;box-shadow:var(--shadow)}
+.kpi .lb{font-size:12px;color:var(--t2);margin-bottom:6px;display:flex;justify-content:space-between}
+.kpi .vl{font-size:22px;font-weight:600;letter-spacing:-.3px;font-variant-numeric:tabular-nums}
+.kpi .sub{font-size:11px;color:var(--t3);margin-top:4px}
+.kpi .tag{font-size:10px;padding:1px 6px;border-radius:4px;background:#F0EFEC;color:var(--t2)}
+
+/* ── 主区 ── */
+.main{display:grid;grid-template-columns:1.55fr 1fr;gap:12px;margin-bottom:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);overflow:hidden}
+.card-h{display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--line2)}
+.card-h h2{font-size:13px;font-weight:600}
+.card-h .note{font-size:11px;color:var(--t3)}
+.card-b{padding:0}
+
+/* ── 表格 ── */
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th{text-align:right;font-size:11px;font-weight:500;color:var(--t2);padding:9px 12px;border-bottom:1px solid var(--line2);background:#FCFCFB;position:sticky;top:0}
+th:first-child,th:nth-child(2){text-align:left}
+td{padding:8px 12px;text-align:right;border-bottom:1px solid var(--line2);font-size:12.5px}
+td:first-child,td:nth-child(2){text-align:left}
+tbody tr:hover{background:#FAFAF8}
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--t2)}
+.side-buy{color:var(--up);font-weight:500}
+.side-sell{color:var(--down);font-weight:500}
+.badge{display:inline-block;font-size:10.5px;padding:1px 7px;border-radius:4px;line-height:1.6}
+.badge.draft{background:#FDF4E3;color:var(--warn)}
+.badge.rej{background:#F2F1EE;color:var(--t3)}
+.badge.filled{background:#E8F3EC;color:var(--down)}
+.reason{font-size:11px;color:var(--t3);text-align:left;padding:0 12px 8px}
+.scroll{max-height:472px;overflow:auto}
+
+/* ── 曲线 ── */
+.chart{padding:14px 16px 6px}
+.chart svg{display:block;width:100%;height:auto}
+.legend{display:flex;gap:14px;font-size:11px;color:var(--t2);padding:0 16px 12px}
+.legend i{width:12px;height:2px;display:inline-block;vertical-align:middle;margin-right:4px}
+
+/* ── 提示条 ── */
+.banner{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-radius:8px;font-size:12px;margin-bottom:12px;line-height:1.65}
+.banner.warn{background:#FDF6E7;border:1px solid #F0E0BC;color:#6B4E12}
+.banner.info{background:#EEF4FB;border:1px solid #D6E4F2;color:#134A7A}
+.banner b{font-weight:600}
+
+/* ── 底部两栏 ── */
+.bottom{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;padding:14px 16px;font-size:12px}
+.kv dt{color:var(--t2);white-space:nowrap}
+.kv dd{color:var(--t1);font-variant-numeric:tabular-nums}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+.chips{display:flex;flex-wrap:wrap;gap:5px;padding:0 16px 14px}
+.chip{font-size:11px;padding:2px 8px;border-radius:5px;background:#F2F1EE;color:var(--t2)}
+.chip.on{background:#E8F3EC;color:var(--down)}
+
+.empty{padding:36px 16px;text-align:center;color:var(--t3);font-size:12px}
+.refresh{font-size:11px;color:var(--t3);cursor:pointer;user-select:none}
+.refresh:hover{color:var(--info)}
+
+@media(max-width:1080px){.main{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}.bottom{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>实盘看板 <span id="dateLabel">加载中…</span></h1>
+  <div class="status">
+    <span class="pill" id="pData"><i class="dot idle"></i>数据<b>—</b></span>
+    <span class="pill" id="pGate"><i class="dot idle"></i>门控<b>—</b></span>
+    <span class="pill" id="pMode"><i class="dot idle"></i><b>—</b></span>
+    <span class="pill refresh" onclick="loadAll()">↻ 刷新</span>
+  </div>
+</header>
+
+<div id="banners"></div>
+
+<div class="kpis">
+  <div class="kpi">
+    <div class="lb"><span>组合净值</span><span class="tag" id="navTag">影子</span></div>
+    <div class="vl" id="kNav">—</div>
+    <div class="sub" id="kNavSub">—</div>
+  </div>
+  <div class="kpi">
+    <div class="lb"><span>今日订单</span></div>
+    <div class="vl" id="kOrders">—</div>
+    <div class="sub" id="kOrdersSub">—</div>
+  </div>
+  <div class="kpi">
+    <div class="lb"><span>持仓</span></div>
+    <div class="vl" id="kPos">—</div>
+    <div class="sub" id="kPosSub">—</div>
+  </div>
+  <div class="kpi">
+    <div class="lb"><span>门控超额</span><span class="tag" id="gateTag">T+10</span></div>
+    <div class="vl" id="kGate">—</div>
+    <div class="sub" id="kGateSub">—</div>
+  </div>
+</div>
+
+<div class="main">
+  <section class="card">
+    <div class="card-h">
+      <h2>次日开盘订单</h2>
+      <span class="note" id="orderNote">—</span>
+    </div>
+    <div class="card-b scroll">
+      <table>
+        <thead><tr>
+          <th>代码</th><th>名称</th><th>方向</th><th>股数</th>
+          <th>参考价</th><th>限价</th><th>金额</th><th>状态</th>
+        </tr></thead>
+        <tbody id="orderBody"><tr><td colspan="8" class="empty">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-h">
+      <h2>净值曲线</h2>
+      <span class="note" id="chartNote">—</span>
+    </div>
+    <div class="chart"><div id="chart"></div></div>
+    <div class="legend">
+      <span><i style="background:#185FA5"></i>组合净值</span>
+      <span><i style="background:#C0392B"></i>峰值</span>
+      <span style="margin-left:auto" id="ddNote"></span>
+    </div>
+  </section>
+</div>
+
+<div class="bottom">
+  <section class="card">
+    <div class="card-h"><h2>决策快照</h2><span class="note">冻结后可复现</span></div>
+    <dl class="kv" id="snapKv"><dt>—</dt><dd>—</dd></dl>
+  </section>
+
+  <section class="card">
+    <div class="card-h"><h2>候选池 / 执行质量</h2><span class="note" id="reconNote">—</span></div>
+    <div class="chips" id="candChips"></div>
+    <dl class="kv" id="reconKv"></dl>
+  </section>
+</div>
+
+</div>
+
+<script>
+const API = "/api/v1/live";
+const fmt = (v, d = 0) => (v === null || v === undefined) ? "—"
+  : Number(v).toLocaleString("zh-CN", {minimumFractionDigits: d, maximumFractionDigits: d});
+const pct = v => (v === null || v === undefined) ? "—" : (v > 0 ? "+" : "") + Number(v).toFixed(2) + "%";
+const cls = v => v > 0 ? "up" : v < 0 ? "down" : "";
+
+function esc(s){ return String(s === null || s === undefined ? "" : s)
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+async function jget(path){
+  try {
+    const r = await fetch(API + path, {cache:"no-store"});
+    if (!r.ok) return null;
+    return await r.json();
+  } catch(e){ return null; }
+}
+
+function banner(kind, html){
+  return `<div class="banner ${kind}">${html}</div>`;
+}
+
+function drawChart(points){
+  const el = document.getElementById("chart");
+  if (!points || points.length < 2){
+    el.innerHTML = '<div class="empty">暂无净值数据</div>';
+    return;
+  }
+  const W = 520, H = 210, PL = 46, PR = 8, PT = 12, PB = 22;
+  const vals = points.map(p => p.total);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  const pad = (hi - lo) * 0.12 || 1;
+  lo -= pad; hi += pad;
+  const n = points.length;
+  const x = i => PL + (W - PL - PR) * i / (n - 1);
+  const y = v => PT + (H - PT - PB) * (1 - (v - lo) / (hi - lo));
+
+  let line = "", peakLine = "", peak = -Infinity;
+  const peaks = [];
+  points.forEach((p, i) => {
+    peak = Math.max(peak, p.total); peaks.push(peak);
+    line += (i ? "L" : "M") + x(i).toFixed(2) + " " + y(p.total).toFixed(2) + " ";
+  });
+  peaks.forEach((v, i) => {
+    peakLine += (i ? "L" : "M") + x(i).toFixed(2) + " " + y(v).toFixed(2) + " ";
+  });
+  const area = line + `L${x(n-1).toFixed(2)} ${H-PB} L${PL} ${H-PB} Z`;
+
+  const ticks = [0, .5, 1].map(t => lo + (hi - lo) * t);
+  const grid = ticks.map(v =>
+    `<line x1="${PL}" y1="${y(v).toFixed(1)}" x2="${W-PR}" y2="${y(v).toFixed(1)}"
+       stroke="#EFEEEB" stroke-width="1"/>
+     <text x="${PL-6}" y="${(y(v)+3.5).toFixed(1)}" text-anchor="end"
+       font-size="10" fill="#9A9994">${fmt(v/10000,1)}万</text>`).join("");
+
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+    <defs><linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#185FA5" stop-opacity=".14"/>
+      <stop offset="100%" stop-color="#185FA5" stop-opacity="0"/>
+    </linearGradient></defs>
+    ${grid}
+    <path d="${area}" fill="url(#g1)"/>
+    <path d="${peakLine}" fill="none" stroke="#C0392B" stroke-width="1"
+          stroke-dasharray="3 3" opacity=".55"/>
+    <path d="${line}" fill="none" stroke="#185FA5" stroke-width="1.6"
+          stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${x(n-1).toFixed(1)}" cy="${y(points[n-1].total).toFixed(1)}" r="3"
+            fill="#185FA5"/>
+  </svg>`;
+}
+
+async function loadAll(){
+  // 日期：优先用最新快照
+  const cand = await jget("/candidates");
+  const date = cand ? cand.trade_date : null;
+  const q = date ? ("?date=" + date) : "";
+
+  const [intents, positions, equity, shadow, recon] = await Promise.all([
+    jget("/intents" + q),
+    jget("/positions"),
+    jget("/equity"),
+    jget("/shadow"),
+    date ? jget("/recon?date=" + date) : Promise.resolve(null)
+  ]);
+
+  const banners = [];
+  document.getElementById("dateLabel").textContent = date ? ("信号日 " + date) : "无数据";
+
+  // ── 横幅 ──
+  if (cand){
+    if (!cand.data_ok) banners.push(banner("warn",
+      `<b>数据闸门未通过</b>：${esc(cand.data_note)}。今日不应出单。`));
+    if (!cand.gate_open) banners.push(banner("warn",
+      `<b>门控关闭</b>：近 ${cand.gate_n} 个信号日超额 ${pct((cand.gate_exc||0)*100)}，策略今日不开新仓（存量持仓按自身止损走完）。`));
+    banners.push(banner("info",
+      `<b>这不是实盘成交</b>：净值来自影子组合（假设每笔按开盘价 100% 成交），订单状态为 DRAFT 表示尚未执行。
+       真实成交需在券商终端下单后，经 <span class="mono">POST /live/fills</span> 录入才会进入实盘账本。`));
+  }
+  document.getElementById("banners").innerHTML = banners.join("");
+
+  // ── 顶部状态 ──
+  const setPill = (id, ok, label, val) => {
+    const el = document.getElementById(id);
+    el.innerHTML = `<i class="dot ${ok === null ? "idle" : ok ? "ok" : "bad"}"></i>${label}<b>${esc(val)}</b>`;
+  };
+  if (cand){
+    setPill("pData", !!cand.data_ok, "数据", cand.data_ok ? "通过" : "未通过");
+    setPill("pGate", !!cand.gate_open, "门控", cand.gate_open ? "开启" : "关闭");
+  }
+  const liveNav = equity && equity.length ? equity[equity.length-1] : null;
+  setPill("pMode", null, "模式", liveNav ? "实盘" : "影子");
+
+  // ── KPI ──
+  if (shadow && shadow.summary){
+    const s = shadow.summary;
+    document.getElementById("navTag").textContent = liveNav ? "实盘" : "影子";
+    document.getElementById("kNav").textContent = fmt(s.total);
+    const r = s.return_pct;
+    document.getElementById("kNavSub").innerHTML =
+      `<span style="color:var(--${r>=0?'up':'down'})">${pct(r)}</span> · 回撤 ${s.max_drawdown_pct}% · ${s.days} 个交易日`;
+  }
+
+  const orders = (intents || []).filter(i => i.status !== "REJECTED");
+  const rej = (intents || []).filter(i => i.status === "REJECTED");
+  const buys = orders.filter(o => o.side === "BUY");
+  const sells = orders.filter(o => o.side === "SELL");
+  document.getElementById("kOrders").textContent = orders.length;
+  document.getElementById("kOrdersSub").innerHTML =
+    `<span style="color:var(--up)">买 ${buys.length}</span> · ` +
+    `<span style="color:var(--down)">卖 ${sells.length}</span> · 拦下 ${rej.length}`;
+  document.getElementById("orderNote").textContent =
+    orders.length ? ("共 " + orders.length + " 笔 · 合计 " + fmt(buys.reduce((a,b)=>a+b.est_amount,0)) + " 元") : "—";
+
+  const pos = positions || [];
+  document.getElementById("kPos").textContent = pos.length;
+  document.getElementById("kPosSub").textContent = pos.length
+    ? ("市值 " + fmt(pos.reduce((a,p)=>a+p.shares*p.avg_cost,0)) + " 元（按成本）")
+    : "尚未建仓，订单为预案";
+
+  if (cand){
+    document.getElementById("kGate").innerHTML =
+      `<span style="color:var(--${(cand.gate_exc||0)>=0?'up':'down'})">${pct((cand.gate_exc||0)*100)}</span>`;
+    document.getElementById("kGateSub").textContent =
+      "近 " + cand.gate_n + " 个信号日 · " + (cand.gate_open ? "开仓中" : "已关闭");
+  }
+
+  // ── 订单表 ──
+  const tb = document.getElementById("orderBody");
+  if (!intents || !intents.length){
+    tb.innerHTML = '<tr><td colspan="8" class="empty">今日无订单（门控关闭或无候选）</td></tr>';
+  } else {
+    tb.innerHTML = intents.map(o => {
+      const isRej = o.status === "REJECTED";
+      const badge = isRej
+        ? '<span class="badge rej">拦下</span>'
+        : o.status === "FILLED" ? '<span class="badge filled">已成交</span>'
+        : '<span class="badge draft">待执行</span>';
+      const row = `<tr>
+        <td class="code">${esc((o.symbol||"").slice(2))}</td>
+        <td>${esc(o.name)}</td>
+        <td class="${o.side === "BUY" ? "side-buy" : "side-sell"}">${o.side === "BUY" ? "买入" : "卖出"}</td>
+        <td>${isRej ? "—" : fmt(o.qty)}</td>
+        <td>${o.ref_price ? Number(o.ref_price).toFixed(2) : "—"}</td>
+        <td>${o.limit_price ? Number(o.limit_price).toFixed(2) : "—"}</td>
+        <td>${isRej ? "—" : fmt(o.est_amount)}</td>
+        <td>${badge}</td>
+      </tr>`;
+      const why = isRej && o.reject_reason
+        ? `<tr><td colspan="8" class="reason">↳ ${esc(o.reject_reason)}</td></tr>` : "";
+      return row + why;
+    }).join("");
+  }
+
+  // ── 曲线 ──
+  if (shadow && shadow.equity){
+    drawChart(shadow.equity);
+    document.getElementById("chartNote").textContent =
+      "影子组合 · " + shadow.as_of + " · " + shadow.n_points + " 天";
+    const peak = Math.max(...shadow.equity.map(e => e.total));
+    const last = shadow.equity[shadow.equity.length-1].total;
+    document.getElementById("ddNote").textContent =
+      "当前距峰值 " + (((last/peak)-1)*100).toFixed(2) + "%";
+  } else {
+    drawChart(null);
+  }
+
+  // ── 决策快照 ──
+  const kv = document.getElementById("snapKv");
+  if (cand){
+    const p = cand.params || {};
+    kv.innerHTML = [
+      ["信号日", date], ["行情日", cand.data_date || "—"],
+      ["门控样本", cand.gate_n + " 个信号日"],
+      ["持仓上限", p.max_positions + " 只"], ["单票上限", (p.single_pct*100).toFixed(1) + "%"],
+      ["硬止损", (p.stop_loss*100).toFixed(0) + "%"], ["移动止损", (p.trail_drawdown*100).toFixed(0) + "%"],
+      ["时间止损", p.max_hold_days + " 个交易日"],
+      ["数据闸门", cand.data_ok ? "通过" : "未通过"]
+    ].map(([k,v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")
+      + `<dt>说明</dt><dd style="color:var(--t3)">${esc(cand.data_note)}</dd>`;
+  }
+
+  // ── 候选 + 执行质量 ──
+  const chips = document.getElementById("candChips");
+  if (cand && cand.candidates){
+    const enabled = new Set(cand.enabled_strategies || []);
+    const stratChips = (cand.enabled_strategies || []).map(s =>
+      `<span class="chip on">${esc(s)}</span>`).join("");
+    const list = cand.candidates.slice(0, 24).map(c =>
+      `<span class="chip">${esc((c.symbol||"").slice(2))} ${esc(c.name||"")}</span>`).join("");
+    chips.innerHTML = `<div style="width:100%;font-size:11px;color:var(--t3);padding:2px 0 4px">
+        候选资格策略</div>${stratChips}
+      <div style="width:100%;font-size:11px;color:var(--t3);padding:8px 0 4px">
+        候选 ${cand.candidates.length} 只（按回调深度排序）</div>${list}`;
+  } else {
+    chips.innerHTML = '<span class="chip">无候选</span>';
+  }
+
+  const rk = document.getElementById("reconKv");
+  if (recon && recon.n_fills > 0){
+    document.getElementById("reconNote").textContent = "已成交数据";
+    rk.innerHTML = [
+      ["意图笔数", recon.n_intents], ["成交笔数", recon.n_fills],
+      ["成交率", (recon.fill_rate*100).toFixed(1) + "%"],
+      ["滑点均值", pct(recon.slippage_mean_pct)],
+      ["滑点中位", pct(recon.slippage_median_pct)],
+      ["未成交", (recon.missed||[]).length + " 笔"]
+    ].map(([k,v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
+  } else {
+    document.getElementById("reconNote").textContent = "待成交后统计";
+    const pendingN = recon ? recon.n_intents : 0;
+    rk.innerHTML = `<dt>意图笔数</dt><dd>${pendingN}</dd>
+      <dt>成交笔数</dt><dd style="color:var(--t3)">0 · 未录入</dd>
+      <dt>成交率</dt><dd style="color:var(--t3)">—</dd>
+      <dt>滑点</dt><dd style="color:var(--t3)">—</dd>
+      <dt>说明</dt><dd style="color:var(--t3)">订单尚未执行。在券商终端下单成交后，
+        用 <span class="mono">POST /live/fills</span> 录入，这里才会出现真实成交率与滑点。
+        在此之前显示横线而不是 0%，因为「还没开始」和「全部失败」是两回事。</dd>`;
+  }
+}
+
+loadAll();
+setInterval(loadAll, 60000);
+</script>
+</body>
+</html>

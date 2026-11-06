@@ -8,6 +8,9 @@ dist/
 .venv/
 venv/
 env/
+.pytest_cache/
+.coverage
+htmlcov/
 
 # —— 本地数据 / 数据库（含行情 K 线，240M+，不入库）——
 data/
@@ -19,6 +22,11 @@ data/
 .env
 .env.*
 *.token
+
+# —— 看门狗本机配置（含 Windows 路径与 webhook，不入库）——
+qmt/watchdog/watchdog_config.json
+qmt/watchdog/watchdog_state.json
+qmt/watchdog/watchdog.lock
 
 # —— 日志 ——
 *.log
@@ -38,3 +46,9 @@ node_modules/
 
 # .env.example 需提交（模板），例外规则
 !.env.example
+
+# —— vendored 第三方源码（403MB，含 .env 凭据）不入库 ——
+vendor/
+
+# —— 运维脚本的时间戳备份 ——
+backend/scripts/*.bak_*

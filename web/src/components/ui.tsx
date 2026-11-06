@@ -144,12 +144,14 @@ export function Btn({
   kind = "primary",
   disabled,
   small,
+  title,
 }: {
   onClick?: () => void;
   children: ReactNode;
   kind?: "primary" | "ghost" | "warning";
   disabled?: boolean;
   small?: boolean;
+  title?: string;
 }) {
   const styles: Record<string, React.CSSProperties> = {
     primary: { background: "linear-gradient(135deg,#2456c8,#3a72e6)", color: "#fff", border: 0 },
@@ -160,6 +162,7 @@ export function Btn({
     <button
       onClick={onClick}
       disabled={disabled}
+      title={title}
       style={{
         ...styles[kind],
         padding: small ? "4px 12px" : "8px 22px",

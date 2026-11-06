@@ -253,6 +253,12 @@ def to_ak_code(symbol: str) -> str:
 
 def normalize_symbol(raw_code: str) -> tuple[str, str]:
     raw_code = raw_code.zfill(6)
+    # ⚠️ 北交所必须判在最前：920xxx（新代码段）与 83/87/88（存量段）都是北交所。
+    # 若被下面的 "9" 前缀吞掉，920xxx 会被误判成上交所 B 股（900xxx），
+    # 同一只股票会分裂成 sh920xxx / bj920xxx 两套 symbol —— 而库内 kline_daily
+    # 的历史是 bj920xxx，于是「按 stocks.symbol 查不到历史 K 线」（2026-09-18 修）。
+    if raw_code.startswith(("920", "83", "87", "88")):
+        return f"bj{raw_code}", "bj"
     if raw_code.startswith(("60", "68", "9", "5", "11", "113")):
         return f"sh{raw_code}", "sh"
     if raw_code.startswith(("00", "30", "15", "12")):

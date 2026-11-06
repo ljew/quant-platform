@@ -57,14 +57,34 @@ class Settings(BaseSettings):
     # 由 .env / 环境变量 QUANT_DATA_SCHEDULE 控制；Docker 已置 1，本地建议开启。
     data_schedule: bool = False
 
+    # —— 大模型（因子自然语言生成）——
+    # 走 OpenAI 兼容协议：DeepSeek / 火山方舟(豆包) / DashScope 兼容模式 都适用。
+    # 例：
+    #   DeepSeek   base_url=https://api.deepseek.com/v1        model=deepseek-chat
+    #   火山方舟    base_url=https://ark.cn-beijing.volces.com/api/v3  model=<推理接入点ID>
+    #   通义千问    base_url=https://dashscope.aliyuncs.com/compatible-mode/v1  model=qwen-plus
+    # 留空 llm_api_key 即关闭该功能：前端自动隐藏 AI 模式，手写表达式路径不受影响。
+    llm_base_url: str = "https://api.deepseek.com/v1"
+    llm_api_key: str = ""
+    llm_model: str = "deepseek-chat"
+
     # —— CORS ——
     cors_origins: list[str] = ["*"]
 
     # —— 前端静态目录 ——
-    # 默认托管 Vite React 完整平台构建产物 web/dist（左侧导航 QUANT·DESK 七页）。
-    # 构建产物缺失时 main.py 自动退回 Phase1 原生原型 frontend/（单页行情看板）。
+    # 托管 Vite React 完整平台构建产物 web/dist（QUANT·DESK v2.0 四入口导航）。
     # 可用环境变量 QUANT_FRONTEND_DIR 显式覆盖。
     frontend_dir: str = str(BASE_DIR / "web" / "dist")
+
+    # —— 公众号模块数据目录 ——
+    # 存放 knowledge.db（全文库）、vault/（Markdown 镜像）、state/。
+    # 容器内代码在 /app、数据挂载在 /data，compose 用 QUANT_WECHAT_DATA_DIR=/data/wechat 覆盖；
+    # 本机运行则自动落到 <项目根>/data/wechat。
+    wechat_data_dir: str = str(DATA_DIR / "wechat")
+
+    # 公众号每日增量抓取调度（每天 08:20 / 20:40 两次，只抓近 7 天）。
+    # crawl_content.py 只读挂载的 wewe-rss.db，不依赖宿主机 HTTP 服务，所以能跑在容器里。
+    wechat_schedule: bool = True
 
     @property
     def is_sqlite(self) -> bool:

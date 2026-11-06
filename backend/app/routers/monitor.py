@@ -16,7 +16,7 @@ import threading
 import time
 from datetime import date, datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 
@@ -98,7 +98,7 @@ def _latest(db, model, col) -> str | None:
 def _freshness(db) -> dict:
     today = date.today().isoformat()
 
-    def fresh(label: str, latest: str | None) -> dict:
+    def fresh(label: str, latest: str | None, max_days: int = 5) -> dict:
         days = None
         if latest:
             try:
@@ -106,13 +106,14 @@ def _freshness(db) -> dict:
             except Exception:  # noqa: BLE001
                 days = None
         return {"label": label, "latest": latest, "days_ago": days,
-                "stale": (days is not None and days > 5)}
+                "stale": (days is not None and days > max_days)}
 
     return {
         "kline": fresh("个股K线", _latest(db, KlineDaily, KlineDaily.trade_date)),
         "index": fresh("指数K线", _latest(db, IndexKlineDaily, IndexKlineDaily.trade_date)),
         "factor": fresh("因子截面", _latest(db, FactorDaily, FactorDaily.trade_date)),
-        "membership": fresh("成分快照", _latest(db, IndexMembership, IndexMembership.trade_date)),
+        # 成分快照为月度刷新（调度器月中自动跑），阈值放宽到 45 天，避免误报 stale
+        "membership": fresh("成分快照(月更)", _latest(db, IndexMembership, IndexMembership.trade_date), max_days=45),
         "today": today,
     }
 
@@ -131,6 +132,39 @@ def _paper_stats(db) -> dict:
 def data_health_endpoint():
     """数据健康度报告（规则引擎驱动）。"""
     return run_rules(SessionLocal())
+
+
+@router.get("/framework-health")
+def framework_health_endpoint():
+    """框架四层体检（调度 / 编排 / 数据 / 研究）—— 驾驶舱状态带的数据源。
+
+    与 scripts/daily_health.py 同源（app.services.framework_health），
+    命令行和页面看到的结论一致。
+    """
+    from app.services.framework_health import framework_health
+
+    db = SessionLocal()
+    try:
+        return framework_health(db)
+    finally:
+        db.close()
+
+
+@router.get("/holiday-mode")
+def holiday_mode_get():
+    """节假日静默状态：auto=非交易日自动静默，on/off=手动覆盖。"""
+    from app.services import holiday_mode
+    return holiday_mode.state()
+
+
+@router.put("/holiday-mode")
+def holiday_mode_put(payload: dict):
+    from app.services import holiday_mode
+    try:
+        return holiday_mode.set_mode(str(payload.get("mode", "auto")))
+    except ValueError as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 @router.get("/health/rules")
@@ -247,18 +281,14 @@ def pipeline_run_now():
 # ——— 一键修复：把「资产清单里的异常项」翻译成可执行的修复动作 ———
 
 # 数据集 → 需要重跑的管道步骤（执行时按 STEPS 原始顺序排序，保证依赖）
+# 说明：文本类数据集已从资产清单摘除（非结构化因子暂时下线），对应映射一并移除。
 _DATASET_STEPS: dict[str, list[str]] = {
     # 日K 补齐后因子与 DuckDB 也要跟着补，否则页面仍显示因子滞后
     "kline_daily": ["extract_stock_kline", "clean_bars", "compute_factors", "sync_duckdb"],
     "index_kline_daily": ["extract_index_kline", "sync_duckdb"],
     "factor_daily": ["compute_factors", "sync_duckdb"],
     "factor_mined_daily": ["compute_mined_factors", "sync_duckdb"],
-    "news_market_daily": ["extract_eastmoney_news", "clean_text", "score_sentiment"],
-    "news_stock_daily": ["extract_announcements", "extract_wechat_articles", "clean_text", "score_sentiment"],
     "stocks": ["extract_attributes"],
-    "__bronze_text__": ["extract_eastmoney_news", "extract_announcements",
-                        "extract_wechat_articles", "clean_text"],
-    "__silver__": ["clean_text", "score_sentiment"],
 }
 
 # 没有对应管道步骤的数据集 → 走独立脚本（均为幂等补缺脚本）

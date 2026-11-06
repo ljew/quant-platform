@@ -14,6 +14,7 @@ from datetime import date, datetime, timedelta
 import pandas as pd
 from sqlalchemy import func, select
 
+from app.datahub.ns_vars import TEXT_FACTOR_ENABLED
 from app.datahub.registry import write_bronze
 from app.datahub.source_config import get_source
 from app.database import SessionLocal, init_db
@@ -68,10 +69,13 @@ def step_extract_stock_kline(db) -> int:
     src = get_source("stock_kline_core")
     if not src:
         return 0
-    from app.services.etl import extract_kline_incremental, _get_universe
+    from app.services.etl import extract_kline_incremental, get_kline_universe
 
     params = src.get("params", {})
-    syms = _get_universe(db)
+    # 抽取域 = 全A 在市股票（库内 kline_daily 主口径为全A 未复权原始价），
+    # **不是**核心池 —— 用核心池会让「全A 回填到某日」之后的每一天都只补 ~1800 只，
+    # 形成断崖缺口，并连带让因子步骤判定「覆盖不足」而拒绝计算。
+    syms = get_kline_universe(db)
     lookback = int(params.get("lookback_days", 30))
     sd = date.today() - timedelta(days=lookback)
     stats: dict = {"errors": []}
@@ -365,6 +369,10 @@ def step_compute_factors(db) -> int:
         cover[d] = int(c or 0)
     if not cover:
         return 0
+    # 基准 = 全表峰值（K 线主口径为**全A**，约 5550 只/日）。因子本身只算核心池，
+    # 但覆盖度必须按全A 校验：某日若只有核心池入库（~1800），说明那是半截数据，
+    # 宁可跳过也不能拿它算截面。⚠️ 因此抽取步骤绝不能退回核心池口径，否则
+    # 这里会静默地把每一天都判为「覆盖不足」，因子永远追不上行情。
     full = max(cover.values())
     have = {d for d, in db.execute(
         select(FactorDaily.trade_date).where(FactorDaily.trade_date >= since).distinct()
@@ -429,12 +437,18 @@ def step_clean_text(db) -> int:
 
 
 def step_compute_mined_factors(db) -> int:
-    """Gold：启用状态注册因子的最新截面 → factor_mined_daily（长表，幂等覆盖）。"""
+    """Gold：启用状态注册因子的最新截面 → factor_mined_daily（长表，幂等覆盖）。
+
+    「启用」以研究卡为准（research_card_svc.enabled_factor_names）：注册表
+    status=='enabled' 且卡状态 enabled 才计算；无卡的按旧行为保底并告警。
+    """
     from app.models import FactorRegistry, FactorMinedDaily
     from app.core.engine.factor_expr import eval_factor
+    from app.services.research_card_svc import enabled_factor_names
 
-    enabled = db.execute(select(FactorRegistry).where(
-        FactorRegistry.status == "enabled")).scalars().all()
+    names = set(enabled_factor_names(db))
+    enabled = [r for r in db.execute(select(FactorRegistry).where(
+        FactorRegistry.status == "enabled")).scalars().all() if r.name in names]
     if not enabled:
         return 0
     syms = db.execute(select(Stock.symbol)).scalars().all()
@@ -455,7 +469,7 @@ def step_compute_mined_factors(db) -> int:
     aligned: dict[str, dict] = {}
     for sym2, td2, c2 in db.execute(select(KlineDaily.symbol, KlineDaily.trade_date,
                                            KlineDaily.close).where(
-            KlineDaily.adj == "qfq", KlineDaily.trade_date >= slice_dates[0])):
+            KlineDaily.adj == "none", KlineDaily.trade_date >= slice_dates[0])):
         aligned.setdefault(sym2, {})[td2] = float(c2)
     bench_map = {}
     for td2, c2 in db.execute(select(IndexKlineDaily.trade_date, IndexKlineDaily.close).where(
@@ -491,13 +505,15 @@ def step_compute_mined_factors(db) -> int:
             seg = [amap.get(d2) for d2 in snap_slice[-126:] if d2 in amap]
             mkt_b = [bench_map.get(d2) for d2 in snap_slice[-len(seg):]]
             try:
+                # 文本变量按总开关注入（关闭时该键不存在，用到它的表达式会被静默跳过）
                 v = eval_factor(fac.expr, {"c_m": seg, "c_r": seg, "c_v": seg,
                                            "c_b": seg, "c_t": seg, "mkt_b": mkt_b,
                                            "pe_ttm": None, "pb": None,
                                            "market_cap": None, "roe": None,
                                            "revenue_yoy": None, "profit_yoy": None,
                                            "earnings_surprise": None,
-                                           "news_senti": _news_lookup(sym2)})
+                                           **({"news_senti": _news_lookup(sym2)}
+                                              if TEXT_FACTOR_ENABLED else {})})
             except Exception:  # noqa: BLE001
                 v = None
             if v is not None:

@@ -24,6 +24,10 @@ ANALYTIC_TABLES = [
     "stocks",
     "index_membership",
     "factor_daily",
+    # 2026-09 扩池到全A 时新增：回测取价依赖复权因子，因子检验依赖现金流原始字段。
+    # 不进 DuckDB 的话，评估模块每次都要回 SQLite 查，失去列存优势。
+    "adj_factor_daily",
+    "financials_raw",
 ]
 
 INDEXES = {
@@ -33,6 +37,8 @@ INDEXES = {
     "stocks": ["symbol"],
     "index_membership": ["index_code", "trade_date"],
     "factor_daily": ["symbol", "trade_date"],
+    "adj_factor_daily": ["symbol", "trade_date"],
+    "financials_raw": ["symbol", "ann_date"],
 }
 
 

@@ -36,6 +36,11 @@ class Stock(Base):
     raw_code: Mapped[str] = mapped_column(String(16))
     industry: Mapped[str | None] = mapped_column(String(64), nullable=True)
     list_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # ---- 上市生命周期（PIT 成分重建的依据，缺失会导致幸存者偏差）----
+    # 全A 没有官方成分快照，只能靠 list_date / delist_date 逐月重建「当时可交易的股票」。
+    # 若不记录退市日，2019 年的池子会包含当年尚未上市的公司（未来函数）。
+    delist_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    list_status: Mapped[str | None] = mapped_column(String(2), nullable=True)  # L上市/D退市/P暂停
     # 基本面截面快照（来自 tushare daily_basic，回测期初就近交易日，用于行业/市值中性化与估值因子）
     market_cap: Mapped[float | None] = mapped_column(Float, nullable=True)  # 总市值（亿元）
     pe_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -48,6 +53,41 @@ class Stock(Base):
 
     def __repr__(self):
         return f"<Stock {self.symbol} {self.name}>"
+
+
+class StockValuationDaily(Base):
+    """估值时序表（symbol × trade_date），**PIT 因子挖掘的数据基础**。
+
+    为什么必须有这张表（B1，2026-10-08）：
+      `stocks` 表的 pe_ttm / pb / market_cap 是**最新一列快照**，被
+      `_attrs_map`（factor_mining.py）复用于所有历史截面 → 2019 年的截面
+      用的是 2026 年的 PE，属**明确前视偏差**。实测：茅台 2019-01-10 的
+      pe_ttm=24.42、pb=7.59，与今日值完全不同。
+
+    任何含估值/市值因子的历史结论，在本表回填前都不可信。
+
+    数据来源：tushare `daily_basic`（按 trade_date 全市场拉取，
+    实测 3555 行/0.6 秒，回填 2019 至今约 640 万行 / 0.4GB / 20 分钟）。
+
+    字段口径与 `stocks` 对齐（total_mv 单位：万元 → 存亿元）。
+    """
+
+    __tablename__ = "stock_valuation_daily"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True)
+    pe_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pb: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_mv: Mapped[float | None] = mapped_column(Float, nullable=True)   # 总市值（亿元）
+    circ_mv: Mapped[float | None] = mapped_column(Float, nullable=True)    # 流通市值（亿元）
+    turnover_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "trade_date", name="uq_svd_symbol_date"),
+        Index("ix_svd_date_symbol", "trade_date", "symbol"),
+    )
 
 
 class FundamentalsHistory(Base):
@@ -75,11 +115,53 @@ class FundamentalsHistory(Base):
         return f"<FundamentalsHistory {self.symbol} {self.report_date}>"
 
 
+class FinancialsRaw(Base):
+    """财务原始三表（按公告日 ann_date 存原始字段）—— 支撑现金流类因子。
+
+    为什么另建表而不是扩 fundamentals_history：
+    后者只有 roe / revenue_yoy / profit_yoy 三个加工后的比率，而策略的核心因子
+    FCF/OE = (经营活动现金流净额 − 资本开支) / 总资产，需要**绝对额**字段才能算。
+    三个字段分别来自 fina_indicator(roe) / cashflow(现金流+资本开支) / balancesheet(总资产)。
+
+    按 ann_date 而非 end_date 存储：回测在 t 日只能知道 t 之前已公告的财报。
+    用 end_date 会引入前视（如 2020 年报的实际公布日是 2021-04-28，
+    若按 end_date=2020-12-31 对齐，等于提前 4 个月看到数据）。
+
+    唯一键取 (symbol, end_date) 而非 (symbol, ann_date)：财务数据的天然主键是
+    「哪家公司哪一期」；公告日只是属性。同一公告日可能同时更正多期，按 ann_date
+    去重会静默丢数据。
+    """
+
+    __tablename__ = "financials_raw"
+    __table_args__ = (
+        UniqueConstraint("symbol", "end_date", name="uq_fin_symbol_end"),
+        Index("ix_fin_symbol_ann", "symbol", "ann_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(16), nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)        # 报告期（主键组成）
+    ann_date: Mapped[date] = mapped_column(Date, nullable=False)        # 公告日（对齐基准）
+    roe: Mapped[float | None] = mapped_column(Float, nullable=True)             # 净资产收益率(%)
+    n_cashflow_act: Mapped[float | None] = mapped_column(Float, nullable=True)  # 经营活动现金流净额
+    capex: Mapped[float | None] = mapped_column(Float, nullable=True)           # 资本开支（购建固定/无形/其他长期资产）
+    total_assets: Mapped[float | None] = mapped_column(Float, nullable=True)    # 总资产
+
+    def __repr__(self):
+        return f"<FinancialsRaw {self.symbol} {self.ann_date}>"
+
+
 class KlineDaily(Base):
     """日K线表。
 
     生产环境 TimescaleDB 会将此表转为 Hypertable（按 trade_date 分区），
     索引 (symbol, trade_date) 保证回测时按标的+时间范围的高速查询。
+
+    价格口径（2026-09 起）：**存未复权原始价**，`adj='none'`。
+    复权因子单独存 adj_factor_daily，取价时由 utils.price 按需构造前复权/后复权。
+    为什么要改：原先直接存前复权价，历史价会随新的分红送股事件**回溯变动**
+    —— 同一个 2020 年的日期，在 2024 年和 2026 年查到的价格不同，
+    跨期结果不可复现，且严格来说含有前视。存原始价 + 因子则完全可复现。
     """
 
     __tablename__ = "kline_daily"
@@ -96,9 +178,9 @@ class KlineDaily(Base):
     low: Mapped[float] = mapped_column(Float, nullable=False)
     close: Mapped[float] = mapped_column(Float, nullable=False)
     volume: Mapped[int] = mapped_column(Integer, default=0)
-    amount: Mapped[float] = mapped_column(Float, default=0.0)  # 成交额（元）
-    # 复权类型：qfq 前复权 / hfq 后复权 / None 不复权
-    adj: Mapped[str] = mapped_column(String(4), default="qfq")
+    amount: Mapped[float] = mapped_column(Float, default=0.0)  # 成交额（千元，tushare 原单位）
+    # 复权类型：all-a 建仓后统一为 none（存原始价）；qfq/hfq 为历史遗留口径
+    adj: Mapped[str] = mapped_column(String(4), default="none")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     def __repr__(self):
@@ -400,6 +482,9 @@ class FactorMineResult(Base):
     ic_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
     icir: Mapped[float | None] = mapped_column(Float, nullable=True)
     result_json: Mapped[str] = mapped_column(Text, default="{}")
+    # 影响结果的全部入参签名（start|end|groups|forward）。
+    # 只比 expr 不够：同表达式换区间/调 forward 结果本就不同，必须一并纳入查重键。
+    params_json: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     def __repr__(self):
@@ -546,3 +631,382 @@ class HealthRule(Base):
     last_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_status: Mapped[str | None] = mapped_column(String(8), nullable=True)
     last_checked: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class LlmProvider(Base):
+    """大模型通道配置（页面上维护，运行时生效，无需重启）。
+
+    为什么落库而不是只读 .env：.env 是**启动时**加载的，改一次要重启后端；本表由
+    ``services/llm_config.resolve_active()`` 在每次调用时读，页面改完立即生效。
+
+    不变量：只要有记录，就有且仅有一条 ``is_default=1``（由服务层维护），
+    因此不存在「全都不是默认」的悬空态。
+
+    安全：``api_key`` 为明文存储 —— 与 ``.env`` 同级（本机单用户、库文件同权限），
+    不做假加密；API 返回一律走 :func:`llm_config.mask_key` 脱敏，绝不出明文。
+    """
+
+    __tablename__ = "llm_providers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64))  # 显示名，如「DeepSeek 主号」
+    vendor: Mapped[str] = mapped_column(String(24), default="custom")  # 预设标识
+    base_url: Mapped[str] = mapped_column(String(255))
+    api_key: Mapped[str] = mapped_column(Text, default="")
+    model: Mapped[str] = mapped_column(String(120))
+    is_default: Mapped[int] = mapped_column(Integer, default=0)
+    # 最近一次连通性测试结果（页面直接展示，省得每次重测）
+    last_test_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_test_ok: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_test_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_test_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+# ────────────────────────── 信号中心（Sequoia-X 迁移，2026-09-30）──────────────────────────
+
+class SignalDaily(Base):
+    """每日选股明细：某交易日、某策略命中了哪些股票。
+
+    这是信号引擎的**原始事实层**——streak（连续出现天数）、共振数、动作判定
+    全部由它聚合而来，不做任何人工修正。UNIQUE(date, strategy, symbol) 保证
+    重跑幂等（同日同策略同股只留一行）。
+    """
+
+    __tablename__ = "signal_daily"
+    __table_args__ = (
+        UniqueConstraint("date", "strategy", "symbol", name="uq_signal_daily_dss"),
+        Index("ix_signal_daily_date", "date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    date: Mapped[date] = mapped_column(Date)            # 数据日期（= 交易日）
+    strategy: Mapped[str] = mapped_column(String(40))   # 策略 key，如 ma_volume
+    symbol: Mapped[str] = mapped_column(String(16))     # 平台格式，如 sz000001
+    name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON：命中时的关键指标
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class SignalAction(Base):
+    """每日买卖动作判定（signal_engine._judge 的输出）。
+
+    action ∈ BUY_STRONG / WATCH / NEW / REDUCE / SELL / EXIT（与 Sequoia 雷达口径一致）。
+    判定顺序风控优先：止损/止盈/超期 → MA 破位 → 信号强度。UNIQUE(date, symbol)。
+    """
+
+    __tablename__ = "signal_actions"
+    __table_args__ = (
+        UniqueConstraint("date", "symbol", name="uq_signal_actions_ds"),
+        Index("ix_signal_actions_date", "date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    date: Mapped[date] = mapped_column(Date)
+    symbol: Mapped[str] = mapped_column(String(16))
+    name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    action: Mapped[str] = mapped_column(String(16))
+    streak: Mapped[int] = mapped_column(Integer, default=0)       # 连续出现交易日数
+    resonance: Mapped[int] = mapped_column(Integer, default=0)    # 当日共振策略数
+    strategies: Mapped[str] = mapped_column(Text, default="")     # 命中策略名，顿号分隔
+    quality_tier: Mapped[str] = mapped_column(String(8), default="neutral")
+    close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ma10: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ma20: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AgentEvent(Base):
+    """Agent 事件流：研究过程的每一步动作都落这里，SSE 由此推送到驾驶舱。
+
+    run_id 关联 research_runs；level ∈ info/warn/error；status 用于步骤型事件
+    （running/ok/fail）。append-only，不做更新——事件流的历史就是研究过程的回放。
+    """
+
+    __tablename__ = "agent_events"
+    __table_args__ = (Index("ix_agent_events_run", "run_id", "id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    agent: Mapped[str] = mapped_column(String(24))     # data/quality/factor/research/...
+    step: Mapped[str] = mapped_column(String(64), default="")
+    level: Mapped[str] = mapped_column(String(8), default="info")
+    status: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    message: Mapped[str] = mapped_column(Text, default="")
+    rows: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class ResearchRun(Base):
+    """一次研究运行（每日流水线或手动触发）的顶层记录。
+
+    gate_status ∈ none/pending/approved/rejected —— RiskAgent 审查闸门状态，
+    pending 时流水线挂起等待人工（或倒计时自动放行）。
+    """
+
+    __tablename__ = "research_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trigger: Mapped[str] = mapped_column(String(16), default="manual")  # manual/scheduler
+    status: Mapped[str] = mapped_column(String(12), default="RUNNING")
+    data_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # 本轮处理的数据日期
+    gate_status: Mapped[str] = mapped_column(String(12), default="none")
+    gate_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 闸门倒计时截止时刻：超过则自动放行（保证无人值守），人工放行/否决可提前
+    gate_deadline: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 注意：必须用 datetime.now（本地时区），与 orchestrator 的 finished_at 口径一致。
+    # 曾误用 utcnow，导致 started_at 比 finished_at 早 8 小时，所有 run 耗时虚增。
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class NotifyLog(Base):
+    """发布记录：每次邮件/飞书推送一条，便于追溯与去重。"""
+
+    __tablename__ = "notify_log"
+    __table_args__ = (Index("ix_notify_log_dedup", "dedup_key"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    channel: Mapped[str] = mapped_column(String(16))   # email/feishu
+    subject: Mapped[str] = mapped_column(String(255), default="")
+    dedup_key: Mapped[str] = mapped_column(String(128), default="")  # 如 signal|2026-09-30
+    status: Mapped[str] = mapped_column(String(12), default="ok")    # ok/fail/skip
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class PortfolioState(Base):
+    """镜像组合快照（Sequoia watchlist 迁移）：按信号自动模拟的真实成本组合。
+
+    每次 BacktestAgent 运行按数据日 upsert（同日覆盖）；equity/holdings/trades
+    均为 JSON 数组，前端直接渲染。
+    """
+
+    __tablename__ = "portfolio_state"
+    __table_args__ = (UniqueConstraint("as_of_date", name="uq_portfolio_state_d"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    as_of_date: Mapped[date] = mapped_column(Date)
+    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    equity_json: Mapped[str] = mapped_column(Text, default="[]")
+    holdings_json: Mapped[str] = mapped_column(Text, default="[]")
+    trades_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class PortfolioExpState(Base):
+    """实验组合快照（2026-10-14 重新优化）：fresh_ma 规则的第二条 paper sleeve。
+
+    与 portfolio_state（经典 BUY_STRONG 规则）完全隔离、并行运行，互不影响；
+    实验结论未稳定前不接入生产信号管道。按数据日 upsert（同日覆盖）。
+    equity/holdings/trades 均为 JSON 数组，前端直接渲染。
+    """
+
+    __tablename__ = "portfolio_exp_state"
+    __table_args__ = (UniqueConstraint("as_of_date", name="uq_portfolio_exp_d"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    as_of_date: Mapped[date] = mapped_column(Date)
+    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    equity_json: Mapped[str] = mapped_column(Text, default="[]")
+    holdings_json: Mapped[str] = mapped_column(Text, default="[]")
+    trades_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AutoResearchRun(Base):
+    """自动研究闭环运行记录（每日自动挖矿 / 每周自动复盘）。
+
+    summary_json 存结构化摘要（挖掘：评级分布/入库名单；复盘：归因要点/建议），
+    report_path 指向 data/reports/ 下的完整 HTML 报告。
+    """
+
+    __tablename__ = "auto_research_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job: Mapped[str] = mapped_column(String(16))          # mining / review
+    trigger: Mapped[str] = mapped_column(String(16), default="manual")  # scheduler / manual
+    status: Mapped[str] = mapped_column(String(12), default="RUNNING")  # RUNNING/SUCCESS/FAILED
+    summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    report_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class ResearchCard(Base):
+    """研究卡：一个策略/因子从想法到生产的标准化载体（docs/research-card-v0.1.md）。
+
+    状态机：watch 观察 → candidate 候选 → enabled 启用 → downgraded 降级 → retired 退役。
+    本表是生产门禁的唯一真相：信号定档（xq/runner → resolve_strategy_quality）与
+    因子每日计算（datahub/runner → enabled_factor_names）都读这里；
+    STRATEGY_QUALITY / factor_registry.status 仅作冗余校验与无卡回退。
+    """
+
+    __tablename__ = "research_cards"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    card_type: Mapped[str] = mapped_column(String(12))      # strategy / factor
+    key: Mapped[str] = mapped_column(String(64))            # 策略 key 或因子名（类型内唯一）
+    name: Mapped[str] = mapped_column(String(64))           # 中文名
+    hypothesis: Mapped[str] = mapped_column(Text, default="")        # 假设（一句话）
+    data_spec: Mapped[str] = mapped_column(Text, default="")         # 数据与口径
+    evidence_json: Mapped[str] = mapped_column(Text, default="{}")   # 证据（窗口超额/样本量/t 值/IC）
+    cost_note: Mapped[str] = mapped_column(Text, default="")         # 成本与容量
+    crowd_note: Mapped[str] = mapped_column(Text, default="")        # 拥挤度/相关性
+    fail_condition: Mapped[str] = mapped_column(Text, default="")    # 失效条件（预先写明）
+    state: Mapped[str] = mapped_column(String(16), default="watch")
+    history_json: Mapped[str] = mapped_column(Text, default="[]")    # 状态迁移留痕
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 实盘系统（L3-L7，docs/LIVE-TRADING-DESIGN.md）
+#
+# 与 paper_* / broker_orders 物理隔离：实盘数据不可重算，不能被研究流水线
+# 覆盖，也不能与「重演型」模拟盘混用语义。
+# 唯一事实源：live_position 只由成交回报（live_fill）驱动，绝不由模型推演写入。
+# ══════════════════════════════════════════════════════════════════════
+
+
+class LivePosition(Base):
+    """实盘实际持仓（唯一事实源）。
+
+    entry_date / peak_close 是策略风控的状态变量（硬止损、移动止损、时间止损），
+    必须随持仓一起维护——回测里这些是内存变量，实盘必须落库，否则重启即丢。
+    """
+
+    __tablename__ = "live_position"
+    __table_args__ = (UniqueConstraint("strategy_key", "symbol", name="uq_live_pos"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    strategy_key: Mapped[str] = mapped_column(String(32), default="fresh_ma")
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    name: Mapped[str] = mapped_column(String(64), default="")
+    shares: Mapped[int] = mapped_column(Integer, default=0)
+    avg_cost: Mapped[float] = mapped_column(Float, default=0.0)      # 未复权成交均价
+    entry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    peak_close: Mapped[float] = mapped_column(Float, default=0.0)    # 持仓期最高收盘（未复权）
+    last_mark_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now,
+                                                 onupdate=datetime.now)
+
+
+class LiveDecisionSnapshot(Base):
+    """决策快照（不可变，可复现的锚点）。
+
+    为什么必须存：候选资格依赖 resolve_strategy_quality(db)，而卡片档位会变。
+    今天的 enabled 集合与三个月后回看时算出来的不是同一套——不冻结就永远无法回答
+    「那天为什么买这只」。
+    """
+
+    __tablename__ = "live_decision_snapshot"
+    __table_args__ = (UniqueConstraint("trade_date", "strategy_key", name="uq_live_snap"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True)
+    strategy_key: Mapped[str] = mapped_column(String(32), default="fresh_ma")
+    data_date: Mapped[date | None] = mapped_column(Date, nullable=True)   # 行情实际最新日
+    data_ok: Mapped[int] = mapped_column(Integer, default=0)              # 完整性闸门 0/1
+    data_note: Mapped[str] = mapped_column(Text, default="")
+    enabled_json: Mapped[str] = mapped_column(Text, default="[]")         # 当日 enabled 策略
+    card_tiers_json: Mapped[str] = mapped_column(Text, default="{}")      # 九策略档位
+    gate_open: Mapped[int] = mapped_column(Integer, default=0)
+    gate_exc: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gate_n: Mapped[int] = mapped_column(Integer, default=0)
+    candidates_json: Mapped[str] = mapped_column(Text, default="[]")      # 候选池明细
+    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class LiveOrderIntent(Base):
+    """订单意图 = 目标持仓 − 实际持仓。
+
+    幂等键 (trade_date, strategy_key, symbol, side)：同一天重复跑流水线只更新
+    不新增，这是「重跑无害」的基础。
+    状态机：DRAFT → APPROVED → SENT → FILLED / PARTIAL / REJECTED / EXPIRED
+    """
+
+    __tablename__ = "live_order_intent"
+    __table_args__ = (
+        UniqueConstraint("trade_date", "strategy_key", "symbol", "side",
+                         name="uq_live_intent"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True)     # 信号日（次日执行）
+    exec_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    strategy_key: Mapped[str] = mapped_column(String(32), default="fresh_ma")
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    name: Mapped[str] = mapped_column(String(64), default="")
+    side: Mapped[str] = mapped_column(String(4))                   # BUY / SELL
+    target_shares: Mapped[int] = mapped_column(Integer, default=0)
+    actual_shares: Mapped[int] = mapped_column(Integer, default=0)
+    qty: Mapped[int] = mapped_column(Integer, default=0)
+    ref_price: Mapped[float] = mapped_column(Float, default=0.0)   # 未复权参考价（收盘）
+    limit_price: Mapped[float] = mapped_column(Float, default=0.0) # 建议限价
+    est_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    priority: Mapped[int] = mapped_column(Integer, default=100)
+    status: Mapped[str] = mapped_column(String(16), default="DRAFT")
+    reject_reason: Mapped[str] = mapped_column(Text, default="")
+    filled_qty: Mapped[int] = mapped_column(Integer, default=0)
+    filled_price: Mapped[float] = mapped_column(Float, default=0.0)
+    snapshot_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now,
+                                                 onupdate=datetime.now)
+
+
+class LiveFill(Base):
+    """成交回报（人工录入 / 对账单 CSV 导入）。
+
+    source: manual / csv / broker。对账以本表为准，不以 intent 为准。
+    """
+
+    __tablename__ = "live_fill"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    intent_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True)
+    strategy_key: Mapped[str] = mapped_column(String(32), default="fresh_ma")
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    side: Mapped[str] = mapped_column(String(4))
+    qty: Mapped[int] = mapped_column(Integer, default=0)
+    price: Mapped[float] = mapped_column(Float, default=0.0)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    commission: Mapped[float] = mapped_column(Float, default=0.0)
+    stamp_tax: Mapped[float] = mapped_column(Float, default=0.0)
+    transfer_fee: Mapped[float] = mapped_column(Float, default=0.0)
+    source: Mapped[str] = mapped_column(String(12), default="manual")
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class LiveEquity(Base):
+    """每日净值：实盘 + 影子对照。
+
+    divergence_pct = 实盘累计收益 − 影子累计收益，等于执行成本的度量。
+    这个值长期稳定在成本量级 = 系统健康；突然扩大 = 执行或数据出问题。
+    """
+
+    __tablename__ = "live_equity"
+    __table_args__ = (UniqueConstraint("trade_date", "strategy_key", name="uq_live_eq"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True)
+    strategy_key: Mapped[str] = mapped_column(String(32), default="fresh_ma")
+    cash: Mapped[float] = mapped_column(Float, default=0.0)
+    market_value: Mapped[float] = mapped_column(Float, default=0.0)
+    total: Mapped[float] = mapped_column(Float, default=0.0)
+    n_positions: Mapped[int] = mapped_column(Integer, default=0)
+    shadow_total: Mapped[float | None] = mapped_column(Float, nullable=True)
+    divergence_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)

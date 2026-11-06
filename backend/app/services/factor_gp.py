@@ -17,12 +17,16 @@ import random
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, and_
 from sqlalchemy.orm import Session
 
 from app.core.engine.factor_expr import eval_factor
-from app.models import KlineDaily, Stock, FundamentalsHistory, IndexKlineDaily
+from app.datahub.ns_vars import fin_asof, fin_hist_map, make_ns
+from app.models import (AdjFactorDaily, FinancialsRaw, FundamentalsHistory,
+                        IndexKlineDaily, KlineDaily, Stock)
+from app.services.adjust import apply_adjust_series
 from app.services.factor_mining import (
+    _collect_seg,
     _spearman,
     _mean,
     _std,
@@ -32,8 +36,13 @@ from app.services.factor_mining import (
 )
 
 # ============ 表达式文法 ============
-LIST_VARS = ["c_m", "c_v", "c_b", "c_r", "c_t"]
-ATTR_VARS = ["pe_ttm", "pb", "market_cap", "roe", "revenue_yoy", "profit_yoy", "earnings_surprise"]
+# 量能序列与收盘序列同窗口同长度，可自由互换/组合（如 corr(returns(c_v), returns(vol_v))）
+LIST_VARS = ["c_m", "c_v", "c_b", "c_r", "c_t",
+             "vol_m", "vol_v", "vol_r", "amt_m", "amt_v", "amt_r"]
+# 属性终端只投放「无量纲」财务量：ocf/capex/total_assets 是元为单位的大数，
+# 直接进 GP 会主导量纲、淹没其他项，故只暴露比值型。
+ATTR_VARS = ["pe_ttm", "pb", "market_cap", "roe", "revenue_yoy", "profit_yoy",
+             "earnings_surprise", "fcf_yield", "ocf_to_assets", "capex_intensity"]
 
 # 一元列表→标量 终结函数
 TERMINALS_1ARG = ["std", "mean", "min", "max", "sum", "skew", "maxdd"]
@@ -152,7 +161,8 @@ def mutate_expr(expr: str, rng: random.Random) -> str:
 def build_context(db: Session, start: str, end: str, forward: int, step: int,
                   pool_size: int | None = 200) -> dict:
     """一次性加载评估所需数据（多候选共享）。pool_size 抽样加速。"""
-    from app.services.factor_mining import _core_universe, _attrs_map, _es_map, _dates_in_range
+    from app.services.factor_mining import (_core_universe, _attrs_map, _es_map,
+                                           _dates_in_range, _attrs_timeline, _attrs_asof)
 
     ed = date.fromisoformat(end) if end else date.today()
     sd = date.fromisoformat(start) if start else ed - timedelta(days=400)
@@ -163,18 +173,48 @@ def build_context(db: Session, start: str, end: str, forward: int, step: int,
         syms = syms_all
 
     attrs = _attrs_map(db, syms)
+    # 估值 PIT 时序（B1，2026-10-08）：GP 侧同样修复「2019 截面用 2026 年 PE」
+    attrs_tl = _attrs_timeline(db, syms, sd, ed)
     es_map = _es_map(db, syms)
     load_from = sd - timedelta(days=300)
 
+    # 财务（PIT）：全量预载一次，按公告日逐截面选取
+    fin_hist = fin_hist_map(db.execute(
+        select(FinancialsRaw.symbol, FinancialsRaw.ann_date,
+               FinancialsRaw.n_cashflow_act, FinancialsRaw.capex,
+               FinancialsRaw.total_assets)
+    ).all())
+
     axis_dates = _dates_in_range(db, load_from, ed)
     aligned: dict[str, dict[date, float]] = {}
+    vol_aligned: dict[str, dict[date, float]] = {}
+    amt_aligned: dict[str, dict[date, float]] = {}
     rows = db.execute(
-        select(KlineDaily.symbol, KlineDaily.trade_date, KlineDaily.close)
-        .where(KlineDaily.symbol.in_(syms), KlineDaily.adj == "qfq",
+        select(KlineDaily.symbol, KlineDaily.trade_date, KlineDaily.close,
+               KlineDaily.volume, KlineDaily.amount, AdjFactorDaily.adj_factor)
+        .outerjoin(AdjFactorDaily, and_(
+            AdjFactorDaily.symbol == KlineDaily.symbol,
+            AdjFactorDaily.trade_date == KlineDaily.trade_date))
+        .where(KlineDaily.symbol.in_(syms), KlineDaily.adj == "none",
                KlineDaily.trade_date >= load_from, KlineDaily.trade_date <= ed)
+        .order_by(KlineDaily.symbol, KlineDaily.trade_date)
     ).all()
-    for sym, td, close in rows:
-        aligned.setdefault(sym, {})[td] = float(close)
+    # 折算成后复权：GP 的适应度是 IC，价格序列含除权跳变会直接污染因子值。
+    _raw: dict[str, list[float]] = {}
+    _fac: dict[str, list] = {}
+    _meta: dict[str, list] = {}
+    for sym, td, close, vol, amt, f in rows:
+        _raw.setdefault(sym, []).append(float(close))
+        _fac.setdefault(sym, []).append(f)
+        _meta.setdefault(sym, []).append((td, vol, amt))
+    for sym, seq in _raw.items():
+        for (td, vol, amt), c in zip(_meta[sym],
+                                     apply_adjust_series(seq, _fac[sym], "hfq")):
+            aligned.setdefault(sym, {})[td] = float(c)
+            if vol is not None:
+                vol_aligned.setdefault(sym, {})[td] = float(vol)
+            if amt is not None:
+                amt_aligned.setdefault(sym, {})[td] = float(amt)
     bench_rows = db.execute(
         select(IndexKlineDaily.trade_date, IndexKlineDaily.close)
         .where(IndexKlineDaily.symbol == "sh000906",
@@ -223,14 +263,18 @@ def build_context(db: Session, start: str, end: str, forward: int, step: int,
                 amap = aligned.get(sym)
                 if not amap or snap not in amap:
                     continue
-                seg = [c for c in (amap.get(d) for d in slice_dates) if c is not None]
-                a = attrs.get(sym, {}) or {}
-                ns = {"c_m": seg, "c_r": seg, "c_v": seg, "c_b": seg, "c_t": seg,
-                      "mkt_b": bench_aligned[i0: idx + 1][-len(seg):],
-                      "pe_ttm": a.get("pe_ttm"), "pb": a.get("pb"), "market_cap": a.get("market_cap"),
-                      "roe": a.get("roe"), "revenue_yoy": a.get("revenue_yoy"),
-                      "profit_yoy": a.get("profit_yoy"), "earnings_surprise": es_map.get(sym),
-                      "industry": a.get("industry")}
+                seg, vseg, aseg = _collect_seg(
+                    amap, vol_aligned.get(sym) or {}, amt_aligned.get(sym) or {}, slice_dates)
+                if len(seg) < 60:
+                    continue
+                a = dict(attrs.get(sym, {}) or {})
+                if attrs_tl:
+                    _pv = _attrs_asof(attrs_tl, sym, snap)
+                    if _pv:
+                        a.update(_pv)
+                ns = make_ns(seg, bench_aligned[i0: idx + 1], a,
+                             esv=es_map.get(sym), vols=vseg, amts=aseg,
+                             fin=fin_asof(fin_hist, sym, snap))
                 try:
                     v = eval_factor(fexpr, ns)
                 except Exception:  # noqa: BLE001
@@ -255,7 +299,9 @@ def build_context(db: Session, start: str, end: str, forward: int, step: int,
         return _mean(vals) if vals else None
 
     return {
-        "syms": syms, "attrs": attrs, "es_map": es_map, "aligned": aligned,
+        "syms": syms, "attrs": attrs, "attrs_tl": attrs_tl, "es_map": es_map,
+        "aligned": aligned,
+        "vol_aligned": vol_aligned, "amt_aligned": amt_aligned, "fin_hist": fin_hist,
         "axis_dates": axis_dates, "bench_aligned": bench_aligned, "snap_pairs": snap_pairs,
         "ortho_cache": ortho_cache,
         "news_lookup": _news_lookup,
@@ -306,6 +352,11 @@ def evaluate_candidate(expr: str, ctx: dict, groups: int,
                       回归取残差再算 IC —— 度量"增量预测能力"，惩罚重复发现。
     crisis_only=True：仅统计持有窗口内基准下跌(<-3%)的截面 —— 危机 Alpha。
     """
+    # ⚠️ 必须在这里导入：_attrs_asof 只在 build_context 内局部导入，
+    # 本函数作用域没有它 → 一旦 ctx 带 attrs_tl（有属性时间线时必然带）
+    # 就抛 NameError，整批 GP 候选全灭（2026-11-02 pyflakes 扫出）。
+    from app.services.factor_mining import _attrs_asof
+
     ok, err, _ = validate_expr(expr)
     if not ok:
         return {"error": err}
@@ -313,7 +364,7 @@ def evaluate_candidate(expr: str, ctx: dict, groups: int,
     g_rets: dict[int, list[float]] = {g: [] for g in range(1, groups + 1)}
     crisis_ic_list: list[float] = []
     crisis_windows = 0
-    fv_cache: dict[tuple, list[float]] = {}
+    fv_cache: dict[tuple, tuple] = {}
     for idx, snap, fwd_date, bench_ret, is_crisis in ctx["snap_pairs"]:
         i0 = max(0, idx - 130)
         slice_dates = ctx["axis_dates"][i0: idx + 1]
@@ -326,27 +377,27 @@ def evaluate_candidate(expr: str, ctx: dict, groups: int,
             if not amap or snap not in amap or fwd_date not in amap:
                 continue
             key = (sym, idx)
-            seg_list = fv_cache.get(key)
-            if seg_list is None:
-                seg_list = [c for c in (amap.get(d) for d in slice_dates) if c is not None]
-                fv_cache[key] = seg_list
-            seg = seg_list
+            cached = fv_cache.get(key)
+            if cached is None:
+                cached = _collect_seg(
+                    amap, (ctx.get("vol_aligned") or {}).get(sym) or {},
+                    (ctx.get("amt_aligned") or {}).get(sym) or {}, slice_dates)
+                fv_cache[key] = cached
+            seg, vseg, aseg = cached
             if len(seg) < 55:
                 continue
             mkt_b = bench_seg_raw[-len(seg):]
             if len(mkt_b) != len(seg):
                 continue
-            a = ctx["attrs"].get(sym, {}) or {}
-            # 差异化窗口（对齐 multi_factor 语义）：动量125/反转25/波动125/Beta125/尾部125
-            def tail(n: int) -> list[float]:
-                return seg[-n:] if len(seg) >= n else seg
-            ns = {"c_m": tail(126), "c_r": tail(26), "c_v": tail(61), "c_b": tail(126),
-                  "c_t": tail(121), "mkt_b": mkt_b[-(len(tail(126))):],
-                  "pe_ttm": a.get("pe_ttm"), "pb": a.get("pb"), "market_cap": a.get("market_cap"),
-                  "roe": a.get("roe"), "revenue_yoy": a.get("revenue_yoy"),
-                  "profit_yoy": a.get("profit_yoy"), "earnings_surprise": ctx["es_map"].get(sym),
-                  "news_senti": ctx["news_lookup"](sym, snap),
-                  "industry": a.get("industry")}
+            a = dict(ctx["attrs"].get(sym, {}) or {})
+            if ctx.get("attrs_tl"):
+                _pv = _attrs_asof(ctx["attrs_tl"], sym, snap)
+                if _pv:
+                    a.update(_pv)
+            ns = make_ns(seg, bench_seg_raw, a,
+                         news=ctx["news_lookup"](sym, snap),
+                         esv=ctx["es_map"].get(sym), vols=vseg, amts=aseg,
+                         fin=fin_asof(ctx.get("fin_hist") or {}, sym, snap))
             try:
                 v = eval_factor(expr, ns)
             except Exception:  # noqa: BLE001
@@ -418,6 +469,27 @@ def legacy_tail():
 # ============ GP 主搜索 ============
 DIRECTIONS = list(DIRECTION_TEMPLATES.keys())
 
+# —— GP 熔断开关（M2-1，2026-10-08）——
+# 暂停原因（三条，均为实测结论）：
+#   1. 退化：37 个已挖因子全是 roc(c, 6/40) 一类单变量变体，无任何交互项
+#   2. 过拟合：fitness 与种群选择在**同一全样本**内完成，结构性过拟合
+#   3. 污染：输出 26/37 为负 IC，其中 7 个曾被误判「可用」并进入注册表
+# 复活前置条件：M3-1 样本外框架 + M3-2 IC 周频化 + 估值因子 PIT 修复
+#   （factor_mining._attrs_map 目前只查一次 stocks 最新快照，2019 截面用的是
+#    2026 年的 PE，属明确前视 —— 不修则 GP 搜出来的仍是有偏结果）
+# 恢复方式：把 QUANT_GP_ENABLED 设为 1
+import os as _os
+
+GP_ENABLED = _os.getenv("QUANT_GP_ENABLED", "0") not in ("0", "", "false", "False")
+
+GP_DISABLED_NOTICE = {
+    "ok": False,
+    "disabled": True,
+    "error": "GP 挖矿已于 2026-10-08 暂停（M2-1）：无样本外验证 + 输出退化 + 污染因子注册表。"
+             "复活需先完成 M3 样本外框架与估值因子 PIT 修复。",
+    "resume_hint": "设置环境变量 QUANT_GP_ENABLED=1 可恢复（不推荐直接恢复）",
+}
+
 
 def gp_search(db: Session, directions: list[str] | None = None,
               pop_size: int = 14, generations: int = 6,
@@ -427,8 +499,13 @@ def gp_search(db: Session, directions: list[str] | None = None,
               progress=None) -> dict:
     """遗传规划批量挖掘：返回精英报告列表（top_k 已全池精评）。
 
+    ⚠️ 已熔断（M2-1）：默认直接返回 disabled，不再执行搜索。详见 GP_DISABLED_NOTICE。
+
     orthogonal=True 挖"增量 alpha"（对代表因子正交后的残差 IC）；
     crisis_only=True 只在基准下跌窗口评 IC（危机 Alpha）。"""
+    if not GP_ENABLED:
+        return dict(GP_DISABLED_NOTICE)
+
     dirs = [d for d in (directions or DIRECTIONS) if d in DIRECTION_TEMPLATES] or DIRECTIONS
     rng = random.Random(datetime.now().microsecond)
 
@@ -484,7 +561,8 @@ def gp_search(db: Session, directions: list[str] | None = None,
         if progress:
             progress(0.88 + 0.1 * i / max(len(elites), 1), f"精英 #{i + 1} 全池精评中…")
         full = mine_factor(db, expr, name=f"GP-elite{i + 1}", start=start, end=end,
-                           groups=5, forward=forward, universe=None)
+                           groups=5, forward=forward, universe=None,
+                           n_tested=len(seen))
         if full.get("ok"):
             full["quick_ic"] = round(quick["ic_mean"], 4)
             full["quick_icir"] = round(quick.get("icir", 0), 4)

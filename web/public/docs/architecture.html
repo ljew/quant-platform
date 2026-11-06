@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QUANT·DESK 系统架构设计</title>
+<style>
+  :root { --bg:#0d1219; --card:#151d29; --border:#26303f; --text:#dbe4ee; --muted:#8b98a9; --accent:#4f8cff; --up:#e0605e; --down:#3fbf7f; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.85 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
+  .wrap { max-width:920px; margin:0 auto; padding:48px 32px 80px; }
+  h1 { font-size:30px; margin:0 0 6px; letter-spacing:1px; }
+  h2 { font-size:21px; margin:44px 0 12px; padding-left:12px; border-left:4px solid var(--accent); }
+  h3 { font-size:16.5px; margin:26px 0 8px; color:#b8c6d8; }
+  p { margin:8px 0; }
+  .sub { color:var(--muted); font-size:13.5px; margin-bottom:32px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:18px 22px; margin:14px 0; }
+  code, .k { background:#0a0f16; border:1px solid var(--border); border-radius:5px; padding:1px 7px; font:13px/1.6 "SF Mono",Menlo,monospace; color:#9ecbff; }
+  pre { background:#0a0f16; border:1px solid var(--border); border-radius:10px; padding:16px 20px; overflow-x:auto; font:12.8px/1.75 "SF Mono",Menlo,monospace; color:#a9c3de; }
+  table { width:100%; border-collapse:collapse; margin:12px 0; font-size:13.8px; }
+  th, td { border:1px solid var(--border); padding:7px 12px; text-align:left; }
+  th { background:#1a2432; font-weight:600; }
+  td { background:var(--card); }
+  ul, ol { padding-left:22px; margin:8px 0; }
+  li { margin:4px 0; }
+  .tag { display:inline-block; padding:1px 9px; border-radius:5px; font-size:12px; margin-right:6px; }
+  .t-a { background:#4f8cff22; color:#7fb0ff; border:1px solid #4f8cff44; }
+  .t-g { background:#3fbf7f1c; color:#5fd69a; border:1px solid #3fbf7f44; }
+  .t-r { background:#e0605e1c; color:#f08a88; border:1px solid #e0605e44; }
+  .t-y { background:#e8a5201c; color:#f0c060; border:1px solid #e8a52044; }
+  .muted { color:var(--muted); }
+  .toc a { color:var(--accent); text-decoration:none; }
+  .toc a:hover { text-decoration:underline; }
+  .foot { margin-top:56px; padding-top:18px; border-top:1px solid var(--border); color:var(--muted); font-size:12.5px; }
+  @media print { body { background:#fff; color:#222; } .card,td { background:#fafafa; } pre,code { background:#f2f2f2; color:#333; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+
+<h1>QUANT·DESK 系统架构设计</h1>
+<div class="sub">个人量化投研平台 · 架构基线 v2.1 · 最后更新 2026-10-08 · 配套文档：<a href="manual.html" style="color:var(--accent)">使用说明书</a></div>
+
+<div class="card" style="border-color:#e0605e55">
+<span class="tag t-r">重要</span><b>2026-10-08 已修复四个评估口径缺陷</b> —— 修复前平台输出的所有「策略表现」都不可信：
+<b>①</b> MA 用后复权而 close 用未复权（比值 3-13 倍）→ <b>MA 破位风控从未触发</b>；
+<b>②</b> 因子评级用 <code>abs(ic_mean)</code> 丢方向 → 26/37 因子负 IC，7 个被误判「可用」；<b>②b</b> 估值因子 PIT 前视（2019 截面用 2026 年的 PE，茅台 2022 pe=51.39 vs 今日 19.28）；<b>②c</b> IC 截面仅 13-31 个（月频），t 检验约束极松 → 已改周频（step 5），7 年从 85 → 340 个；
+<b>③</b> 主引擎零滑点、无印花税（与信号引擎两套口径）；<b>④</b> Sharpe 未减无风险利率。
+<br><br>
+修复后<b>夏普普遍下降 0.3-1.0，这是暴露真实水平，不是变差</b>。旧记录里夏普 0.9-1.2 的单标的回测
+多为单股反复调参（<code>is_tuning=true</code>），不代表策略有效性。
+完整证据与重构路线见 <code>docs/REBUILD-2026-10.md</code>。
+</div>
+
+<div class="card toc">
+<b>目录</b>
+<ol style="margin:8px 0 0">
+  <li><a href="#s1">定位与设计原则</a></li>
+  <li><a href="#s2">总体架构</a></li>
+  <li><a href="#s3">数据层：Bronze → Silver → Gold</a></li>
+  <li><a href="#s4">研究流水线（每日 19:00）</a></li>
+  <li><a href="#s5">信号引擎 xq</a></li>
+  <li><a href="#s6">因子体系与 GP（已熔断）</a></li>
+  <li><a href="#s7">自动研究闭环</a></li>
+  <li><a href="#s8">监控、健康度与节假日静默</a></li>
+  <li><a href="#s9">部署与进程管理</a></li>
+  <li><a href="#s10">关键设计决策记录</a></li>
+</ol>
+</div>
+
+<h2 id="s1">1. 定位与设计原则</h2>
+<p>QUANT·DESK 是<b>单用户、本机运行</b>的 A 股量化投研平台。目标用户是个人投资者本人：每天打开网站第一眼看到「今日观点」，其余事情——数据更新、因子挖掘、信号生成、组合跟踪、复盘归因——全部由系统自动完成。</p>
+<div class="card">
+<b>五条设计原则：</b>
+<ul>
+  <li><b>本地优先</b>：全部数据与计算在本机，无外传；无账号体系，打开即用。</li>
+  <li><b>数据自给</b>：行情、成分、基本面自动日更，断供自动补抓，PIT（point-in-time）成分快照按月刷新。</li>
+  <li><b>自动闭环</b>：挖因子 → 评级入库 → 每日信号 → 模拟盘镜像 → 每周复盘 → 迭代建议，全链路无人值守。</li>
+  <li><b>安全边界</b>：自动化只到「因子层」；信号策略的升降档由系统出建议、人来确认（或显式授权后执行）。平台<b>不含实盘交易</b>（2026-09-30 决策，实盘路由已摘除）。</li>
+  <li><b>一切幂等</b>：所有定时任务可重跑、可补跑，重启不产生重复副作用（DB 级判重）。</li>
+</ul>
+</div>
+
+<h2 id="s2">2. 总体架构</h2>
+<pre>
+┌────────────────────────────────────────────────────────────────┐
+│  前端  QUANT·DESK（React + Vite，web/，构建产物由后端托管）        │
+│  四入口：今日观点 / 策略研究 / 组合跟踪 / 数据中心                   │
+└───────────────────────────┬────────────────────────────────────┘
+                            │  HTTP /api/v1/*（本机）
+┌───────────────────────────▼────────────────────────────────────┐
+│  后端  FastAPI（backend/app，端口 8000，launchd 托管）             │
+│                                                                 │
+│  路由层   market data strategy paper hedge monitor factor        │
+│           llm signal agent news auto                             │
+│                                                                 │
+│  服务层   ├─ datahub/        数据管道（采集→清洗→ gold 输出）      │
+│           ├─ xq/            信号引擎（策略/判定/统计/组合镜像）     │
+│           ├─ orchestrator   每日研究流水线编排（8 步）             │
+│           ├─ auto_research  自动研究闭环（挖矿 + 复盘 + 调度）      │
+│           ├─ health_engine  规则化健康度引擎                       │
+│           ├─ holiday_mode   节假日静默                             │
+│           └─ factor_*       因子计算 / 检验 / GP 挖掘 / LLM 释义   │
+│                                                                 │
+│  调度层   data_scheduler(19:00 ETL)  orchestrator(19:00 流水线)  │
+│           auto_scheduler(20:47 挖矿 / 周六 10:15 复盘)            │
+│           paper_scheduler(模拟盘)                                 │
+└───────────────────────────┬────────────────────────────────────┘
+┌───────────────────────────▼────────────────────────────────────┐
+│  存储层                                                         │
+│  SQLite  data/quant_dev.db   业务库（K线/信号/因子/任务/规则）     │
+│  DuckDB  data/quant.duckdb   分析库（镜像同步，快速聚合/回测）     │
+│  Parquet data/raw/**         Bronze 原始分区落盘                  │
+│  JSON    data/*.json         交易日历缓存 / 自动研究 / 静默配置    │
+│  HTML    data/reports/**     复盘报告                             │
+└───────────────────────────┬────────────────────────────────────┘
+┌───────────────────────────▼────────────────────────────────────┐
+│  数据源   akshare（主，行情/日历）  tushare（成分权重/基本面）      │
+│           LLM 供应商（页面可配，用于因子释义/研究助手）             │
+└────────────────────────────────────────────────────────────────┘
+</pre>
+
+<table>
+<tr><th>维度</th><th>现状（2026-09-30 快照）</th></tr>
+<tr><td>行情覆盖</td><td>个股日 K 约 982 万行（SQLite），全市场 5000+ 标的</td></tr>
+<tr><td>信号策略</td><td>9 个（质量分级管理，见第 5 节）</td></tr>
+<tr><td>信号动作</td><td>累计约 13.9 万条（BUY/WATCH/REDUCE/EXIT/NEW）</td></tr>
+<tr><td>因子挖掘</td><td>GP 自动挖掘，已评估 37 条精英记录</td></tr>
+<tr><td>存储体积</td><td>SQLite 约 3.1 GB + DuckDB 约 0.8 GB</td></tr>
+<tr><td>定时任务</td><td>4 个调度器，全部幂等可补跑</td></tr>
+</table>
+
+<h2 id="s3">3. 数据层：Bronze → Silver → Gold</h2>
+<p>数据管道遵循经典分层，每层职责单一：</p>
+<table>
+<tr><th>层</th><th>内容</th><th>形态</th></tr>
+<tr><td><span class="tag t-a">Bronze</span></td><td>原始采集：日 K、指数、成分、基本面，原样落盘</td><td>Parquet 分区（data/raw/**）</td></tr>
+<tr><td><span class="tag t-a">Silver</span></td><td>清洗校验：复权对齐、缺失处理、质检报告</td><td>SQLite 表 + 质检 JSON</td></tr>
+<tr><td><span class="tag t-a">Gold</span></td><td>应用就绪：因子截面、信号明细、组合镜像</td><td>SQLite + DuckDB 镜像</td></tr>
+</table>
+<ul>
+  <li><b>每日 19:00（交易日）</b>：<code>data_scheduler</code> 自动 ETL 日更；检测到断供会自动补抓缺口；每月自动刷新指数成分 PIT 快照（回测用「≤ 调仓日的最新快照」作合法股票池，杜绝未来函数）。</li>
+  <li><b>双库分工</b>：SQLite 是业务事实库（事务、写入）；DuckDB 是分析镜像（聚合、回测扫描快）。健康检查里有「DuckDB 同步一致性」一项保证两者行数一致。</li>
+  <li><b>交易日历</b>：<code>app/core/trading_calendar.py</code>，akshare 在线拉取并缓存 <code>data/trading_calendar.json</code>，内置 2020-2026 节假日表兜底。所有调度器据此判断「今天跑不跑」。</li>
+</ul>
+
+<h2 id="s4">4. 研究流水线（每日 19:00）</h2>
+<p><code>orchestrator</code> 把每日研究编排成 8 个步骤，每步有事件日志，重活走 subprocess 隔离 + 硬超时：</p>
+<pre>data → quality → research → signal → backtest → attribution → risk(闸门) → publish
+数据就绪   数据质检    研究计算    信号生成    回测校验     归因分析      风险闸门      结果发布</pre>
+<ul>
+  <li>交易日 19:00 自动触发；错过则下次启动时补跑（幂等）。</li>
+  <li><b>risk 是闸门</b>：质检不过会阻断后续步骤并留事件记录，避免脏数据污染信号。</li>
+  <li>与 19:00 的 ETL 并存：流水线用的数据若未到当日，会以最近可用交易日为准，两个调度器均幂等。</li>
+</ul>
+
+<h2 id="s5">5. 信号引擎 xq</h2>
+<h3>5.1 策略与质量分级</h3>
+<p>9 个信号策略，每个有质量档 <code>strong / neutral / weak</code>（<code>xq/strategies.py: STRATEGY_QUALITY</code>），定档依据本平台 240 日独立复测（T+1 开盘建仓、T+10 收盘卖出、超额 vs 全市场等权），并随每周复盘滚动校准：</p>
+<table>
+<tr><th>档位</th><th>含义</th><th>当前策略（2026-09-30 复盘后）</th></tr>
+<tr><td><span class="tag t-g">strong</span></td><td>长期与近期均为正超额</td><td>high_tight_flag（高紧旗形）</td></tr>
+<tr><td><span class="tag t-y">neutral</span></td><td>正超额但稳定性待观察</td><td>chan_buy（缠论买点）</td></tr>
+<tr><td><span class="tag t-r">weak</span></td><td>近 90 日超额为负，仅观察不建仓</td><td>rps_breakout、dual_param、private_placement、limit_up_shakeout、ma_volume、turtle_trade、uptrend_limit_down</td></tr>
+</table>
+<h3>5.2 动作判定（judge）</h3>
+<p>对每只连续命中的股票，结合连续天数（streak）、共振数、最优策略档位（best_tier）与均线位置，给出当日动作：</p>
+<table>
+<tr><th>动作</th><th>触发条件（简化）</th></tr>
+<tr><td><span class="tag t-g">BUY_STRONG</span></td><td>连续达标 且 best_tier ≠ weak（weak 档再多连续也只给 WATCH）</td></tr>
+<tr><td><span class="tag t-y">WATCH</span></td><td>确认中 / 策略偏弱 / 跌破 MA10 短线走弱 / 多日共振仅参考</td></tr>
+<tr><td><span class="tag t-r">REDUCE</span></td><td>跌破 MA20 趋势转弱，建议减仓</td></tr>
+<tr><td><span class="tag t-r">EXIT</span></td><td>信号消失，保留观察</td></tr>
+<tr><td>NEW</td><td>今日首次出现，持续性待确认</td></tr>
+</table>
+<p>组合镜像严格 <b>T+1 开盘成交</b> 防前视：今日 BUY_STRONG → 次一交易日开盘买入。</p>
+
+<h2 id="s6">6. 因子体系与 GP（已熔断）</h2>
+<ul>
+  <li><b>因子注册表</b>（<code>factor_registry</code>）：只有 <code>enabled</code> 的因子进入每日生产计算。</li>
+  <li><b>检验口径</b>：截面 Rank IC、分层收益、换手与容量，截面抽样约每月一次。</li>
+  <li><b class="t-r">GP 挖掘（已熔断 2026-10-08）</b>（<code>factor_gp.py</code>）：遗传规划在表达式空间进化。<b>当前默认关闭</b>，<code>gp_search()</code> 直接返回 disabled，恢复需设 <code>QUANT_GP_ENABLED=1</code>（不推荐直接恢复）。<br><b>熔断原因</b>：实测 37 个输出全是 <code>roc(c,6)</code> 一类单变量变体、无任何交互项；fitness 与种群选择在<b>同一全样本</b>内完成（结构性过拟合）；26/37 为负 IC，其中 7 个曾被误判「可用」并进入注册表。<b>复活前置</b>：M3-1 样本外框架 + M3-2 IC 周频化 + 估值因子 PIT 修复。详见 <code>docs/REBUILD-2026-10.md</code> §1.3。</li>
+  <li><b>评级四档</b>：优秀 / 可用 / 弱 / 无效——决定落库后的去向（见下节闭环）。</li>
+  <li><b>LLM 释义</b>：对挖掘出的表达式生成人类可读解释，供应商在页面配置，改完即时生效。</li>
+</ul>
+
+<h2 id="s7">7. 自动研究闭环</h2>
+<p>2026-09-30 上线（<code>services/auto_research.py</code>），把「研究」这件事全自动化：</p>
+<pre>
+每个交易日 20:47（ETL 与流水线之后）
+  GP 挖矿（16 个体 × 5 代）
+    → 精英评级
+      ├─ 优秀 → 自动 enabled 进生产注册表（次日即参与每日计算）
+      ├─ 可用 → 登记为 candidate，等人看
+      └─ 弱/无效 → 不留存，只进运行记录
+每周六 10:15
+  自动复盘：90 日滚动归因（T+1/T+5/T+10 胜率与超额）
+    + 模拟盘组合镜像 + 因子盘点
+    → HTML 报告（data/reports/）+ 邮件推送
+    → 走弱策略生成「建议降级」清单（不自动执行）
+</pre>
+<div class="card">
+<b>安全边界（有意设计）：</b>自动化的范围只到因子层——自动挖、自动评级、自动启停。<b>信号策略的降级只出建议</b>，由人确认后改档（避免一次异常行情误杀长期有效的策略，如 rps_breakout 240 日 +2.45% 但 90 日 −1.21% 的情形）。<br>
+<b>幂等防重</b>：调度器做 DB 级判重（当日/当周已跑则跳过），launchd 重启不会重复触发。<br>
+<b>配置</b>：<code>data/auto_research.json</code>（开关、时间、种群规模、是否自动启用优秀因子、是否邮件），页面「数据中心 → 自动研究」可视化维护。
+</div>
+
+<h2 id="s8">8. 监控、健康度与节假日静默</h2>
+<ul>
+  <li><b>健康度引擎</b>（<code>health_engine.py</code>）：规则存库（<code>health_rules</code> 表，页面可增删改阈值/启停），三层评分（采集 35% / 处理 35% / 应用 30%）合成百分制健康分。</li>
+  <li><b>节假日静默</b>（<code>holiday_mode.py</code>）：非交易日自动把「数据停更」类检查（新鲜度/管道最近运行/质检时效）的失败降级为 <code>ok + muted</code>，不进告警；真实故障（DuckDB 不一致、数据量异常）照常报警。模式：<code>auto</code>（默认，非交易日自动）/ <code>on</code> / <code>off</code>，监控页横幅可切换。</li>
+  <li><b>系统监控页</b>：健康分、告警、管道运行记录、服务存活、30 秒自动刷新，可一键手动触发管道。</li>
+</ul>
+
+<h2 id="s9">9. 部署与进程管理</h2>
+<table>
+<tr><th>项</th><th>说明</th></tr>
+<tr><td>后端</td><td>FastAPI，端口 <code>8000</code>，launchd 托管（<code>com.quant.backend.plist</code>，KeepAlive 仅异常退出时重启）</td></tr>
+<tr><td>启动包装</td><td><code>backend/scripts/run_backend_launchd.sh</code>：端口被占则正常退出，杜绝「bind 失败 → KeepAlive 死循环 → SQLite wal 幽灵 inode」</td></tr>
+<tr><td>重启方式</td><td><code>pkill -f "uvicorn app.main"</code>，launchd 自动拉起（注意 ThrottleInterval=30s；若进程卡在优雅退出需 kill -9）</td></tr>
+<tr><td>前端</td><td><code>web/</code> React+Vite；<b>日常入口 = http://localhost:8000/</b>（后端托管 <code>web/dist</code>，改前端需 <code>npm run build</code> 后生效）；7100 仅为开发期热更新临时端口，平时不开</td></tr>
+<tr><td>Python</td><td>固定解释器 <code>~/.workbuddy/binaries/python/envs/quant/bin/python</code></td></tr>
+<tr><td>目录</td><td><code>backend/</code> 后端 · <code>web/</code> 前端 · <code>data/</code> 全部数据与报告 · <code>prototype/</code> 早期原型</td></tr>
+</table>
+
+<h2 id="s10">10. 关键设计决策记录</h2>
+<table>
+<tr><th>日期</th><th>决策</th><th>理由</th></tr>
+<!-- DECISIONS:BEGIN -->
+<tr><td>更早</td><td>成分快照 PIT 月更</td><td>回测股票池 point-in-time，杜绝未来函数</td></tr>
+<tr><td>更早</td><td>组合镜像 T+1 开盘成交</td><td>防前视偏差</td></tr>
+<tr><td>2026-09-30</td><td>摘除实盘路由（live.py 保留代码不挂载）</td><td>平台范围明确为投研+模拟盘，不含实盘</td></tr>
+<tr><td>2026-09-30</td><td>前端 11 平级页面 → 四入口枢纽</td><td>按每日使用路径组织，打开即有观点</td></tr>
+<tr><td>2026-09-30</td><td>7 个走弱信号策略降 weak</td><td>90 日窗口 T+10 超额全负；weak = 不建仓仅观察</td></tr>
+<tr><td>2026-09-30</td><td>自动研究闭环上线，策略降级仅建议</td><td>自动化到因子层为止，策略层留人工闸门</td></tr>
+<tr><td>2026-09-30</td><td>节假日静默 auto 模式</td><td>消除周末/长假「数据停更」误报，狼来了效应</td></tr>
+<tr><td>2026-09-30</td><td>决策记录活文档化</td><td>重大变更自动/半自动追加到架构文档，防止文档腐烂</td></tr>
+<tr><td>2026-10-03</td><td>SQLite 连接池改 NullPool</td><td>QueuePool(5+10) 被常驻调度线程耗尽致 API 半死（/health 正常、查库接口全超时）；SQLite 建连廉价，NullPool 根除池耗尽与泄漏级联</td></tr>
+<tr><td>2026-10-03</td><td>周级任务判重粒度改为「当天」</td><td>周三手动复盘误占本周额度致周六正式复盘被跳过；日级判重既防重启重复又不错杀周末运行</td></tr>
+<tr><td>2026-10-08</td><td>嵌入《量化交易》方法论（郭新/黎子良等）</td><td>提炼数据/分析/模型/优化/算法五支柱为六条平台原则；落地为方法论页+研究纪律卡；明确三项待办：多重检验校正、组合层优化、参数置信区间</td></tr>
+<tr><td>2026-10-08</td><td>风控优先瘦身：挖矿评级运气折价 + 自动上岗复杂度上限</td><td>用户明确「简洁、控制风险、可少赚、不要复杂模型」；t 门槛随批量测试数上浮 √(2lnN)，优秀且复杂度≤4 才自动进生产</td></tr>
+<tr><td>2026-10-08</td><td>停用两个与现行策略无关的模拟盘任务</td><td>简洁化审查：中证800多因子/均线金叉与当前有效策略（chan_buy、high_tight_flag）无关；仅留茅台缠论模拟，数据保留可随时恢复</td></tr>
+<tr><td>2026-10-08</td><td>研究卡机制落地第1步：建表+迁移</td><td>10 张卡（9策略+1因子）入库，纯数据不动逻辑；状态机与 STRATEGY_QUALITY/factor_registry 双轨并行，后续步骤再统一</td></tr>
+<tr><td>2026-10-08</td><td>退役测试遗留因子 test-快动量</td><td>注册表唯一启用因子却是测试残留，ic 从未验证，每日管道仍全市场计算它；注册表禁用 + 研究卡退役双轨同步，可随时恢复</td></tr>
+<tr><td>2026-10-08</td><td>研究卡机制第2步：生产逻辑改读卡片（等价替换）</td><td>信号定档与因子计算门禁的唯一真相改为 research_cards.state；STRATEGY_QUALITY/factor_registry 降为冗余校验+无卡回退；等价性已验证（9策略档位逐key一致、judge五组用例行为相同）</td></tr>
+<tr><td>2026-10-08</td><td>研究卡机制第3步：周复盘驱动状态机</td><td>每周复盘自动更新卡片证据（含新增t值字段）；升级类迁移自动（watch→candidate、降级恢复），降级/退役出建议人确认；降级卡连续4周负超额建议退役；挖矿入库自动建/同步因子卡；决策留痕改读卡片解析档位</td></tr>
+<tr><td>2026-10-08</td><td>M1-1 修复风控复权口径错位（signal_actions 重跑全历史）</td><td>xq/runner.py 用后复权 c_hfq 算 MA10/MA20 却拿未复权 close 比较（adj_factor 均值10.08/最大10055），ma10/close 比值中位数3-13倍，MA破位风控从未正确触发；改为一律取 c_hfq。实测重跑后错位率 77%→0.8%（剩余3行为股价正常波动）</td></tr>
+<tr><td>2026-10-08</td><td>M1-2 因子评级加方向判据</td><td>旧实现对 t_stat/ic_mean 都取 abs()，37个已挖因子中26个负IC、7个负IC被标可用/优秀；新增 has_pos 判据，负IC显著者单列「反向」评级且禁止自动进生产</td></tr>
+<tr><td>2026-10-08</td><td>M1-3/4/5 成本·基准·Sharpe 口径统一</td><td>主引擎与 xq 引擎两套成本口径（前者零滑点无印花税）；统一为佣金万2.5+滑点万1+印花税万5（卖出），Sharpe 减无风险利率2.5%，无基准回测显式标 benchmark_missing（已回填248条，其中165条为未算基准）</td></tr>
+<tr><td>2026-10-08</td><td>M1-6 建立 pytest 回归测试基建</td><td>此前零测试，上述三个 bug 本应被测试拦住；新增 backend/tests/ 5组共29条断言（复权一致性/评级方向/成本模型/成交时点/PIT成分）</td></tr>
+<tr><td>2026-10-08</td><td>M2-1 GP 挖矿熔断（环境变量 QUANT_GP_ENABLED 恢复）</td><td>37个输出全是 roc(c,6/40) 单变量变体无交互项；fitness 与选择在同全样本内完成属结构性过拟合；26/37负IC污染注册表。复活前置：M3-1样本外框架+估值因子PIT修复</td></tr>
+<tr><td>2026-10-08</td><td>M2-2 策略瘦身 21→6（15个标记停用，代码保留）</td><td>21个策略归并后仅约3类独立alpha假设。保留 chan/turtle_classic/momentum/xq_rps_breakout/xq_high_tight_flag/hs300_enhanced（后者是唯一IR&gt;0的组合超额0.19，留作M3组合层优化载体）</td></tr>
+<tr><td>2026-10-08</td><td>M2-4 Str00-03 放弃（代码保留于 Quant/）</td><td>Str02 注释明写权重在2025数据上现调（样本内过拟合）；四者互为复制；strategies表0行从未入库。归档说明见 Quant/STRATEGY_ARCHIVE.md</td></tr>
+<tr><td>2026-10-08</td><td>M2-3 iching-quant 结项归档并移出项目</td><td>三套独立检验全阴性（正交化后残差IC=-0.0062/t=-12.91；语义接地5维度FDR 0/5；disagreement分年符号翻转）。已移至 Quant/_archive/iching-quant，加 ARCHIVE.md 与 gua_semantics.json 结项声明</td></tr>
+<tr><td>2026-10-08</td><td>M2-5 单股调参记录隔离</td><td>单标的回测中博瑞医药89条、茅台53条为反复调参；96%的单标的回测标记 is_tuning=true，不参与效果汇总</td></tr>
+<tr><td>2026-10-08</td><td>修复 xq/data.py 数据源断裂（DuckDB→SQLite 回退）</td><td>DuckDB 在双库改造后已不含 kline_daily（K线982万行全在SQLite），load_panel 硬编码读DuckDB导致信号回填链路完全不可用（Catalog Error）；改为缺表时 attach SQLite</td></tr>
+<tr><td>2026-10-08</td><td>研究卡机制第4步：前端研究卡页面上线</td><td>策略研究 hub 首个 Tab；状态机总览+卡片墙+证据柱+t值+负周数计数+决策历史折叠；数据实时取自 /research/cards；四步路线图全部完成</td></tr>
+<tr><td>2026-10-08</td><td>研究卡页面交互闭环：建议横幅+卡片详情+一键确认</td><td>建议读时派生（/research/suggestions 与周复盘同一套状态机条件）；人工迁移接口带理由留痕，下一次跑批生效；卡片点击看 8 字段完整档案；名词解释内置页面</td></tr>
+<tr><td>2026-10-08</td><td>导航精简 v2.1：13 Tab 收编为 9</td><td>回测+寻优、自动研究+驾驶舱、管道+监控三对重叠页面壳合并（MergedTabs 无损可拆）；因子检验改名因子实验室明确与研究卡分工；旧跳转全部映射；后端零改动</td></tr>
+<tr><td>2026-10-08</td><td>M1 全量重跑完成（250 交易日）+ 镜像组合重算</td><td>复权口径错位率 77%→1.12%（剩余为股价正常波动）；镜像组合结果由 +19.36%/1251笔/回撤-28.38% 变为 -0.23%/139笔/回撤-4.37%。修复前的高收益来自风控失效后的过度交易（换手高 9 倍），修复后只剩 2 个 enabled 策略的高质量信号</td></tr>
+<tr><td>2026-10-08</td><td>B1 解决：新建 stock_valuation_daily 估值 PIT 时序表 + 回填 1881 个交易日</td><td>stocks 表只有最新一列估值快照，_attrs_map 复用于所有历史截面 → 2019 截面用 2026 年的 PE（实测茅台 2019 pe=24.42/pb=7.59，今日 19.87/5.42）。新增 _attrs_timeline/_attrs_asof（纯函数、可无DB 测试），GP 侧同步修复。tushare daily_basic 按日全市场实测 3555 行/0.6秒，故工时从原估 2-3 天降为 25-30 分钟</td></tr>
+<tr><td>2026-10-08</td><td>卡片详情加信号与分析板块</td><td>点卡片即可看该策略的信号列表+全面分析：90日绩效、按月超额、连续天数/共振细分、近10天信号量、最新一日标的与判定动作；stats 支持单策略过滤，窗口口径与全局对齐（修复稀疏策略窗口拉长问题），卡片证据已就地刷新一致</td></tr>
+<tr><td>2026-10-08</td><td>B2 解决：DEFAULT_STEP 20→5（月频→周频），forward 保持 20 不变；存量 35 个因子按新口径重算并追加</td><td>t 检验自由度=截面数-1，原 step=20 时 7 年仅 85 个截面，约束极松（这是 M1-2 中「IC=0.038/t=1.55 也被判可用」的检验功效不足那一半）。改 step=5 → 3年36→145、7年85→340。forward 保持 20 是为了不改变因子经济含义（仍是预测未来一个月收益），若同步改 forward=5 则历史 IC 不可与旧结果比较。存量重算采用追加而非覆盖（挖掘流水 append-only），打 recalc_20261008 标记</td></tr>
+<tr><td>2026-10-08</td><td>卡片详情从弹层改为整页并丰富内容</td><td>弹层放不下分析数据；整页布局：KPI带+左栏档案+主栏周度趋势图/按月超额图/连续天数/共振细分/30天信号日历（点日期看当日标的与判定）+底部迁移操作；信号接口支持按日期查询；共享部件抽到 cardShared</td></tr>
+<tr><td>2026-10-08</td><td>B1/B2 验收完成：估值回填 1881/1881 天（893 万行 / 6066 只 / 0 缺失），存量 35 因子重算完成</td><td>回填 46.6 分钟仅 1 天网络失败（已补齐）。茅台估值时序印证PIT 必要性：2022-01-04 pe=51.39/pb=14.78 vs 2026-10-08 pe=19.28/pb=6.25，旧口径偏差近 3 倍。重算 35/35 成功（34.2 分钟），评级迁移矩阵显示 5 个「可用」被正确纠正为「反向」，13 个「弱」被正确识别为反向</td></tr>
+<tr><td>2026-10-08</td><td>B3 解决：mine_factor 加样本内/样本外切分，OOS 判定接入评级门槛</td><td>过去「选因子」与「评因子」在同一段样本上完成（IC 全量算完再评级），属结构性样本内过拟合，是 GP 熔断三原因之一。实现零额外成本：ic_list/ic_dates 本就带日期，按切点分流即可，不需要把980万行K线加载与截面循环跑两遍。判定四态（过拟合=IS/OOS符号相反 / 未通过=OOS|t|&lt;1 / 通过 / 样本不足），评级门槛：过拟合→优秀可用反向一律降为弱，未通过→优秀降可用，降级记录 demoted_from 可追溯。真实数据揭示此前被掩盖的问题：短期动量与低估值因子 IS 段t 仅 -0.32/+0.15（几乎无信息），信号全来自 OOS 段</td></tr>
+<tr><td>2026-10-10</td><td>信号「chan_buy」档位 neutral → strong</td><td>周复盘自动留痕；当期 90 日 T+10 超额 +0.73%（17585 样本）</td></tr>
+<tr><td>2026-10-14</td><td>重新优化：250天信号统计发现 2026-07 regime 切换，现行 BUY_STRONG 规则（streak&gt;=9）近90天 T+10 超额仅 +0.53%（日期级t=-0.21）已失效；新规则 fresh_ma（enabled 策略新鲜信号 streak&lt;=2 × 回调区 close&lt;ma20）近90天 T+10 超额 +2.31%（日期级t=+4.23，日胜率73%，日均候选158个），落为第二条 paper sleeve（portfolio_fresh.py + portfolio_exp_state 表 + /api/v1/signal/portfolio-exp），带 PIT regime 门控（候选池近90日超额&gt;0 且样本&gt;=20 才开新仓）</td><td>旧模拟结论「无可靠优化空间、瓶颈在策略供给」是被 streak&gt;=9 过滤器锁死的假象——供给并不稀缺（WATCH 4485只/日），稀缺的是被规则定义砍掉的合格信号。新规则全250天（含门控）+12.95%/回撤-4.47% vs 无门控 -5.1%/-29.7%，门控关闭期（2026-02~08）靠空仓避开基准 -4.9%。诚实披露：edge 为 regime 依赖，7月切换门控滞后约6周才重开，超额含空仓避跌的 beta 成分，主动段仅102天样本。14 个新测试，全套 80 通过</td></tr>
+<!-- DECISIONS:END -->
+</table>
+<p class="muted" style="font-size:12.8px">本表由 <code>docs/decisions.json</code> 自动生成：策略档位变化由每周复盘自动留痕；其他重大变更运行 <code>python scripts/render_decisions.py --add "决策" --reason "理由"</code> 追加。</p>
+
+<div class="foot">QUANT·DESK · 系统架构设计 · 本机文档，随系统演进更新 · <a href="manual.html" style="color:var(--accent)">→ 使用说明书</a></div>
+</div>
+</body>
+</html>

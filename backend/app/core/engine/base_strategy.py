@@ -7,7 +7,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # 仅供类型标注（方法签名是字符串前向引用，运行时不求值）
+    from app.core.engine.portfolio_backtest import PortfolioContext
 
 
 class Mode(str, Enum):

@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>研究卡机制 v1.0</title>
+<style>
+  :root { --bg:#0d1219; --card:#151d29; --card2:#1a2432; --border:#26303f; --text:#dbe4ee; --muted:#8b98a9; --accent:#4f8cff; --up:#e0605e; --down:#3fbf7f; --warn:#e8a520; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14.5px/1.7 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
+  .wrap { max-width:1180px; margin:0 auto; padding:36px 28px 64px; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:26px; }
+  .sub b { color:#b8c6d8; }
+
+  /* —— 状态机 —— */
+  .sm { display:flex; align-items:stretch; gap:0; margin:18px 0 8px; }
+  .sm .node { flex:1; background:var(--card); border:1px solid var(--border); border-radius:10px; padding:12px 14px; text-align:center; position:relative; }
+  .sm .arrow { align-self:center; color:var(--muted); padding:0 8px; font-size:16px; }
+  .sm .node .t { font-weight:700; font-size:14.5px; }
+  .sm .node .n { font-size:22px; font-weight:800; font-variant-numeric:tabular-nums; margin:2px 0; }
+  .sm .node .c { font-size:11px; color:var(--muted); line-height:1.5; }
+  .sm .note { font-size:11.5px; color:var(--muted); text-align:center; margin-bottom:26px; }
+
+  /* —— 卡片墙 —— */
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+  .rc { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px 18px; display:flex; flex-direction:column; gap:10px; }
+  .rc .head { display:flex; align-items:center; justify-content:space-between; }
+  .rc .name { font-weight:700; font-size:15.5px; }
+  .rc .hypo { font-size:12.8px; color:#b8c6d8; background:var(--card2); border-radius:8px; padding:8px 11px; }
+  .rc .hypo::before { content:"假设 · "; color:var(--muted); font-size:11.5px; }
+  .badge { font-size:11.5px; padding:2px 10px; border-radius:6px; white-space:nowrap; font-weight:600; }
+  .b-run { background:#3fbf7f1c; color:#5fd69a; border:1px solid #3fbf7f55; }
+  .b-cand { background:#4f8cff22; color:#7fb0ff; border:1px solid #4f8cff55; }
+  .b-down { background:#e8a5201c; color:#f0c060; border:1px solid #e8a52055; }
+  .b-retire { background:#e0605e1c; color:#f08a88; border:1px solid #e0605e55; }
+  .b-watch { background:#8b98a91c; color:#aab6c4; border:1px solid #8b98a955; }
+
+  .evi { display:flex; gap:8px; align-items:flex-end; }
+  .evi .bar { flex:1; text-align:center; }
+  .evi .bar .v { font-size:12.5px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .evi .bar .track { height:44px; display:flex; align-items:flex-end; justify-content:center; margin:3px 0; }
+  .evi .bar .fill { width:26px; border-radius:4px 4px 0 0; }
+  .evi .bar .l { font-size:10.5px; color:var(--muted); }
+  .pos { color:var(--down); } .neg { color:var(--up); }
+  .f-pos { background:var(--down); } .f-neg { background:var(--up); }
+
+  .meta { display:flex; gap:12px; font-size:11.8px; color:var(--muted); flex-wrap:wrap; }
+  .meta b { color:var(--text); font-weight:600; }
+  .fail { font-size:11.8px; color:var(--warn); border-top:1px dashed var(--border); padding-top:8px; }
+  .fail::before { content:"失效条件 · "; color:var(--muted); }
+  .rc .ops { display:flex; gap:8px; margin-top:auto; padding-top:4px; }
+  .rc .ops button { flex:1; padding:5px 0; font-size:12px; border-radius:7px; border:1px solid var(--border); background:transparent; color:var(--muted); cursor:default; }
+  .rc .ops button.go { border-color:var(--accent); color:var(--accent); }
+
+  .sec { font-size:16px; font-weight:700; margin:30px 0 12px; padding-left:10px; border-left:4px solid var(--accent); }
+  .rule-card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:14px 18px; font-size:13px; }
+  .rule-card td { padding:6px 10px; }
+  table { width:100%; border-collapse:collapse; }
+  th { text-align:left; color:var(--muted); font-weight:500; font-size:12px; border-bottom:1px solid var(--border); padding:6px 10px; }
+  td { border-bottom:1px solid var(--border); font-size:12.8px; }
+  .proto-tag { display:inline-block; background:#e8a5201c; color:#f0c060; border:1px solid #e8a52055; font-size:11px; padding:1px 8px; border-radius:5px; margin-left:10px; vertical-align:middle; }
+  @media (max-width:980px){ .grid{grid-template-columns:1fr 1fr} }
+  @media (max-width:640px){ .grid{grid-template-columns:1fr} .sm{flex-direction:column} .sm .arrow{transform:rotate(90deg)} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>研究卡<span class="proto-tag">已落地 · 已接入系统</span></h1>
+<div class="sub">一个策略/因子 = 一张标准卡片 · 状态机驱动生命周期 · 数据为 2026-10-03 复盘真实值 ·
+<b>成熟一个，上一个</b></div>
+
+<!-- ———— 状态机总览 ———— -->
+<div class="sec">生命周期状态机</div>
+<div class="sm">
+  <div class="node"><div class="t" style="color:#aab6c4">观察</div><div class="n">0</div><div class="c">只记录不交易<br>新研究默认入口</div></div>
+  <div class="arrow">→</div>
+  <div class="node"><div class="t" style="color:#7fb0ff">候选</div><div class="n" style="color:#7fb0ff">1</div><div class="c">n≥20 且 90 日超额>0<br>进归因展示，不交易</div></div>
+  <div class="arrow">→</div>
+  <div class="node"><div class="t" style="color:#5fd69a">启用</div><div class="n" style="color:#5fd69a">1</div><div class="c">三窗口全正 + 运气折价达标<br>+ 扣成本为正 + 低相关</div></div>
+  <div class="arrow">→</div>
+  <div class="node"><div class="t" style="color:#f0c060">降级</div><div class="n" style="color:#f0c060">7</div><div class="c">触发失效条件<br>停止建仓只观察</div></div>
+  <div class="arrow">→</div>
+  <div class="node"><div class="t" style="color:#f08a88">退役</div><div class="n" style="color:#f08a88">0</div><div class="c">连续 4 周未恢复<br>归档不再出现</div></div>
+</div>
+<div class="sm note">升级自动执行 · 降级出建议由人确认（安全边界不变）· 每次迁移自动写入决策文档</div>
+
+<!-- ———— 卡片墙 ———— -->
+<div class="sec">研究卡（9 张 · 按状态分组）</div>
+<div class="grid" id="grid"></div>
+
+<!-- ———— 字段说明 ———— -->
+<div class="sec">卡片字段定义（8 项，缺一不可）</div>
+<div class="rule-card">
+<table>
+<tr><th style="width:130px">字段</th><th>内容要求</th></tr>
+<tr><td><b>假设</b></td><td>一句话：为什么会有超额？说不出的不准入库</td></tr>
+<tr><td><b>数据与口径</b></td><td>T+1 开盘建仓 / T+10 收盘卖出 / 超额 vs 全市场等权（因子卡换 IC·ICIR 口径）</td></tr>
+<tr><td><b>证据</b></td><td>三窗口超额 + 样本量 n + 运气折价后 t 值（门槛随批量测试数上浮）</td></tr>
+<tr><td><b>成本</b></td><td>换手级别；扣成本后超额仍为正才算数</td></tr>
+<tr><td><b>容量与拥挤</b></td><td>与现有卡片的相关性；信号密度是否可持续</td></tr>
+<tr><td><b>失效条件</b></td><td>入库前预先写明「什么情况算它死了」</td></tr>
+<tr><td><b>状态</b></td><td>观察 / 候选 / 启用 / 降级 / 退役</td></tr>
+<tr><td><b>决策历史</b></td><td>每次状态迁移的日期与理由，自动留痕</td></tr>
+</table>
+</div>
+
+<div style="margin-top:26px;color:var(--muted);font-size:12px">v1.0 · 2026-10-08 · 已接入系统（research_cards 表 10 张卡 / research_runs 238 次运行）· 历史提案见 docs/ARCHIVE/research-card-v0.1.md</div>
+</div>
+
+<script>
+// 真实数据：2026-10-03 复盘（90 日窗口，T+10 超额%，n=样本量）
+// 240 日校准值取自 xq/strategies.py 注释（2026-09-30 复测）
+const CARDS = [
+  { name:"high_tight_flag", cn:"高紧旗形", state:"启用", cls:"b-run",
+    hypo:"放量突破长期整理平台后的强势股有动量延续",
+    w:[["240日",1.77],["120日",1.66],["90日",2.14]], n:349,
+    cost:"信号稀疏（≈4条/日），换手低，扣成本后仍为正",
+    crowd:"信号稀疏，天然不拥挤",
+    fail:"任一滚动窗口转负即降级复核",
+    hist:"2026-09-30 复盘维持启用（三窗口全场最稳）" },
+  { name:"chan_buy", cn:"缠论买点", state:"候选", cls:"b-cand",
+    hypo:"缠论结构买点捕捉趋势拐点",
+    w:[["240日",null],["120日",null],["90日",0.75]], n:17274,
+    cost:"信号密集（≈190条/日），换手高；T+5 超额 −0.03% 提示短期无肉",
+    crowd:"密度偏高，待加确认门槛过滤",
+    fail:"90 日窗口转负",
+    hist:"2026-09-30 新增入库，样本积累中" },
+  { name:"dual_param", cn:"双参数动量", state:"降级", cls:"b-down",
+    hypo:"双周期动量共振捕捉趋势",
+    w:[["240日",1.49],["120日",2.92],["90日",-0.69]], n:3607,
+    cost:"—", crowd:"—", fail:"已触发：90 日转负",
+    hist:"2026-09-30 降级；分年波动大，复核中" },
+  { name:"rps_breakout", cn:"RPS 强度突破", state:"降级", cls:"b-down",
+    hypo:"相对强度榜前列突破后有延续",
+    w:[["240日",2.45],["120日",null],["90日",-1.21]], n:8994,
+    cost:"—", crowd:"—", fail:"已触发：90 日转负",
+    hist:"2026-09-30 降级；240 日仍 +2.45%，下轮复盘重点复核" },
+  { name:"ma_volume", cn:"均线量价", state:"降级", cls:"b-down",
+    hypo:"均线上穿伴放量确认趋势",
+    w:[["240日",-0.62],["120日",null],["90日",-0.93]], n:2857,
+    cost:"—", crowd:"—", fail:"已触发：两窗口皆负",
+    hist:"2026-09-30 降级；连续 4 周未恢复将进退役评估" },
+  { name:"turtle_trade", cn:"海龟突破", state:"降级", cls:"b-down",
+    hypo:"突破 N 日高点后趋势延续",
+    w:[["240日",-0.24],["120日",null],["90日",-2.66]], n:11908,
+    cost:"—", crowd:"—", fail:"已触发：大样本持续为负",
+    hist:"2026-09-30 降级；全场最弱，退役评估候选" },
+  { name:"limit_up_shakeout", cn:"涨停洗盘", state:"降级", cls:"b-down",
+    hypo:"涨停后洗盘不破是主力控盘信号",
+    w:[["240日",-1.15],["120日",null],["90日",-0.63]], n:132,
+    cost:"—", crowd:"样本稀疏（n=132），证据强度不足",
+    fail:"已触发", hist:"2026-09-30 降级" },
+  { name:"private_placement", cn:"定增事件", state:"降级", cls:"b-down",
+    hypo:"定增落地后存在事件驱动超额",
+    w:[["240日",0.38],["120日",null],["90日",-0.38]], n:421,
+    cost:"—", crowd:"—", fail:"已触发：90 日转负",
+    hist:"2026-09-30 降级" },
+  { name:"uptrend_limit_down", cn:"上升趋势跌停", state:"降级", cls:"b-down",
+    hypo:"上升趋势中的跌停是错杀反弹机会",
+    w:[["240日",-1.88],["120日",null],["90日",-0.34]], n:236,
+    cost:"—", crowd:"样本稀疏（n=236）",
+    fail:"已触发", hist:"2026-09-30 降级" },
+];
+
+const ORDER = { "启用":0, "候选":1, "观察":2, "降级":3, "退役":4 };
+CARDS.sort((a,b)=>ORDER[a.state]-ORDER[b.state]);
+
+const grid = document.getElementById("grid");
+for (const c of CARDS) {
+  const bars = c.w.map(([label, v]) => {
+    if (v === null || v === undefined)
+      return `<div class="bar"><div class="v" style="color:var(--muted)">—</div><div class="track"><div class="fill" style="height:2px;background:var(--border)"></div></div><div class="l">${label}</div></div>`;
+    const h = Math.min(42, Math.max(3, Math.abs(v) * 14));
+    const cls = v >= 0 ? "pos" : "neg", f = v >= 0 ? "f-pos" : "f-neg";
+    return `<div class="bar"><div class="v ${cls}">${v>0?"+":""}${v.toFixed(2)}%</div><div class="track"><div class="fill ${f}" style="height:${h}px"></div></div><div class="l">${label}</div></div>`;
+  }).join("");
+  const action = c.state==="启用" ? `<button class="go">查看信号</button><button>完整卡片</button>`
+    : c.state==="候选" ? `<button class="go">补充证据</button><button>完整卡片</button>`
+    : c.state==="降级" ? `<button>复核数据</button><button>提前退役</button>`
+    : `<button>完整卡片</button>`;
+  grid.insertAdjacentHTML("beforeend", `
+    <div class="rc">
+      <div class="head"><span class="name">${c.cn} <span style="color:var(--muted);font-size:11.5px;font-weight:400">${c.name}</span></span><span class="badge ${c.cls}">${c.state}</span></div>
+      <div class="hypo">${c.hypo}</div>
+      <div class="evi">${bars}</div>
+      <div class="meta"><span>样本 <b>${c.n.toLocaleString()}</b></span><span>${c.cost}</span></div>
+      ${c.crowd && c.crowd!=="—" ? `<div class="meta"><span>⚠ ${c.crowd}</span></div>` : ""}
+      <div class="fail">${c.fail}</div>
+      <div class="meta" style="font-size:11px">${c.hist}</div>
+      <div class="ops">${action}</div>
+    </div>`);
+}
+</script>
+</body>
+</html>

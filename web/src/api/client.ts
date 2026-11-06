@@ -19,15 +19,36 @@ export const post = <T>(path: string, body: unknown) =>
   request<T>(path, { method: "POST", body: JSON.stringify(body) });
 export const put = <T>(path: string, body: unknown) =>
   request<T>(path, { method: "PUT", body: JSON.stringify(body) });
+export const patch = <T>(path: string, body: unknown) =>
+  request<T>(path, { method: "PATCH", body: JSON.stringify(body) });
 export const del = <T>(path: string) => request<T>(path, { method: "DELETE" });
 
 // —— 类型 ——
+/** 策略参数元数据（后端 registry 提供，含分组）。 */
+export interface ParamField {
+  key: string;
+  label: string;
+  type: string;              // int / float / str
+  default?: unknown;
+  min?: number | null;
+  max?: number | null;
+  step?: number | null;
+  options?: string[] | null; // type=str 时的枚举值
+  desc?: string | null;      // 参数口径说明
+  group?: string | null;     // 折叠分组名
+}
+
 export interface StrategyInfo {
   key: string;
   name: string;
   desc?: string;
+  description?: string;
   default_params: Record<string, unknown>;
-  param_schema: { key: string; label: string; type: string; default: unknown }[];
+  param_schema: ParamField[];
+  multi_asset?: boolean;
+  index_name?: string | null;
+  /** 该策略的基准指数行情代码（如 sh000300）。回测页切策略时用来自动填标的。 */
+  index_symbol?: string | null;
 }
 
 export interface KlineBar {
@@ -61,6 +82,8 @@ export interface BacktestResult {
   max_drawdown: number;
   trade_count?: number;
   benchmark_total_return?: number;
+  /** 基准的行情代码，单标的回测里就是标的自买入持有。 */
+  benchmark_symbol?: string;
   excess_return?: number;
   equity_curve?: { date: string; equity: number }[];
   trades?: {
@@ -96,6 +119,13 @@ export const api = {
   // 参数寻优
   optimize: (payload: Record<string, unknown>) =>
     post<OptimizeTrial[]>("/strategy/optimize", payload),
+  // 大网格：提交后台任务（子进程执行），轮询进度
+  optimizeAsync: (payload: Record<string, unknown>) =>
+    post<{ job_id: string; total: number; pid: number }>("/strategy/optimize/async", payload),
+  optimizeAsyncStatus: (jobId: string) =>
+    get<OptimizeJobStatus>(`/strategy/optimize/async/${jobId}`),
+  optimizeAsyncCancel: (jobId: string) =>
+    del<{ ok: boolean }>(`/strategy/optimize/async/${jobId}`),
   // 模拟盘
   paperTasks: () => get<PaperTask[]>("/paper/tasks"),
   paperCreate: (body: Record<string, unknown>) => post<PaperTask>("/paper/tasks", body),
@@ -122,13 +152,31 @@ export const api = {
   // GP 自动挖掘
   factorGpDirections: () => get<{ key: string; note: string }[]>("/factor/gp/directions"),
   factorGpMine: (payload: Record<string, unknown>) => post<GpMineResult>("/factor/gp/mine", payload),
-  // 新闻情绪因子（文本管道第一层）
-  factorNewsDaily: (limit = 500) =>
-    get<{ date: string; n_articles: number; n_finance: number; bull: number; bear: number; net_sentiment: number | null }[]>(`/factor/news/daily?limit=${limit}`),
-  factorNewsTest: (extreme_pct: number, horizon: number) =>
-    post<NewsEventReport>("/factor/news/event-test", { extreme_pct, horizon }),
+  // AI 因子生成（自然语言 ↔ 表达式）
+  factorAiStatus: () => get<AiStatus>("/factor/ai/status"),
+  factorAiGenerate: (text: string, max_retry = 3) =>
+    post<AiGenerateResult>("/factor/ai/generate", { text, max_retry }),
+  factorAiExplain: (expr: string) => post<AiExplainResult>("/factor/ai/explain", { expr }),
+
+  // —— 大模型通道配置：页面维护，写入即生效（无需重启后端）——
+  llmProviders: () => get<LlmProviderList>("/llm/providers"),
+  llmPresets: () => get<{ presets: LlmVendorPreset[] }>("/llm/presets"),
+  llmCreate: (p: LlmProviderInput) => post<LlmProvider>("/llm/providers", p),
+  llmUpdate: (id: number, p: Partial<LlmProviderInput>) =>
+    patch<LlmProvider>(`/llm/providers/${id}`, p),
+  llmDelete: (id: number) => del<{ ok: boolean }>(`/llm/providers/${id}`),
+  llmSetDefault: (id: number) => post<{ ok: boolean }>(`/llm/providers/${id}/default`, {}),
+  /** 用库中已保存的配置测试（编辑时未改 key 的场景）。 */
+  llmTestSaved: (id: number) => post<LlmTestResult>(`/llm/providers/${id}/test`, {}),
+  /** 用表单当前值测试（保存前先验证）；api_key 留空且有 id 时后端复用已存 key。 */
+  llmTestDraft: (p: { id?: number; base_url: string; model: string; api_key?: string }) =>
+    post<LlmTestResult>("/llm/test", p),
   // 数据健康度 + 数据流全景
   monitorHealth: () => get<HealthReport>(`/monitor/health-report`),
+  frameworkHealth: () => get<FrameworkHealth>(`/monitor/framework-health`),
+  holidayMode: () => get<HolidayMode>(`/monitor/holiday-mode`),
+  setHolidayMode: (mode: "auto" | "on" | "off") =>
+    put<HolidayMode>(`/monitor/holiday-mode`, { mode }),
   monitorDataflow: () => get<DataflowReport>(`/monitor/dataflow`),
   monitorLineage: () => get<LineageReport>(`/monitor/lineage`),
   monitorAssets: (force = false) => get<AssetsReport>(`/monitor/assets?force=${force}`),
@@ -149,11 +197,128 @@ export interface RegistryRow {
   category: string; status: string; ic_mean: number | null; created_at: string;
 }
 
+// —— AI 因子生成 ——
+export interface AiStatus {
+  configured: boolean;
+  model: string;
+  base_url: string;
+  /** 未配置大模型时，本地关键词规则兜底是否可用（试用模式）。 */
+  fallback_ready?: boolean;
+  /** 需要配置的环境变量名，前端在配置引导里展示。 */
+  env_key?: string;
+  /** 生效来源：db=页面配置的通道，env=环境变量（向后兼容通道）。 */
+  source?: "" | "db" | "env";
+  /** 生效通道名（页面配置时为其名称）。 */
+  provider_name?: string;
+  provider_id?: number | null;
+  key_masked?: string;
+}
+
+// —— 大模型通道配置（/llm/*）——
+export interface LlmProvider {
+  id: number;
+  name: string;
+  vendor: string;
+  base_url: string;
+  model: string;
+  /** 脱敏后的 key，如 sk-abc******wxyz；明文永远不会返回。 */
+  api_key_masked: string;
+  has_key: boolean;
+  is_default: boolean;
+  last_test_at: string | null;
+  last_test_ok: boolean | null;
+  last_test_ms: number | null;
+  last_test_msg: string | null;
+  updated_at: string | null;
+}
+
+export interface LlmActive {
+  configured: boolean;
+  source: "" | "db" | "env";
+  name: string;
+  model: string;
+  base_url: string;
+  provider_id: number | null;
+  key_masked: string;
+  count: number;
+  /** 页面已配置但 .env 里也有 key 时给出提示，避免「改了 .env 没反应」的困惑。 */
+  env_shadowed: boolean;
+}
+
+export interface LlmProviderList {
+  active: LlmActive;
+  items: LlmProvider[];
+}
+
+export interface LlmVendorPreset {
+  vendor: string;
+  label: string;
+  base_url: string;
+  models: string[];
+  note: string;
+}
+
+export interface LlmTestResult {
+  ok: boolean;
+  ms: number;
+  model: string;
+  reply?: string;
+  error?: string;
+}
+
+/** 新建/编辑通道的提交体（编辑时 api_key 留空 = 不修改）。 */
+export interface LlmProviderInput {
+  name: string;
+  vendor: string;
+  base_url: string;
+  model: string;
+  api_key?: string;
+  make_default?: boolean;
+}
+
+/** 一次校验失败的记录（模型第几轮写了什么、报什么错），用于展示自修复过程。 */
+export interface AiFix {
+  attempt: number;
+  expr: string;
+  error: string;
+}
+
+export interface AiGenerateResult {
+  ok: boolean;
+  expr?: string;
+  name?: string;
+  logic?: string;
+  direction?: string;
+  unsupported?: string;
+  confidence?: number | null;
+  sample_value?: number | null;
+  attempts?: number;
+  fixes?: AiFix[];
+  model?: string;
+  error?: string;
+  hint?: string;
+  /** 结果来源：llm=大模型，local=本地关键词规则（试用模式）。 */
+  source?: "llm" | "local";
+  /** 本地模式下命中的规则名（让用户一眼看出是否理解对了）。 */
+  matched?: string[];
+}
+
+export interface AiExplainResult {
+  ok: boolean;
+  expr?: string;
+  name?: string;
+  logic?: string;
+  direction?: string;
+  caveats?: string;
+  error?: string;
+}
+
 export interface HealthCheck {
   name: string;
   status: "ok" | "warn" | "error";
   value: string;
   expect: string;
+  muted?: boolean;
 }
 export interface HealthLayer {
   label: string;
@@ -164,27 +329,38 @@ export interface HealthLayer {
 export interface HealthAlert {
   level: string; layer: string; check: string; detail: string; expect: string;
 }
+export interface HolidayMode {
+  mode: "auto" | "on" | "off";
+  active: boolean;
+  today: string;
+  trading_day: boolean;
+  next_trading_day: string | null;
+}
+/** 框架四层体检（调度/编排/数据/研究）—— /monitor/framework-health */
+export interface FrameworkHealthItem {
+  label: string;
+  status: "OK" | "WARN" | "FAIL";
+  detail: string;
+}
+export interface FrameworkHealthLayer {
+  key: string;
+  name: string;
+  status: "OK" | "WARN" | "FAIL";
+  items: FrameworkHealthItem[];
+}
+export interface FrameworkHealth {
+  checked_at: string;
+  worst: "OK" | "WARN" | "FAIL";
+  layers: FrameworkHealthLayer[];
+}
+
 export interface HealthReport {
   overall_score: number;
   overall_status: "healthy" | "warn" | "error";
   layers: Record<string, HealthLayer>;
   alerts: HealthAlert[];
+  holiday?: Pick<HolidayMode, "mode" | "active" | "trading_day" | "next_trading_day">;
   generated_at: string;
-}
-
-export interface NewsEventReport {
-  ok: boolean;
-  error?: string;
-  extreme_pct: number;
-  horizon: number;
-  hi_threshold?: number;
-  lo_threshold?: number;
-  baseline_ret: number;
-  n_days_all: number;
-  bull: { n_days: number; avg_ret: number; win_rate: number };
-  bear: { n_days: number; avg_ret: number; win_rate: number };
-  edge_long_vs_base?: number | null;
-  edge_short_vs_base?: number | null;
 }
 
 // —— GP 自动挖掘类型 ——
@@ -200,6 +376,21 @@ export interface GpMineResult {
 }
 
 // —— 因子挖掘类型 ——
+/** 因子值本身的分布统计：IC 是秩相关、对数值缩放免疫，这里是唯一能反映「参数改了没有」的反馈 */
+export interface FactorValueStats {
+  n_values: number;
+  n_per_period: number;
+  mean: number | null;
+  std: number | null;
+  min: number | null;
+  p25: number | null;
+  p50: number | null;
+  p75: number | null;
+  max: number | null;
+  skew: number | null;
+  n_unique: number;
+}
+
 export interface FactorMineReport {
   ok: boolean;
   error?: string;
@@ -222,6 +413,10 @@ export interface FactorMineReport {
   n_periods: number;
   n_stocks: number;
   forward_days: number;
+  factor_stats?: FactorValueStats;
+  /** 命中重复表达式时，指向已存在的那条历史记录 id（本次未重算、未落库） */
+  duplicate_of?: number;
+  duplicate_created_at?: string | null;
 }
 
 export interface FactorMineSummary {
@@ -266,6 +461,7 @@ export interface MonitorStatus {
 // —— 参数寻优类型 ——
 export interface OptimizeTrial {
   params: Record<string, number>;
+  // 样本内（IS）
   total_return: number;
   annual_return: number;
   max_drawdown: number;
@@ -273,6 +469,32 @@ export interface OptimizeTrial {
   win_rate: number;
   trade_count: number;
   final_equity: number;
+  // 样本外（OOS），未启用切分时为 null
+  oos_start: string | null;
+  oos_total_return: number | null;
+  oos_annual_return: number | null;
+  oos_max_drawdown: number | null;
+  oos_sharpe: number | null;
+  oos_win_rate: number | null;
+  oos_trade_count: number | null;
+  // 稳健性（与相邻参数组合比较）
+  neighbor_count: number;
+  neighbor_sharpe: number | null;
+  robustness: number | null;
+}
+
+/** 大网格异步寻优任务的状态（GET /strategy/optimize/async/{job_id}） */
+export interface OptimizeJobStatus {
+  job_id: string;
+  running: boolean;
+  done: number;
+  total: number;
+  ok: boolean | null;
+  error: string | null;
+  cancelled: boolean;
+  elapsed: number;
+  /** 仅在 running=false 时返回实际结果 */
+  results: OptimizeTrial[];
 }
 
 // —— 模拟盘类型 ——
@@ -370,9 +592,8 @@ export interface CoverageBlock {
 export interface AssetsReport {
   generated_at: string; today: string; coverage: CoverageBlock;
   summary: {
-    latest_trade_date: string | null; latest_news_date: string | null;
+    latest_trade_date: string | null;
     lag_trading_days: number | null; lag_calendar_days: number | null;
-    news_lag_trading_days: number | null;
     total_rows: number; symbols: number | null;
     n_stale: number; n_warn: number; n_empty: number; n_total: number;
     n_partial_days: number;
@@ -391,3 +612,243 @@ export interface HealthRuleRow {
   enabled: boolean; last_value: string | null; last_status: string | null;
   metric_doc: string;
 }
+
+// —— Agent 编排 / 研究驾驶舱（P2）——
+export interface AgentEventItem {
+  id: number; run_id: number; agent: string; step: string;
+  level: string; status: string | null; message: string;
+  rows: number | null; duration_ms: number | null; created_at: string | null;
+}
+export interface ResearchRunItem {
+  id: number; trigger: string; status: string; data_date: string | null;
+  gate_status: string; gate_note: string | null; gate_deadline: string | null;
+  started_at: string | null; finished_at: string | null; error: string | null;
+}
+export interface AgentState {
+  orchestrator: { running: boolean; run_id: number | null; step: string | null;
+    started_at: string | null; finished_at: string | null };
+  scheduler: { enabled: boolean; run_at: string; last_run_date: string | null;
+    last_error: string | null; next_run: string; gate_countdown_sec: number };
+  gate_countdown_sec: number;
+  latest_run: ResearchRunItem | null;
+  recent_runs: ResearchRunItem[];
+}
+
+// Agent 方法独立导出（api 对象字面量无法被 Object.assign 扩展类型）
+export const agentApi = {
+  state: () => get<AgentState>("/agent/state"),
+  run: (trigger: string = "manual") =>
+    post<{ ok: boolean; run_id: number }>("/agent/run", { trigger }),
+  gate: (rid: number, action: "approve" | "reject", note: string = "") =>
+    post<{ ok: boolean; gate_status: string }>(`/agent/runs/${rid}/gate`, { action, note }),
+};
+
+// 信号组合 + 发布通道配置（P3/P4）
+export interface PortfolioSnapshot {
+  ok: boolean; error?: string; as_of: string;
+  summary: { capital: number; total: number; return_pct: number;
+    max_drawdown_pct: number; n_trades: number; n_holdings: number; days: number;
+    gate_open_days?: number; gate_exc_now?: number | null; rule?: string;
+    enabled_strategies?: string[] };
+  config: Record<string, number>;
+  equity: { date: string; total: number; cash: number; market_value: number;
+    n_positions: number; gate_open?: boolean }[];
+  holdings: { symbol: string; shares: number; entry_price: number; entry_date: string }[];
+  trades: { date: string; symbol: string; side: string; shares: number;
+    price: number; reason: string; pnl_pct?: number }[];
+}
+export interface NotifyConfig {
+  enabled: boolean; smtp_host: string; smtp_port: number; user: string;
+  from_addr: string; to: string[]; has_password: boolean; password_hint: string;
+}
+
+export const signalApi = {
+  portfolio: () => get<PortfolioSnapshot>("/signal/portfolio"),
+  portfolioExp: () => get<PortfolioSnapshot>("/signal/portfolio-exp"),
+  notifyConfig: () => get<NotifyConfig>("/agent/notify-config"),
+  updateNotifyConfig: (cfg: Record<string, unknown>) =>
+    put<{ ok: boolean; config: NotifyConfig }>("/agent/notify-config", cfg),
+  testNotify: () => post<{ ok: boolean; error?: string }>("/agent/notify-test", {}),
+};
+
+// —— 资讯中心（东财 / 新浪 / 腾讯 / 雪球） ——
+export interface NewsItem {
+  title: string; time: string; url: string; source: string;
+}
+export interface QuoteItem {
+  code: string; name: string; price: number; change_pct: number; source: string;
+}
+export interface HotItem {
+  symbol: string; name: string; heat: number; heat_increment: number;
+  rank_change: number; price: number; change_pct: number; source: string;
+}
+export interface NewsFeed {
+  generated_at: string; cached: boolean; age_sec: number; stale?: boolean;
+  headlines: NewsItem[]; sina_roll: NewsItem[];
+  global_quotes: QuoteItem[]; xueqiu_hot: HotItem[];
+  sources_ok: { eastmoney: boolean; sina: boolean; tencent: boolean; xueqiu: boolean };
+}
+export interface StockNews {
+  ok: boolean; error?: string; symbol?: string; items: NewsItem[]; cached?: boolean;
+}
+
+export const newsApi = {
+  feed: (refresh = false) => get<NewsFeed>(`/news/feed${refresh ? "?refresh=true" : ""}`),
+  stock: (symbol: string) =>
+    get<StockNews>(`/news/stock?symbol=${encodeURIComponent(symbol)}`),
+};
+
+// —— 自动研究闭环（/auto/*）——
+export interface AutoRunSummary {
+  evaluated?: number; elites?: number; best_ic?: number;
+  enabled?: { name: string; rating: string; ic: number | null; icir: number | null; status: string }[];
+  candidates?: { name: string; rating: string }[];
+  skipped?: { name: string; rating: string }[];
+  date?: string; best?: string | null; worst?: string | null;
+  weakening?: string[]; suggestions?: string[];
+  factors?: { enabled: number; total: number; new_this_week: number };
+  portfolio?: Record<string, number>;
+  strategies?: { name: string; exc_10: number; exc_5: number | null; n: number }[];
+}
+export interface AutoRun {
+  id: number; job: string; trigger: string; status: string;
+  summary: AutoRunSummary; report_path?: string | null; error?: string | null;
+  started_at: string | null; finished_at: string | null;
+}
+export interface AutoConfig {
+  mining_enabled: boolean; review_enabled: boolean;
+  auto_enable_excellent: boolean; email_review: boolean;
+  mining_time: string; review_weekday: number; review_time: string;
+  mining_pop: number; mining_gens: number; mining_top_k: number;
+}
+export interface AutoStatus {
+  config: AutoConfig;
+  mining_next: string; review_next: string; last_error: string | null;
+  last_mining: AutoRun | null; last_review: AutoRun | null; total_runs: number;
+}
+
+export const autoApi = {
+  status: () => get<AutoStatus>("/auto/status"),
+  runs: (limit = 20) => get<AutoRun[]>(`/auto/runs?limit=${limit}`),
+  runDetail: (id: number) => get<AutoRun & { report_html?: string | null }>(`/auto/runs/${id}`),
+  runJob: (job: "mining" | "review") => post<{ ok: boolean; run_id: number }>(`/auto/run/${job}`, {}),
+  saveConfig: (patch: Partial<AutoConfig>) =>
+    put<{ ok: boolean; config: AutoConfig }>("/auto/config", patch),
+};
+
+// —— 研究卡（/research/cards，研究卡机制第 4 步）——
+export interface CardHistoryEntry {
+  at?: string; date?: string;
+  from: string | null; to: string; reason: string; actor?: string;
+}
+export interface ResearchCardItem {
+  id: number; card_type: "strategy" | "factor"; key: string; name: string;
+  hypothesis: string; data_spec: string;
+  evidence: {
+    w240?: number | null; w120?: number | null; w60?: number | null; d90?: number | null;
+    exc_10?: number | null; exc_5?: number | null; n_10?: number; n?: number;
+    win_10?: number | null; t_10?: number | null; negative_weeks?: number;
+    evidence_updated_at?: string;
+    ic_mean?: number | null; icir?: number | null; rating?: string;
+    weekly?: { date: string; exc_10: number | null; n_10: number; t_10?: number | null }[];
+  };
+  cost_note: string; crowd_note: string; fail_condition: string;
+  state: "enabled" | "candidate" | "watch" | "downgraded" | "retired";
+  history: CardHistoryEntry[];
+  updated_at: string | null;
+}
+export interface ResearchCardsResp {
+  total: number;
+  state_count: Record<string, number>;
+  cards: ResearchCardItem[];
+}
+export interface CardSuggestion {
+  card_id: number; key: string; name: string; state: string;
+  evidence_date?: string | null;
+  kind: "downgrade" | "retire" | "upgrade" | "demote_watch";
+  to_state: string; text: string;
+}
+// —— 卡片信号详情（/research/cards/{id}/signals）——
+export interface CardSignalAction {
+  symbol: string; name?: string | null; action?: string | null;
+  streak?: number | null; resonance?: number | null;
+  close?: number | null; reason?: string | null;
+}
+export interface StatRow {
+  [k: string]: string | number | null | undefined;
+}
+export interface CardSignalsResp {
+  ok: boolean; error?: string; key?: string; name?: string; window_days?: number;
+  perf?: StatRow; by_month?: StatRow[]; by_streak?: StatRow[]; by_resonance?: StatRow[];
+  recent_days?: { date: string; count: number }[];
+  latest_date?: string | null; latest_total?: number; latest_actions?: CardSignalAction[];
+}
+export const researchApi = {
+  cards: () => get<ResearchCardsResp>("/research/cards"),
+  suggestions: () => get<{ total: number; items: CardSuggestion[] }>("/research/suggestions"),
+  transition: (id: number, to_state: string, reason: string) =>
+    post<{ ok: boolean; changed: boolean; state: string }>(`/research/cards/${id}/transition`, { to_state, reason }),
+  card: (id: number) => get<ResearchCardItem>(`/research/cards/${id}`),
+  cardSignals: (id: number, date?: string) =>
+    get<CardSignalsResp>(`/research/cards/${id}/signals${date ? `?date=${date}` : ""}`),
+};
+
+// —— 公众号阅读（/wechat/*，数据来自 knowledge.db 全文库）——
+export interface WechatStats {
+  available: boolean; msg?: string;
+  n?: number; mps?: number;
+  first_date?: string; last_date?: string; stale_days?: number | null;
+  today?: number; last7d?: number; total_chars?: number;
+}
+export interface WechatMp {
+  mp_id: string; mp_name: string; n: number; last_ts: number;
+  last_date: string; n7d: number;
+}
+export interface WechatArticle {
+  id: string; mp_id: string; mp_name: string; title: string;
+  author?: string; publish_time: number; publish_date?: string;
+  url: string; cover?: string;
+  digest: string; chars: number;
+}
+export interface WechatArticleDetail extends Omit<WechatArticle, "digest"> {
+  content_text: string; fetched_date?: string;
+}
+export interface WechatListResp {
+  items: WechatArticle[]; total: number; offset?: number; limit?: number;
+  db_missing?: boolean; error?: string;
+}
+export interface WechatDailyResp {
+  date: string; items: WechatArticle[]; n?: number; error?: string;
+}
+export interface WechatTrendResp { items: { date: string; n: number }[]; days: number }
+
+export interface WechatUpstream {
+  level: "ok" | "warn" | "fail";
+  verdict: string;
+  source: string;                       // weread = 直连微信读书
+  cookie: { ok: boolean; vid: string; error: string };
+  feeds: number;
+  last_run: {
+    ok?: boolean; new?: number; skip?: number; fail?: number;
+    seconds?: number; at?: string; error?: string | null;
+  };
+}
+
+export const wechatApi = {
+  stats: () => get<WechatStats>("/wechat/stats"),
+  upstream: () => get<WechatUpstream>("/wechat/upstream"),
+  collect: (limit = 0) => post<{ ok: boolean; note: string }>(`/wechat/collect?limit=${limit}`, {}),
+  mps: (limit = 300) => get<{ items: WechatMp[]; n: number }>(`/wechat/mps?limit=${limit}`),
+  articles: (p: { mp_id?: string; q?: string; since_days?: number; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (p.mp_id) qs.set("mp_id", p.mp_id);
+    if (p.q) qs.set("q", p.q);
+    if (p.since_days) qs.set("since_days", String(p.since_days));
+    qs.set("limit", String(p.limit ?? 30));
+    qs.set("offset", String(p.offset ?? 0));
+    return get<WechatListResp>(`/wechat/articles?${qs.toString()}`);
+  },
+  article: (id: string) => get<WechatArticleDetail>(`/wechat/article/${encodeURIComponent(id)}`),
+  daily: (date = "") => get<WechatDailyResp>(`/wechat/daily${date ? `?date=${date}` : ""}`),
+  trend: (days = 14) => get<WechatTrendResp>(`/wechat/trend?days=${days}`),
+};

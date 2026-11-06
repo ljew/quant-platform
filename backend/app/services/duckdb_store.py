@@ -82,52 +82,92 @@ def _iso(d) -> str:
     return d.isoformat() if hasattr(d, "isoformat") else str(d)
 
 
-def _to_bar_dict(r: dict) -> dict:
-    return {
+def _to_bar_dict(r: dict, adj_factor: float | None = None) -> dict:
+    d = {
         "symbol": r["symbol"],
         "date": _iso(r["trade_date"]),
         "open": float(r["open"]), "high": float(r["high"]), "low": float(r["low"]),
         "close": float(r["close"]), "volume": float(r["volume"]), "amount": float(r["amount"]),
     }
+    if adj_factor is not None:
+        d["_f"] = adj_factor
+    return d
+
+
+def _adjust_bars(bars: list[dict], adj: str) -> list[dict]:
+    """按复权口径折算价格（就地修改并返回）。
+
+    库内存的是**未复权原始价**（全A 建仓后的统一口径），复权在读取时实时完成
+    —— 单一事实源，避免「存了什么口径就只能用什么口径」。
+
+    实际折算规则统一在 app.services.adjust（与因子计算链路共用同一份实现，
+    防止 bars 路径与 series 路径口径漂移）。
+    """
+    from app.services.adjust import apply_adjust_bars
+
+    return apply_adjust_bars(bars, adj)
+
+
+def _adj_join_sql() -> tuple[str, str]:
+    """复权因子 JOIN 片段。表缺失时降级为不复权（NULL 因子 → ratio 恒为 1）。"""
+    if _table_exists("adj_factor_daily"):
+        return ("LEFT JOIN main.adj_factor_daily a "
+                "  ON a.symbol = k.symbol AND a.trade_date = k.trade_date ",
+                "a.adj_factor")
+    return "", "NULL AS adj_factor"
 
 
 def get_stock_bars(symbol: str, adj: str, sd, ed) -> list[dict]:
-    """个股日K（与 SQLAlchemy KlineDaily 路径同结构）。sd/ed 为 date 或 ISO 字符串。"""
+    """个股日K（与 SQLAlchemy KlineDaily 路径同结构）。sd/ed 为 date 或 ISO 字符串。
+
+    库内存的是未复权原价，adj 由 adj_factor_daily 实时折算 —— 调用方无需关心存储口径。
+    """
     if not _table_exists("kline_daily"):
         return []
+    join_sql, fac_col = _adj_join_sql()
     rows = _query(
-        "SELECT symbol, trade_date, open, high, low, close, volume, amount "
-        "FROM main.kline_daily "
-        "WHERE symbol=? AND adj=? AND trade_date BETWEEN ? AND ? "
-        "ORDER BY trade_date",
-        (symbol, adj, sd, ed),
+        "SELECT k.symbol, k.trade_date, k.open, k.high, k.low, k.close, "
+        f"       k.volume, k.amount, {fac_col} "
+        "FROM main.kline_daily k "
+        f"{join_sql}"
+        "WHERE k.symbol=? AND k.trade_date BETWEEN ? AND ? "
+        "ORDER BY k.trade_date",
+        (symbol, sd, ed),
     )
-    return [_to_bar_dict(r) for r in rows]
+    return _adjust_bars([_to_bar_dict(r, r.get("adj_factor")) for r in rows], adj)
 
 
 def get_stock_bars_batch(symbols: list[str], adj: str, sd, ed) -> dict[str, list[dict]]:
     """批量个股日K（组合回测用）：一次连接/一次查询取全部股票，按 symbol 分组。
 
     返回 {symbol: [bars...]}；DuckDB 无数据的股票不在结果中（调用方走降级兜底）。
+    复权基准**逐标的**计算 —— 跨标的取首/末因子会把不同股票的因子混在一起。
     """
     if not symbols or not _table_exists("kline_daily"):
         return {}
+    join_sql, fac_col = _adj_join_sql()
     conn = _connect()
     if conn is None:
         return {}
     out: dict[str, list[dict]] = {}
     try:
         rows = conn.execute(
-            "SELECT symbol, trade_date, open, high, low, close, volume, amount "
-            "FROM main.kline_daily "
-            "WHERE symbol IN (SELECT unnest(?)) AND adj=? AND trade_date BETWEEN ? AND ? "
-            "ORDER BY symbol, trade_date",
-            [list(symbols), adj, sd, ed],
+            "SELECT k.symbol, k.trade_date, k.open, k.high, k.low, k.close, "
+            f"       k.volume, k.amount, {fac_col} "
+            "FROM main.kline_daily k "
+            f"{join_sql}"
+            "WHERE k.symbol IN (SELECT unnest(?)) AND k.trade_date BETWEEN ? AND ? "
+            "ORDER BY k.symbol, k.trade_date",
+            [list(symbols), sd, ed],
         ).fetchall()
-        cols = ["symbol", "trade_date", "open", "high", "low", "close", "volume", "amount"]
+        cols = ["symbol", "trade_date", "open", "high", "low", "close",
+                "volume", "amount", "adj_factor"]
         for r in rows:
             d = dict(zip(cols, r))
-            out.setdefault(d["symbol"], []).append(_to_bar_dict(d))
+            out.setdefault(d["symbol"], []).append(
+                _to_bar_dict(d, d.get("adj_factor")))
+        for sym in out:
+            out[sym] = _adjust_bars(out[sym], adj)
         return out
     except Exception:  # noqa: BLE001
         return out

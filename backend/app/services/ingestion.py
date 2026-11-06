@@ -100,8 +100,12 @@ def update_stock_attributes() -> int:
 
 
 def ingest_kline_for_symbol(symbol: str, start_year: int | None = None,
-                            adj: str = "qfq") -> int:
-    """拉取单标的日K并入库。返回写入条数。"""
+                            adj: str = "none") -> int:
+    """拉取单标的日K并入库。返回写入条数。
+
+    adj 默认 "none"：全A 建仓后库内统一存**未复权原始价**，复权在读取时
+    由 adj_factor_daily 实时折算（见 duckdb_store._adjust_bars）。
+    """
     db = SessionLocal()
     try:
         # 查询已有最新日期，做增量
@@ -125,7 +129,7 @@ def ingest_kline_for_symbol(symbol: str, start_year: int | None = None,
         db.close()
 
 
-def latest_kline_date(symbol: str, adj: str = "qfq") -> date | None:
+def latest_kline_date(symbol: str, adj: str = "none") -> date | None:
     db = SessionLocal()
     try:
         return db.query(func.max(KlineDaily.trade_date)).filter(

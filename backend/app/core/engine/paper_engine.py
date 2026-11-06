@@ -63,6 +63,7 @@ def _load_single(db, task: PaperTask) -> dict:
     engine = BacktestEngine(
         bars, initial_cash=task.initial_cash, commission=task.commission,
         slippage=task.slippage,
+        symbol=sym,   # 按板块取涨跌停幅度，与实盘 guard 口径一致
     )
     engine.run(meta["cls"], params)
 

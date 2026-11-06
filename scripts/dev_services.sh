@@ -13,7 +13,7 @@
 
 set -u
 
-ROOT="/Users/happyljew/Desktop/kimiwork/Quant/quant-platform"
+ROOT="/Users/happyljew/quant-platform"
 PY="/Users/happyljew/.workbuddy/binaries/python/envs/quant/bin/python"
 LOG_DIR="/tmp"
 LOG="$LOG_DIR/quant-backend.log"

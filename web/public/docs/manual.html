@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QUANT·DESK 使用说明书</title>
+<style>
+  :root { --bg:#0d1219; --card:#151d29; --border:#26303f; --text:#dbe4ee; --muted:#8b98a9; --accent:#4f8cff; --up:#e0605e; --down:#3fbf7f; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.85 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
+  .wrap { max-width:920px; margin:0 auto; padding:48px 32px 80px; }
+  h1 { font-size:30px; margin:0 0 6px; letter-spacing:1px; }
+  h2 { font-size:21px; margin:44px 0 12px; padding-left:12px; border-left:4px solid var(--accent); }
+  h3 { font-size:16.5px; margin:26px 0 8px; color:#b8c6d8; }
+  p { margin:8px 0; }
+  .sub { color:var(--muted); font-size:13.5px; margin-bottom:32px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:18px 22px; margin:14px 0; }
+  code { background:#0a0f16; border:1px solid var(--border); border-radius:5px; padding:1px 7px; font:13px/1.6 "SF Mono",Menlo,monospace; color:#9ecbff; }
+  table { width:100%; border-collapse:collapse; margin:12px 0; font-size:13.8px; }
+  th, td { border:1px solid var(--border); padding:7px 12px; text-align:left; }
+  th { background:#1a2432; font-weight:600; }
+  td { background:var(--card); }
+  ul, ol { padding-left:22px; margin:8px 0; }
+  li { margin:4px 0; }
+  .tag { display:inline-block; padding:1px 9px; border-radius:5px; font-size:12px; margin-right:6px; }
+  .t-g { background:#3fbf7f1c; color:#5fd69a; border:1px solid #3fbf7f44; }
+  .t-r { background:#e0605e1c; color:#f08a88; border:1px solid #e0605e44; }
+  .t-y { background:#e8a5201c; color:#f0c060; border:1px solid #e8a52044; }
+  .muted { color:var(--muted); }
+  .toc a { color:var(--accent); text-decoration:none; }
+  .toc a:hover { text-decoration:underline; }
+  .tip { border-left:4px solid var(--down); }
+  .warn { border-left:4px solid var(--up); }
+  .foot { margin-top:56px; padding-top:18px; border-top:1px solid var(--border); color:var(--muted); font-size:12.5px; }
+  @media print { body { background:#fff; color:#222; } .card,td { background:#fafafa; } code { background:#f2f2f2; color:#333; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>QUANT·DESK 使用说明书</h1>
+<div class="sub">个人量化投研平台 · v2.1 · 最后更新 2026-10-08 · 配套文档：<a href="architecture.html" style="color:var(--accent)">系统架构设计</a></div>
+
+<div class="card toc">
+<b>目录</b>
+<ol style="margin:8px 0 0">
+  <li><a href="#s1">三分钟上手</a></li>
+  <li><a href="#s2">四个入口怎么用</a></li>
+  <li><a href="#s3">自动化时间表（它每天替你做什么）</a></li>
+  <li><a href="#s4">信号怎么读</a></li>
+  <li><a href="#s5">自动研究：挖矿与复盘</a></li>
+  <li><a href="#s6">常见问题</a></li>
+  <li><a href="#s7">边界与免责声明</a></li>
+</ol>
+</div>
+
+<h2 id="s1">1. 三分钟上手</h2>
+<ol>
+  <li>浏览器打开 <b><a href="http://localhost:8000/" style="color:var(--accent)">http://localhost:8000/</a></b> —— 唯一需要记住的地址（前端页面和后端服务都在这里，开机自启）。默认落在「<b>今日观点</b>」。</li>
+  <li>左侧导航只有四个入口：<b>今日观点 / 策略研究 / 组合跟踪 / 数据中心</b>。日常 90% 的时间你只需要第一个。</li>
+  <li>右下角（数据中心 → 自动研究）能看到平台昨晚替你干了什么：跑了哪些研究、信号有没有变化、复盘结论如何。</li>
+  <li>每周六上午会收到一封复盘邮件：这周信号表现如何、哪些策略在走弱、建议怎么处理。<b>需要你做决定的事，也会在「策略研究 → 研究卡」页面顶部以黄色横幅等你确认。</b></li>
+</ol>
+<div class="card tip"><b>核心用法一句话：</b>每天看一眼「今日观点」，每周看一眼复盘邮件和研究卡横幅，其余全部自动。</div>
+
+<h2 id="s2">2. 四个入口怎么用</h2>
+<h3>☀ 今日观点</h3>
+<ul>
+  <li><b>今日观点</b>：系统综合信号、行情、研究结论给出当日要点，打开即有观点。</li>
+  <li><b>行情看板</b>：指数、板块、市场宽度等行情总览。</li>
+</ul>
+<h3>⚗ 策略研究</h3>
+<ul>
+  <li><b>研究卡</b>（核心）：一个策略/因子 = 一张卡片。顶部状态机一眼看清「几个策略在动钱」；点卡片进详情页看完整分析（按月超额、信号日历、每只标的的判定理由）；降级/退役建议在页面顶部横幅一键确认。<b>平时不用看，有建议它会找你。</b></li>
+  <li><b>回测寻优</b>：单次回测 + 批量参数寻优（严格 T+1、PIT 成分池，无未来函数）。</li>
+  <li><b>因子实验室</b>：造新因子的地方（表达式 / GP 挖掘 / AI 生成）；造好了去研究卡上岗。</li>
+</ul>
+<h3>◷ 组合跟踪</h3>
+<ul>
+  <li><b>模拟盘</b>：按信号自动镜像的模拟组合，T+1 开盘成交，看净值与持仓。</li>
+  <li><b>信号组合</b>：每日信号明细——每只股票的动作、连续天数、命中策略、质量档。</li>
+  <li><b>归因分析</b>：按策略拆解 T+1/T+5/T+10 的胜率与超额收益，谁在赚钱一目了然。</li>
+</ul>
+<h3>⇉ 数据中心</h3>
+<ul>
+  <li><b>自动研究</b>：自动挖矿 + 自动复盘的状态台（它昨晚干了什么、下次什么时候跑、开关在哪），内含「流水线实况」子页签看 8 步编排的运行细节。</li>
+  <li><b>数据与系统</b>：数据管道（Bronze→Silver→Gold 全景与手动触发）+ 系统服务（健康分、告警、节假日静默开关）。</li>
+</ul>
+
+<h2 id="s3">3. 自动化时间表</h2>
+<table>
+<tr><th>时间</th><th>任务</th><th>说明</th></tr>
+<tr><td>交易日 19:00</td><td>数据日更 ETL</td><td>行情/成分自动更新，断供自动补抓，成分快照每月自动刷新</td></tr>
+<tr><td>交易日 20:47</td><td>自动挖矿</td><td>GP 小规模进化搜索（新规则：运气折价 t 门槛 + 复杂度 ≤4 才可自动上岗），新因子自动建研究卡</td></tr>
+<tr><td>周六 10:15</td><td>自动复盘</td><td>90 日滚动归因 + 刷新研究卡证据 + 状态机迁移（升级自动、降级出建议）→ 报告 + 邮件</td></tr>
+<tr><td>全天</td><td>模拟盘调度</td><td>按信号自动镜像调仓</td></tr>
+<tr><td>非交易日</td><td>节假日静默</td><td>自动静音「数据停更」类误报，真实故障照常报警</td></tr>
+</table>
+<div class="card tip">所有任务<b>幂等可补跑</b>：电脑关机错过了，下次启动会自动补上，不会重复、不会漏。</div>
+
+<h2 id="s4">4. 信号怎么读</h2>
+<p>每只股票每天得到一个动作：</p>
+<table>
+<tr><th>动作</th><th>含义</th><th>你该怎么理解</th></tr>
+<tr><td><span class="tag t-g">BUY_STRONG</span></td><td>连续多日命中有效策略</td><td>符合建仓条件（模拟盘次日开盘自动买入）</td></tr>
+<tr><td><span class="tag t-y">WATCH</span></td><td>确认中 / 策略偏弱 / 短线走弱</td><td>只看不动；策略偏弱时明确标注「不建仓」</td></tr>
+<tr><td><span class="tag t-r">REDUCE</span></td><td>跌破 MA20，趋势转弱</td><td>持有的话考虑减仓</td></tr>
+<tr><td><span class="tag t-r">EXIT</span></td><td>信号消失</td><td>不再跟踪</td></tr>
+<tr><td>NEW</td><td>首次出现</td><td>持续性待确认</td></tr>
+</table>
+<p>每条信号还带<b>质量档</b>：<span class="tag t-g">strong</span> 启用卡（长期验证有效） · <span class="tag t-y">neutral</span> 候选卡（试用中） · <span class="tag t-r">weak</span> 降级/退役卡。weak 档策略产生的信号<b>不会</b>变成 BUY_STRONG——这是研究卡状态机在生产端的闸门，2026-10-08 起档位直接由卡片状态驱动，不再需要改代码。</p>
+
+<h2 id="s5">5. 自动研究：挖矿与复盘</h2>
+<p>平台每天/每周自己干活，你只看结果。<b>研究卡是这套闭环的载体</b>：挖出的因子自动建卡、复盘自动更新证据、状态机自动执行升级，降级/退役出建议等你确认。</p>
+<h3>它在挖什么</h3>
+<p>每个交易日 20:47 用遗传规划在因子表达式空间小规模搜索，精英按「优秀/可用/弱/无效」评级（2026-10-08 起带运气折价 t 门槛）：</p>
+<ul>
+  <li><b>优秀且简单</b>（复杂度 ≤4）→ 自动启用并建研究卡，明天就参与全市场计算；</li>
+  <li><b>优秀但复杂 / 可用</b> → 留在候选卡，等你有空时看一眼；</li>
+  <li><b>弱/无效</b> → 直接丢弃，只留运行记录。</li>
+</ul>
+<h3>复盘报告怎么看</h3>
+<p>每周六的报告回答三个问题：① 哪个策略最强/最弱（90 日滚动窗口，含 t 值）；② 模拟盘组合表现；③ 研究卡状态变化——升级已自动执行，降级/退役以建议形式列出。<b>确认建议不用改代码</b>：打开「策略研究 → 研究卡」，页面顶部横幅点「同意」即可，下一次跑批生效。</p>
+<h3>想关掉或调参</h3>
+<p>「数据中心 → 自动研究」页有四个开关（挖矿/复盘/优秀自动上岗/邮件）和时间、种群规模等参数，改完即时生效。</p>
+
+<h2 id="s6">6. 常见问题</h2>
+<div class="card">
+<p><b>Q：今天数据没更新？</b><br>先看是不是交易日（非交易日停更正常，数据中心 → 数据与系统会显示「节假日静默中」）。是交易日但没更新：数据与系统 → 数据管道手动触发，健康分会告诉你卡在哪一环。</p>
+<p><b>Q：网站打不开？</b><br>确认地址是 <code>http://localhost:8000/</code>（7100 是开发临时端口，平时不开）。后端由系统服务托管，稍等 30 秒刷新；还不行就重启电脑（服务随开机自启）。</p>
+<p><b>Q：想恢复某个被降级的策略？</b><br>「策略研究 → 研究卡」找到那张卡，点进详情页，底部「人工状态迁移」选「候选」填理由即可，下一次跑批生效，无需改代码。每周复盘发现它超额转正时也会自动升回候选。</p>
+<p><b>Q：复盘邮件没收到？</b><br>邮件需要配置发件通道；未配置时系统只记录日志不报错，报告照样生成，可在「自动研究」页点「看报告」直接查看。</p>
+<p><b>Q：LLM 功能（因子释义等）怎么配？</b><br>在 LLM 配置页维护供应商和 key，保存即时生效，无需重启。</p>
+</div>
+
+<h2 id="s7">7. 边界与免责声明</h2>
+<div class="card warn">
+<ul>
+  <li>本平台<b>不含实盘交易</b>，所有买卖动作只发生在模拟盘。</li>
+  <li>所有信号、回测、归因结果基于历史数据统计，<b>不构成投资建议</b>；过往超额不代表未来。</li>
+  <li>数据来自公开数据源（akshare / tushare），偶发的源端缺失会自动补抓，但极端情况下可能延迟。</li>
+  <li>全部数据仅存本机，不上传。</li>
+</ul>
+</div>
+
+<div class="foot">QUANT·DESK · 使用说明书 · <a href="architecture.html" style="color:var(--accent)">→ 系统架构设计</a></div>
+</div>
+</body>
+</html>

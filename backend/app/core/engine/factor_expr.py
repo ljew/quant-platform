@@ -3,6 +3,8 @@
 设计目标（呼应 Qlib 表达式范式 + alphalens 因子工厂）：
 - 因子不再写死在 Python 里，而是存为表达式字符串（如 ``roe``、``std(returns(c_v))``、
   ``safe_inv(pe_ttm, 0, 1000)``），引擎在受限命名空间内求值；
+- 量价与现金流类因子同样可表达：``corr(returns(c_v), returns(vol_v))``（量价相关）、
+  ``mean(vol_r) / mean(vol_v)``（放量倍数）、``fcf_yield``（自由现金流收益率）；
 - 新增质量/成长/分析师预期因子 = 在 factor_library 登记一条定义 + 保证底层数据字段就绪，
   无需改动策略选股逻辑 —— 因子自动进入 IC 研究、分层分析、合成打分与前端展示。
 
@@ -146,12 +148,70 @@ def _ifnull(x: Optional[float], y: float) -> float:
     return y if x is None else x
 
 
+def _corr(x: List[float], y: List[float]) -> float:
+    """Pearson 相关系数（两序列按尾部对齐）。量价相关、背离类因子的核心算子。"""
+    n = min(len(x or []), len(y or []))
+    if n < 5:
+        return 0.0
+    xs, ys = x[-n:], y[-n:]
+    mx, my = statistics.fmean(xs), statistics.fmean(ys)
+    vx = sum((a - mx) ** 2 for a in xs)
+    vy = sum((b - my) ** 2 for b in ys)
+    if vx <= 0 or vy <= 0:
+        return 0.0
+    cov = sum((xs[i] - mx) * (ys[i] - my) for i in range(n))
+    return cov / math.sqrt(vx * vy)
+
+
+def _slope(s: List[float]) -> float:
+    """相对趋势斜率：OLS(y~t) 斜率 ÷ mean(|y|)，无量纲，正=上行、负=下行。
+
+    除以均值绝对值是为了抵消量纲（成交量、成交额、价格都能直接比大小）。
+    """
+    n = len(s or [])
+    if n < 5:
+        return 0.0
+    mt = (n - 1) / 2.0
+    my = statistics.fmean(s)
+    denom = sum((i - mt) ** 2 for i in range(n))
+    if denom <= 0:
+        return 0.0
+    num = sum((i - mt) * (s[i] - my) for i in range(n))
+    scale = statistics.fmean([abs(v) for v in s]) or 1.0
+    return num / denom / scale
+
+
+def _diff(s: List[float]) -> List[float]:
+    """一阶差分序列（长度 n-1）。"""
+    return [s[i] - s[i - 1] for i in range(1, len(s))]
+
+
+def _last(s: List[float]) -> float:
+    return s[-1] if s else 0.0
+
+
+def _median(s: List[float]) -> float:
+    return statistics.median(s) if s else 0.0
+
+
+def _count(s) -> float:
+    return float(len(s))
+
+
+def _div0(x: Optional[float], y: Optional[float]) -> float:
+    """安全除法：分子或分母为空、分母为 0 时返回 0（不报错、不产生 inf）。"""
+    if x is None or y is None or y == 0:
+        return 0.0
+    return x / y
+
+
 FUNCS: Dict[str, Any] = {
     "returns": _returns, "std": _std, "mean": _mean, "sum": _sum,
     "min": _min, "max": _max, "roc": _roc, "skew": _skew, "maxdd": _maxdd,
-    "beta": _beta, "idio_vol": _idio_vol,
-    "zscore": _zscore, "rank": _rank, "winsor": _winsor,
-    "safe_inv": _safe_inv, "ifnull": _ifnull,
+    "beta": _beta, "idio_vol": _idio_vol, "corr": _corr, "slope": _slope,
+    "zscore": _zscore, "rank": _rank, "winsor": _winsor, "diff": _diff,
+    "last": _last, "median": _median, "count": _count,
+    "safe_inv": _safe_inv, "div0": _div0, "ifnull": _ifnull,
     "log": math.log, "abs": abs, "sqrt": math.sqrt,
     "sign": lambda x: (x > 0) - (x < 0), "exp": math.exp, "pow": pow,
 }

@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
 from app.core.engine.base_strategy import Mode, PortfolioStrategy
+from app.core.rules.limit import limit_trigger
 
 logger = logging.getLogger("quant.portfolio")
 
@@ -145,6 +146,34 @@ class PortfolioContext:
             {"symbol": symbol, "name": name, "value": float(value)}
         )
 
+    def cost(self, symbol: str) -> float:
+        """当前持仓的成本价（无持仓返回 0）。止损判断用。"""
+        return float(self.engine.avg_cost.get(symbol, 0.0) or 0.0)
+
+    def history_high(self, symbol: str, n: int):
+        """截至今日的最高价序列（最近 n 个，与 history() 逐日对齐）。"""
+        h = self.engine.hist_high.get(symbol, [])
+        if len(h) < n:
+            return None
+        return h[-n:]
+
+    def first_date(self, symbol: str):
+        """该标的在本轮回测中的首个交易日（近似上市天数过滤用）。"""
+        d = self.engine.hist_dates.get(symbol, [])
+        return d[0] if d else None
+
+    def benchmark_history(self, n: int):
+        """基准收盘价序列（最近 n 个交易日），趋势/择时判断用。"""
+        h = self.engine.bench_hist
+        return h[-n:] if len(h) >= n else None
+
+    def financial(self, symbol: str) -> list:
+        """PIT 财务明细 [{ann_date, end_date, roe, ocf, capex, total_assets}, ...]。
+
+        仅当装配层注入 financials_raw 时非空；调用方须自行按 ann_date <= 今日 过滤。
+        """
+        return self.engine.financials_raw.get(symbol, [])
+
     def attributes_snapshot(self) -> dict:
         """当前持仓权重快照 {symbol: weight}。"""
         eq = self.engine._equity_today()
@@ -182,8 +211,8 @@ class PortfolioBacktestEngine:
         data: dict[str, List[dict]],
         benchmark: List[dict],
         initial_cash: float = 1_000_000.0,
-        commission: float = 0.0003,
-        slippage: float = 0.0,
+        commission: float = 0.00025,
+        slippage: float = 0.0001,
         rebalance_period: int = 21,
         warmup: int = 60,
         min_commission: float = 5.0,
@@ -194,14 +223,45 @@ class PortfolioBacktestEngine:
         membership: list | None = None,
         risk_limits: dict | None = None,
         fundamentals: dict | None = None,
+        financials_raw: dict | None = None,
+        start_date=None,
+        stamp_tax: float = 0.0005,
+        risk_free_rate: float = 0.025,
     ):
         self.data = data
         self.benchmark = benchmark
         self.initial_cash = float(initial_cash)
         self.commission = float(commission)
+        # 成本口径对齐 backtest_engine / xq（M1-3，2026-10-08）：加印花税（仅卖出）
+        self.stamp_tax = float(stamp_tax)
+        self.risk_free_rate = float(risk_free_rate)
         self.slippage = float(slippage)
         self.rebalance_period = int(rebalance_period)
+        # ⚠️ 预热边界必须锚到「用户请求的起始日」，而不是一个固定天数。
+        #    取数窗口为了给长回看因子备足历史会往前提（可能提前一年以上），
+        #    若 warmup 用固定天数，策略会在 req.start 之前就跑起来 / 或白白跳过一段。
+        #    这里把 warmup 定成「dates 中第一个 >= start_date 的位置」，两者兼顾。
+        self.warmup = int(warmup)  # 占位，稍后按 start_date 校正
+        # 交易日历：所有股票 + 基准的交易日并集，升序
+        dset = set()
+        for sym, bars in data.items():
+            for b in bars:
+                dset.add(b["date"])
+        for b in benchmark:
+            dset.add(b["date"])
+        self.dates = sorted(dset)
+
         self.warmup = int(warmup)
+        if start_date is not None and self.dates and warmup is not None:
+            sd0 = str(start_date)[:10]
+            lo, hi = 0, len(self.dates)
+            while lo < hi:                       # 二分找第一个 >= sd0 的位置
+                mid = (lo + hi) // 2
+                if str(self.dates[mid])[:10] < sd0:
+                    lo = mid + 1
+                else:
+                    hi = mid
+            self.warmup = max(self.warmup, min(lo, len(self.dates) - 1))
         # 实盘化参数
         self.min_commission = float(min_commission)
         self.lot_size = int(lot_size)
@@ -221,6 +281,9 @@ class PortfolioBacktestEngine:
         }
         # 基本面历史快照 {symbol: [{report_date, roe, revenue_yoy, profit_yoy}, ...]}（PIT 时序因子用）。
         self.fundamentals: dict = fundamentals or {}
+        # PIT 财务明细 {symbol: [{ann_date, end_date, roe, ocf, capex, total_assets}, ...]}
+        # 供需要现金流/总资产的策略（如 FCF/OE）做点-in-time 查询，只在装配层显式注入时生效。
+        self.financials_raw: dict = financials_raw or {}
         self.holdings_snapshots: list[dict] = []
         # 因子研究（IC/IR）：上期因子记录 / 每期 IC 序列 / 当期待收集因子
         self.factor_records: list[dict] = []
@@ -230,16 +293,11 @@ class PortfolioBacktestEngine:
         # 调仓下单缓冲（rebalance 期间只记录目标仓位，flush 时统一做风险约束再撮合）
         self._pending_orders: list[dict] = []
         self._clamp_events: list[dict] = []      # 风险约束触发的截断记录（审计用）
-
-        # 交易日历：所有股票 + 基准的交易日并集，升序
-        dset = set()
-        for sym, bars in data.items():
-            for b in bars:
-                dset.add(b["date"])
-        for b in benchmark:
-            dset.add(b["date"])
-        self.dates = sorted(dset)
         self.universe = list(data.keys())
+        # 当日有真实行情的标的集合。停牌 / 未上市标的只有 ffill 定价、没有真实成交：
+        # 估值可以继续用 ffill 价（见 _price_today），但撮合必须在 _order_target 前拦截。
+        # 依据：实盘侧 app/live/target.py 同样处理「停牌卖不出，持仓保留」。
+        self._tradable_today: set[str] = set()
 
         # 每只股票：date->close 映射 & 真实交易日收盘价历史（ffill 定价用 last_close）
         self.close_map = {
@@ -248,6 +306,11 @@ class PortfolioBacktestEngine:
         }
         self.hist = {sym: [] for sym in data}
         self.hist_dates = {sym: [] for sym in data}  # 与 hist 对齐的交易日
+        self.high_map = {
+            sym: {b["date"]: float(b.get("high") or b["close"]) for b in bars}
+            for sym, bars in data.items()
+        }
+        self.hist_high = {sym: [] for sym in data}   # 与 hist 对齐的最高价（移动止损峰值用）
         self.positions: dict[str, float] = {sym: 0.0 for sym in data}
         self.avg_cost: dict[str, float] = {sym: 0.0 for sym in data}
         self.cash = self.initial_cash
@@ -258,10 +321,24 @@ class PortfolioBacktestEngine:
 
         # 基准对齐
         self.bench_map = {b["date"]: float(b["close"]) for b in benchmark}
-        self.bench_first = benchmark[0]["close"] if benchmark else None
-        self.bench_hist: list[float] = []  # 与 dates 对齐的基准净值（每日更新）
+        # ⚠️ 基准起算日必须与策略一致 —— 锚到 warmup 之后的首个交易日，不能用取数窗口首日。
+        #    取数窗口为了给长回看因子预热会往前提很多（可能提前一年以上），
+        #    若拿 window 首日做基准，基准会白吃预热期的涨幅，而策略那段时间是空仓的，
+        #    表现为「基准虚高、超额巨负」。（jk001 曾因此基准算出 +32.5%，实际 -5.2%）
+        _s = self.dates[min(self.warmup, max(len(self.dates) - 1, 0))] if self.dates else None
+        self.bench_first = (self.bench_map.get(_s) if _s else None) or (
+            benchmark[0]["close"] if benchmark else None
+        )
+        self.bench_hist: list[float] = []  # 与 dates 对齐的基准价格（每日更新）
+        self.rebalance_errors = 0            # 调仓失败次数（>0 说明回测结果不可信）
+        self.rebalance_first_error: str | None = None
 
     # ——— 行情访问 ———
+    def _symbol_name(self, symbol: str) -> str:
+        """标的证券名称（ST 识别用）。attributes 未注入 name 时返回空串，
+        此时 ST 退化为主板 10% 的涨跌停幅度（已知偏差，见 core/rules/limit.py）。"""
+        return str((self.attributes.get(symbol, {}) or {}).get("name") or "")
+
     def _price_today(self, symbol: str):
         return self._last_close.get(symbol)
 
@@ -288,6 +365,10 @@ class PortfolioBacktestEngine:
     # ——— 撮合 ———
     def _order_target(self, ctx: PortfolioContext, symbol: str, target_shares: float,
                       signal_type: str = "", signal_reason: str = "") -> None:
+        # 停牌 / 当日无行情：只有 ffill 定价，没有真实成交。卖出停牌股在实盘卖不掉，
+        # 买入停牌股也买不进；不拦截的话回测会凭空获得流动性，净值系统性偏乐观。
+        if symbol not in self._tradable_today:
+            return
         price = self._last_close.get(symbol)
         if price is None or price <= 0:
             return
@@ -296,15 +377,18 @@ class PortfolioBacktestEngine:
         if abs(delta) < 1e-6:
             return
         is_buy = delta > 0
-        # 涨跌停限制：涨停买不进、跌停卖不出（A股 ±10%，用 9.5% 阈值防浮点误差）
+        # 涨跌停限制：涨停买不进、跌停卖不出。幅度按板块取（主板 10% / 创业板科创板
+        # 20% / 北交所 30% / ST 5%），阈值含 0.5pp 缓冲。与实盘 live/guard.py 共用
+        # core/rules.limit —— 两侧口径不一致会让回测净值与实盘表现系统性背离。
         if self.limit_enabled:
             h = self.hist.get(symbol, [])
             prev = h[-2] if len(h) >= 2 else None
             if prev and prev > 0:
                 chg = price / prev - 1.0
-                if is_buy and chg >= 0.095:
+                band = limit_trigger(symbol, self._symbol_name(symbol))
+                if is_buy and chg >= band:
                     return
-                if (not is_buy) and chg <= -0.095:
+                if (not is_buy) and chg <= -band:
                     return
         # 最小交易单位（手）：向下取整到 lot_size 的整数倍
         if self.lot_size and self.lot_size > 1:
@@ -315,6 +399,8 @@ class PortfolioBacktestEngine:
         exec_price = price * (1 + self.slippage * (1 if is_buy else -1))
         notional = abs(delta) * exec_price
         commission = max(notional * self.commission, self.min_commission)
+        # 印花税：仅卖出收取，万5（M1-3）
+        stamp = notional * self.stamp_tax if not is_buy else 0.0
         pnl_val = 0.0
         if is_buy:
             new_shares = cur + delta
@@ -328,8 +414,8 @@ class PortfolioBacktestEngine:
             self.cash -= notional + commission
             side = "BUY"
         else:
-            pnl_val = (exec_price - self.avg_cost.get(symbol, exec_price)) * (-delta) - commission
-            self.cash += notional - commission
+            pnl_val = (exec_price - self.avg_cost.get(symbol, exec_price)) * (-delta) - commission - stamp
+            self.cash += notional - commission - stamp
             self.positions[symbol] = cur - (-delta)
             if self.positions[symbol] <= 1e-9:
                 self.positions[symbol] = 0.0
@@ -404,7 +490,11 @@ class PortfolioBacktestEngine:
             meta[sym] = {"signal_type": o["signal_type"], "signal_reason": o["signal_reason"]}
         self._pending_orders = []
 
-        if not any(targets.values()):
+        # ⚠️ 必须是「没有任何标的」才返回，不能判断权重是否全为 0：
+        #    止损/止盈/风控清仓这类「当日只有卖出」的场景，targets 值全是 0.0，
+        #    用 any(targets.values()) 会把整批卖单判成空单直接丢弃 →
+        #    日频风控全线失效（jk 系列六年 131 次止损触发、0 笔成交）。
+        if not targets:
             return
 
         clamped, clamps = self._apply_risk_limits(targets, self.risk_limits)
@@ -433,12 +523,16 @@ class PortfolioBacktestEngine:
         bench_last = self.bench_first
 
         for i, d in enumerate(self.dates):
+            self._tradable_today = set()
             for sym in self.universe:
                 c = self.close_map.get(sym, {}).get(d)
                 if c is not None:
+                    self._tradable_today.add(sym)   # 当日有真实行情 → 可成交
                     self._last_close[sym] = c
                     self.hist[sym].append(c)
                     self.hist_dates[sym].append(d)
+                    hh = self.high_map.get(sym, {}).get(d)
+                    self.hist_high[sym].append(float(hh) if hh else c)
 
             if d in self.bench_map:
                 bench_last = self.bench_map[d]
@@ -448,8 +542,9 @@ class PortfolioBacktestEngine:
                 if self.bench_first else self.initial_cash
             )
 
-            if i >= self.warmup and (i - self.warmup) % self.rebalance_period == 0:
+            if i >= self.warmup:
                 ctx.date = d
+            if i >= self.warmup and (i - self.warmup) % self.rebalance_period == 0:
                 # 1) 用本期价格对上期因子记录算区间收益，得到本期截面 IC
                 ic = self._compute_period_ic(d)
                 if ic is not None:
@@ -460,6 +555,12 @@ class PortfolioBacktestEngine:
                 try:
                     strat.rebalance(ctx, d)
                 except Exception as e:  # noqa: BLE001
+                    # ⚠️ 不能只记日志：调仓持续抛异常会让策略「永远空仓」，
+                    #    表现为收益恒 0、0 成交，却看不出是 bug 还是真的没信号。
+                    #    这里累计次数并保留首条错误，调用方可据此判定回测无效。
+                    self.rebalance_errors += 1
+                    if self.rebalance_first_error is None:
+                        self.rebalance_first_error = f"{d}: {type(e).__name__}: {e}"
                     logger.warning(f"rebalance {d} failed: {e}")
                 # 2b) 统一做风险约束(apply_limits)后再撮合成交（views 与 positions 分离）
                 self._flush_pending_orders(ctx)
@@ -472,11 +573,25 @@ class PortfolioBacktestEngine:
                 })
                 # 4) 记录调仓后的持仓权重快照
                 self.holdings_snapshots.append({"date": d, "positions": ctx.attributes_snapshot()})
+            elif i >= self.warmup and hasattr(strat, "on_bar"):
+                # 非调仓日的日频回调：给策略跑止损/风控等必须每日执行的逻辑。
+                # 老策略没有 on_bar 方法 → 行为完全不变。
+                self._pending_orders = []
+                try:
+                    strat.on_bar(ctx, d)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"on_bar {d} failed: {e}")
+                self._flush_pending_orders(ctx)
 
-            eq = self._equity_today()
-            self.equity_curve.append(
-                PEquityPoint(date=d, equity=round(eq, 2), benchmark=round(bench_equity, 2))
-            )
+            if i >= self.warmup:
+                # ⚠️ 净值曲线只记录策略真正开始运行之后的日子。
+                #    把预热期（策略必为空仓、而基准在涨）算进来的话：
+                #      ① 基准收益虚高（白吃预热期涨幅）→ 超额被系统性低估
+                #      ② 前面一段"收益恒为 0"拉低年化与夏普
+                eq = self._equity_today()
+                self.equity_curve.append(
+                    PEquityPoint(date=d, equity=round(eq, 2), benchmark=round(bench_equity, 2))
+                )
 
         return self._build_result(strategy_class, params)
 
@@ -865,7 +980,9 @@ class PortfolioBacktestEngine:
             m = sum(rets) / len(rets)
             var = sum((r - m) ** 2 for r in rets) / (len(rets) - 1)
             std = math.sqrt(var)
-            sharpe = (m / std) * math.sqrt(252.0) if std > 0 else 0.0
+            # Sharpe 减无风险利率（M1-5，2026-10-08）
+            rf_daily = self.risk_free_rate / 252.0
+            sharpe = ((m - rf_daily) / std) * math.sqrt(252.0) if std > 0 else 0.0
         else:
             sharpe = 0.0
 

@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import EChart from "../components/EChart";
+import LlmConfigModal from "../components/LlmConfigModal";
 import { Badge, Btn, Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
-import { api, FactorMineReport, FactorMineSummary, GpMineResult, NewsEventReport } from "../api/client";
+import {
+  api, AiExplainResult, AiGenerateResult, AiStatus,
+  FactorMineReport, FactorMineSummary, GpMineResult,
+} from "../api/client";
 import { useTheme, ThemeColors } from "../theme";
 
 const DIRECTION_CN: Record<string, string> = {
@@ -25,6 +29,16 @@ export default function FactorMinePage() {
   const [report, setReport] = useState<FactorMineReport | null>(null);
   const [history, setHistory] = useState<FactorMineSummary[]>([]);
   const [error, setError] = useState("");
+  // AI 自然语言生成（生成后需人工确认，不自动挖掘）
+  const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
+  const [aiText, setAiText] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiResult, setAiResult] = useState<AiGenerateResult | null>(null);
+  const [aiError, setAiError] = useState("");
+  const [explainBusy, setExplainBusy] = useState(false);
+  const [explainResult, setExplainResult] = useState<AiExplainResult | null>(null);
+  // 大模型通道配置弹窗
+  const [cfgOpen, setCfgOpen] = useState(false);
   // GP 自动挖掘
   const [gpDirs, setGpDirs] = useState<{ key: string; note: string }[]>([]);
   const [gpSel, setGpSel] = useState<string[]>(["momentum", "volatility", "value"]);
@@ -34,31 +48,60 @@ export default function FactorMinePage() {
   const [gpOrtho, setGpOrtho] = useState(false);
   const [gpCrisis, setGpCrisis] = useState(false);
   const [gpResult, setGpResult] = useState<GpMineResult | null>(null);
-  // 新闻情绪择时
-  const [newsSeries, setNewsSeries] = useState<{ date: string; n_finance: number; net_sentiment: number | null }[]>([]);
-  const [newsHorizon, setNewsHorizon] = useState(5);
-  const [newsTesting, setNewsTesting] = useState(false);
-  const [newsReport, setNewsReport] = useState<NewsEventReport | null>(null);
 
   const loadHistory = useCallback(() => {
     api.factorMineResults(15).then(setHistory).catch(() => {});
   }, []);
 
+  // 单独抽出来：配好 key 并重启后端后，页面上点「重新检测」即可生效，无需刷新
+  const loadAiStatus = useCallback(() => {
+    api.factorAiStatus().then(setAiStatus).catch(() => setAiStatus(null));
+  }, []);
+
   useEffect(() => {
     api.factorFunctions().then(setFns).catch(() => {});
     api.factorGpDirections().then(setGpDirs).catch(() => {});
-    api.factorNewsDaily(600).then(setNewsSeries).catch(() => {});
+    loadAiStatus();
     loadHistory();
-  }, [loadHistory]);
+  }, [loadAiStatus, loadHistory]);
 
-  const runNewsTest = async () => {
-    setNewsTesting(true);
+  const runAiGenerate = async () => {
+    const text = aiText.trim();
+    if (!text) return;
+    setAiBusy(true);
+    setAiError("");
+    setAiResult(null);
+    setExplainResult(null);
     try {
-      setNewsReport(await api.factorNewsTest(0.10, newsHorizon));
+      const r = await api.factorAiGenerate(text);
+      setAiResult(r);
+      if (!r.ok) setAiError(r.error || "生成失败");
     } catch (e) {
-      setError(`情绪检验失败: ${(e as Error).message}`);
+      setAiError((e as Error).message);
     } finally {
-      setNewsTesting(false);
+      setAiBusy(false);
+    }
+  };
+
+  // 只回填、不自动跑：把「要不要挖」的决定权留给用户
+  const applyAiExpr = () => {
+    if (!aiResult?.expr) return;
+    setExpr(aiResult.expr);
+    if (aiResult.name) setName(aiResult.name);
+    setValid(null);
+    setError("");
+  };
+
+  const runExplain = async () => {
+    if (!expr.trim()) return;
+    setExplainBusy(true);
+    setExplainResult(null);
+    try {
+      setExplainResult(await api.factorAiExplain(expr));
+    } catch (e) {
+      setExplainResult({ ok: false, error: (e as Error).message });
+    } finally {
+      setExplainBusy(false);
     }
   };
 
@@ -91,12 +134,13 @@ export default function FactorMinePage() {
     }
   };
 
-  const runMine = async () => {
+  // force=true 跳过前端重复检查，强制重算并另存一条历史记录
+  const runMine = async (force = false) => {
     setRunning(true);
     setError("");
     setReport(null);
     try {
-      const r = await api.factorMine({ expr, name, start, end, groups, forward });
+      const r = await api.factorMine({ expr, name, start, end, groups, forward, force });
       setReport(r);
       loadHistory();
     } catch (e) {
@@ -109,14 +153,168 @@ export default function FactorMinePage() {
   return (
     <div style={{ maxWidth: 1240, margin: "0 auto" }}>
       <PageHeader
-        title="因子挖掘"
-        desc="自定义表达式 · 截面 IC 检验 / 分组单调性 / 多空收益 / 冗余度分析"
+        title="因子实验室"
+        desc="在这里造新因子（表达式 / GP 挖掘 / AI 生成）· 造好了去「研究卡」上岗：登记 → 候选 → 启用"
         actions={<Btn onClick={() => setShowFns(!showFns)} kind="ghost" small>函数参考</Btn>}
       />
 
+      {/* —— AI 自然语言生成（常驻；未配置大模型时给配置引导 + 本地规则试用）—— */}
+      {aiStatus && (
+        <Card
+          title="AI 生成因子"
+          colors={colors}
+          extra={
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {aiStatus.configured
+                ? <Badge
+                    text={aiStatus.provider_name
+                      ? `${aiStatus.provider_name} · ${aiStatus.model}`
+                      : aiStatus.model}
+                    color={colors.accent} soft />
+                : <Badge text="试用模式 · 本地规则" color="#c8860d" soft />}
+              <Btn kind="ghost" small onClick={() => setCfgOpen(true)}>
+                {aiStatus.configured ? "模型配置" : "配置模型"}
+              </Btn>
+            </div>
+          }
+          style={{ marginBottom: 14 }}
+        >
+          {!aiStatus.configured && (
+            <div style={{
+              marginBottom: 12, padding: "10px 12px", borderRadius: 8,
+              border: "1px solid #c8860d55", background: "#c8860d12",
+            }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>
+                尚未配置大模型 —— 当前用本地关键词规则匹配，可直接试
+              </div>
+              <div style={{ fontSize: 12.5, color: colors.muted, lineHeight: 1.75, marginTop: 4 }}>
+                试用模式只识别常见表述的组合（估值 / 成长 / 波动 / 量能 / 动量 / 现金流 / 市值）。
+                配置大模型后即可理解任意自然语言，并带「校验失败自动重修」闭环。
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+                <Btn small onClick={() => setCfgOpen(true)}>配置模型</Btn>
+                <Btn kind="ghost" small onClick={loadAiStatus}>重新检测</Btn>
+              </div>
+              <details style={{ marginTop: 8 }}>
+                <summary style={{ fontSize: 12, color: colors.muted, cursor: "pointer" }}>
+                  也可用环境变量配置（需重启后端）
+                </summary>
+                <pre style={{
+                  margin: "8px 0 0", padding: "8px 10px", borderRadius: 6,
+                  background: colors.tableStripe, border: `1px solid ${colors.border}`,
+                  fontSize: 11.5, lineHeight: 1.85, overflowX: "auto",
+                  fontFamily: "'SF Mono', Menlo, Consolas, monospace", color: colors.text,
+                }}>{`# 在 quant-platform/.env 追加
+QUANT_LLM_API_KEY=sk-你的key
+# 换厂商亦可（OpenAI 兼容协议通用）：
+#   QUANT_LLM_BASE_URL / QUANT_LLM_MODEL
+
+# 改完需重启后端（环境变量在启动时读取）
+lsof -ti:8000 -sTCP:LISTEN | xargs kill
+
+# 注意：页面上配置的通道优先级更高，会覆盖这里的 key`}</pre>
+              </details>
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
+            <input
+              value={aiText}
+              onChange={(e) => setAiText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !aiBusy) runAiGenerate(); }}
+              placeholder="用一句话描述你要找什么样的股票，例如：估值不高、近期缩量整理、但现金流在改善的公司"
+              style={{ ...inputStyle(colors), flex: 1 }}
+            />
+            <Btn onClick={runAiGenerate} disabled={aiBusy || !aiText.trim()}>
+              {aiBusy ? "生成中…" : "生成表达式"}
+            </Btn>
+          </div>
+
+          {aiError && !aiResult?.ok && (
+            <div style={{ color: colors.up, fontSize: 13, marginTop: 8 }}>
+              {aiError}
+              {aiResult?.hint ? <span style={{ color: colors.muted }}> · {aiResult.hint}</span> : null}
+            </div>
+          )}
+
+          {aiResult?.ok && aiResult.expr && (
+            <div style={{
+              marginTop: 12, padding: 12, borderRadius: 9,
+              border: `1px solid ${colors.border}`, background: colors.tableStripe,
+            }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ fontWeight: 600, fontSize: 13.5 }}>
+                  {aiResult.name}
+                  {aiResult.direction && (
+                    <span style={{ color: colors.muted, fontWeight: 400, fontSize: 12 }}> · {aiResult.direction}</span>
+                  )}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  {aiResult.source === "local" && (
+                    <Badge text="本地规则匹配" color="#c8860d" soft />
+                  )}
+                  {!!aiResult.attempts && aiResult.attempts > 1 && aiResult.source !== "local" && (
+                    <Badge text={`自修复 ${aiResult.attempts - 1} 轮`} color="#c8860d" soft />
+                  )}
+                  <Btn kind="ghost" small onClick={applyAiExpr}>填入表达式框</Btn>
+                </div>
+              </div>
+              <code style={{
+                display: "block", marginTop: 8, wordBreak: "break-all",
+                fontFamily: "'SF Mono', Menlo, Consolas, monospace",
+                fontSize: 13, color: colors.accent,
+              }}>
+                {aiResult.expr}
+              </code>
+              {aiResult.logic && (
+                <div style={{ fontSize: 12.5, color: colors.muted, marginTop: 8 }}>{aiResult.logic}</div>
+              )}
+              {aiResult.source === "local" && (
+                <div style={{ fontSize: 12, color: "#c8860d", marginTop: 8, lineHeight: 1.7 }}>
+                  试用模式：以上是关键词匹配结果，未调用大模型
+                  {!!aiResult.matched?.length && <>，命中「{aiResult.matched.join(" + ")}」</>}
+                  。请确认是否贴合你的本意。
+                </div>
+              )}
+              {aiResult.unsupported && (
+                <div style={{ fontSize: 12.5, color: "#c8860d", marginTop: 8 }}>
+                  平台缺少所需数据：{aiResult.unsupported} —— 上面的表达式是退而求其次的近似，用前请确认
+                </div>
+              )}
+              {!!aiResult.fixes?.length && (
+                <details style={{ marginTop: 8 }}>
+                  <summary style={{ fontSize: 12, color: colors.muted, cursor: "pointer" }}>
+                    查看 {aiResult.fixes.length} 次未通过的尝试
+                  </summary>
+                  <div style={{ marginTop: 6, fontSize: 11.5, color: colors.muted, lineHeight: 1.7 }}>
+                    {aiResult.fixes.map((f) => (
+                      <div key={f.attempt}>
+                        第 {f.attempt} 轮 <code>{f.expr || "(空)"}</code> — {f.error}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
+
       {/* —— 配置面板 —— */}
       <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 14, marginBottom: 16 }}>
-        <Card title="因子表达式" colors={colors}>
+        <Card
+          title="因子表达式"
+          colors={colors}
+          extra={
+            <Btn
+              kind="ghost" small onClick={runExplain}
+              disabled={explainBusy || !expr.trim() || !aiStatus?.configured}
+              title={aiStatus?.configured ? "" : "需要配置大模型后才能解读表达式"}
+            >
+              {explainBusy ? "解读中…" : "AI 解读"}
+            </Btn>
+          }
+        >
           <textarea
             value={expr}
             onChange={(e) => { setExpr(e.target.value); setValid(null); }}
@@ -144,6 +342,31 @@ export default function FactorMinePage() {
                 <span style={{ color: colors.down }}>✓ 表达式有效 · 试算值 <code>{valid.sample_value ?? "—"}</code></span>
               ) : (
                 <span style={{ color: colors.up }}>✗ {valid.error}</span>
+              )}
+            </div>
+          )}
+          {explainResult && (
+            <div style={{
+              marginTop: 8, padding: "9px 11px", borderRadius: 8, fontSize: 12.5,
+              background: colors.tableStripe, border: `1px solid ${colors.border}`,
+            }}>
+              {explainResult.ok ? (
+                <>
+                  <div style={{ fontWeight: 600 }}>
+                    {explainResult.name}
+                    {explainResult.direction && (
+                      <span style={{ color: colors.muted, fontWeight: 400 }}> · {explainResult.direction}</span>
+                    )}
+                  </div>
+                  {explainResult.logic && (
+                    <div style={{ color: colors.muted, marginTop: 4 }}>{explainResult.logic}</div>
+                  )}
+                  {explainResult.caveats && (
+                    <div style={{ color: "#c8860d", marginTop: 4 }}>失效场景：{explainResult.caveats}</div>
+                  )}
+                </>
+              ) : (
+                <div style={{ color: colors.up }}>{explainResult.error}</div>
               )}
             </div>
           )}
@@ -186,7 +409,7 @@ export default function FactorMinePage() {
           </div>
           <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
             <Btn onClick={doValidate} kind="warning" small disabled={running}>校验表达式</Btn>
-            <Btn onClick={runMine} disabled={running}>{running ? "挖掘中…" : "开始挖掘"}</Btn>
+            <Btn onClick={() => runMine()} disabled={running}>{running ? "挖掘中…" : "开始挖掘"}</Btn>
           </div>
           <div style={{ marginTop: 14, fontSize: 11.5, color: colors.muted, lineHeight: 1.7 }}>
             流程：逐期截面计算因子值 → Spearman IC vs 未来收益 → 分组单调性 / 多空累计 /
@@ -195,57 +418,6 @@ export default function FactorMinePage() {
         </Card>
       </div>
 
-      {/* —— 新闻情绪择时因子 —— */}
-      <div style={{ marginBottom: 16 }}>
-        <Card
-          title="新闻情绪择时因子（文本管道 · 94 公众号语料）"
-          colors={colors}
-          extra={<span style={{ fontSize: 11.5, color: colors.muted }}>词典法打分 · 差异化数据源</span>}
-        >
-          <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8 }}>
-            <span style={{ fontSize: 12.5 }}>净情绪 时序（正=多空词频偏多）</span>
-            <span style={{ flex: 1 }} />
-            <label style={{ fontSize: 12, color: colors.muted }}>未来收益窗口
-              <select value={newsHorizon} onChange={(e) => setNewsHorizon(Number(e.target.value))} style={{ ...inputStyle(colors), width: 76, marginLeft: 6 }}>
-                {[1, 5, 10, 20].map((h) => <option key={h} value={h}>{h} 日</option>)}
-              </select>
-            </label>
-            <Btn small onClick={runNewsTest} disabled={newsTesting}>{newsTesting ? "检验中…" : "事件检验"}</Btn>
-          </div>
-          {newsSeries.length > 0 && (
-            <EChart height={200} option={{
-              tooltip: { trigger: "axis" },
-              grid: { left: 50, right: 50, top: 24, bottom: 34 },
-              xAxis: { type: "category", data: [...newsSeries].reverse().map((p) => p.date.slice(2)), axisLabel: { fontSize: 9.5, interval: Math.ceil(newsSeries.length / 8) } },
-              yAxis: [
-                { type: "value", name: "净情绪", scale: true, splitLine: { lineStyle: { color: colors.border, opacity: 0.4 } } },
-                { type: "value", name: "文章数" },
-              ],
-              series: [
-                { name: "净情绪", type: "bar", data: [...newsSeries].reverse().map((p) => ({ value: p.net_sentiment, itemStyle: { color: (p.net_sentiment ?? 0) >= 0 ? colors.up : colors.down, opacity: 0.7 } })), barWidth: "60%" },
-                { name: "财经文章数", type: "line", yAxisIndex: 1, data: [...newsSeries].reverse().map((p) => p.n_finance), showSymbol: false, lineStyle: { color: colors.muted, width: 1 } },
-              ],
-            } as never} />
-          )}
-          {newsReport && (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginTop: 10 }}>
-              <KpiCard label="基线收益（全部交易日均值）" value={`${(newsReport.baseline_ret * 100).toFixed(2)}%`} sub={`${newsReport.n_days_all} 天样本`} tone="neutral" colors={colors} />
-              <KpiCard label="极端看多日做多" value={`${(newsReport.bull.avg_ret * 100).toFixed(2)}%`}
-                sub={`${newsReport.bull.n_days} 天 · 胜率 ${(newsReport.bull.win_rate * 100).toFixed(0)}%`}
-                tone={(newsReport.edge_long_vs_base || 0) > 0 ? "up" : "down"} colors={colors} />
-              <KpiCard label="极端看空日之后指数" value={`${(newsReport.bear.avg_ret * 100).toFixed(2)}%`}
-                sub={`${newsReport.bear.n_days} 天 · 胜率 ${(newsReport.bear.win_rate * 100).toFixed(0)}%`}
-                tone="neutral" colors={colors} />
-              <KpiCard label="多头边际优势" value={`${((newsReport.edge_long_vs_base || 0) * 100).toFixed(2)}%`}
-                sub="vs 基线" tone={(newsReport.edge_long_vs_base || 0) > 0 ? "up" : "down"} colors={colors} />
-            </div>
-          )}
-          <div style={{ marginTop: 8, fontSize: 11.5, color: colors.muted }}>
-            看多日 = 净情绪 ≥ 前 10% 分位；观察其后续 {newsHorizon} 日中证800 收益是否系统性跑赢基线。
-            该指标为市场级择时信号，与截面选股因子互补。
-          </div>
-        </Card>
-      </div>
 
       {/* —— GP 自动挖掘 —— */}
       <div style={{ marginBottom: 16 }}>
@@ -344,7 +516,7 @@ export default function FactorMinePage() {
       </div>
 
       {/* —— 报告 —— */}
-      {report ? <MineReport report={report} colors={colors} /> : (
+      {report ? <MineReport report={report} colors={colors} onForce={() => runMine(true)} /> : (
         <Card colors={colors} pad={40}>
           <div style={{ textAlign: "center", color: colors.muted, fontSize: 13.5, lineHeight: 2 }}>
             输入表达式并点击「开始挖掘」<br />
@@ -391,14 +563,66 @@ export default function FactorMinePage() {
       </div>
 
       <style>{`.num{fontVariantNumeric:tabular-nums}`}</style>
+
+      {/* 大模型通道配置：改完立即生效，无需重启后端 */}
+      <LlmConfigModal
+        open={cfgOpen}
+        colors={colors}
+        onClose={() => setCfgOpen(false)}
+        onChanged={loadAiStatus}
+      />
     </div>
   );
 }
 
 /* ============ 报告组件 ============ */
-function MineReport({ report, colors }: { report: FactorMineReport; colors: ThemeColors }) {
+/** 时间戳统一成 MM-DD HH:mm（后端可能给 ISO「2026-09-18T06:41:04」或「2026-09-18 06:41:04」两种格式） */
+function fmtStamp(s: string): string {
+  return s.slice(5, 16).replace("T", " ");
+}
+
+/** 因子值量纲跨度极大（fcf_yield ~1e-3 到 市值 ~1e2），按量级切换显示精度 */
+function fmtNum(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  const a = Math.abs(v);
+  if (a === 0) return "0";
+  if (a >= 1e6 || a < 1e-3) return v.toExponential(2);
+  if (a >= 100) return v.toFixed(2);
+  if (a >= 1) return v.toFixed(3);
+  return v.toFixed(4);
+}
+
+function MineReport({ report, colors, onForce }: { report: FactorMineReport; colors: ThemeColors; onForce?: () => void }) {
+  const fs = report.factor_stats;
+  const statCells: [string, number | null][] = fs ? [
+    ["均值", fs.mean], ["标准差", fs.std], ["最小值", fs.min], ["P25", fs.p25],
+    ["中位数", fs.p50], ["P75", fs.p75], ["最大值", fs.max], ["偏度", fs.skew],
+  ] : [];
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {/* 重复表达式提示：本次是历史回放，没有重算 —— 否则用户会以为「挖了新的却没变化」 */}
+      {report.duplicate_of != null && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+          padding: "11px 15px", borderRadius: 10,
+          background: colors.tableStripe, border: `1px solid ${colors.border}`,
+          borderLeft: `3px solid ${colors.accent}`,
+        }}>
+          <span style={{ fontSize: 13, fontWeight: 500 }}>表达式未变化</span>
+          <span style={{ fontSize: 12.5, color: colors.muted }}>
+            与历史 #{report.duplicate_of}
+            {report.duplicate_created_at ? `（${fmtStamp(report.duplicate_created_at)}）` : ""}
+            的「表达式 + 区间 + 分组数 + forward」完全一致，本次直接回放该结果，未重算、未新增记录。
+          </span>
+          <span style={{ flex: 1 }} />
+          {onForce && (
+            <button onClick={onForce} style={{
+              padding: "4px 12px", borderRadius: 6, border: `1px solid ${colors.accent}`,
+              background: "transparent", color: colors.accent, cursor: "pointer", fontSize: 12,
+            }}>仍然重新挖掘</button>
+          )}
+        </div>
+      )}
       {/* 评级横幅 */}
       <Card colors={colors}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
@@ -446,6 +670,30 @@ function MineReport({ report, colors }: { report: FactorMineReport; colors: Them
         <KpiCard label="单调评分" value={report.mono_score.toFixed(2)} sub="相邻组同向占比"
           tone={report.mono_score >= 0.6 ? "down" : "neutral"} colors={colors} />
       </div>
+
+      {/* 因子值统计：IC 是秩相关、对缩放/平移/单调变换免疫，这里是参数调整唯一可见的反馈 */}
+      {report.factor_stats && (
+        <Card title="因子值统计（全区间全部样本）" colors={colors}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(100px,1fr))", gap: 7 }}>
+            {statCells.map(([label, v]) => (
+              <div key={label} style={{
+                textAlign: "center", padding: "8px 4px", borderRadius: 8,
+                background: colors.tableStripe, border: `1px solid ${colors.border}`,
+              }}>
+                <div style={{ fontSize: 11, color: colors.muted }}>{label}</div>
+                <div style={{ fontSize: 14.5, fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>{fmtNum(v)}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop: 9, fontSize: 12, color: colors.muted, lineHeight: 1.7 }}>
+            样本 <b>{report.factor_stats.n_values}</b> 个（{report.n_periods} 期 × 平均 {report.factor_stats.n_per_period} 只）
+            {" · "}取值 <b>{report.factor_stats.n_unique}</b> 种
+            <br />
+            提示：IC 只看因子值的<b>排序</b>，对整体缩放、加减常数、套 log/sqrt 等单调变换完全不敏感。
+            若你调整的是这类参数，IC 不会变；请对照本卡片确认因子数值是否真的变了。
+          </div>
+        </Card>
+      )}
 
       {/* 图表三宫格 */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>

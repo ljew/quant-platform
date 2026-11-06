@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QUANT·DESK — 重构原型 v2.0（演示）</title>
+<style>
+  :root{
+    --bg:#0f131c; --card:#171c28; --text:#dbe0ea; --muted:#8b93a7;
+    --border:#262d3d; --up:#ff5257; --down:#45b854; --accent:#4d82f0;
+    --sb-bg:#0c1220; --sb-active:rgba(77,130,240,.18); --sb-active-text:#6d9dff;
+    --sb-text:#96a0b5; --stripe:#141b2b;
+    --warn:#e6a23c; --gold:#d4a94e;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);color:var(--text);font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+  button{font-family:inherit;cursor:pointer}
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-thumb{background:#2a3247;border-radius:4px}
+
+  .layout{display:flex;min-height:100vh}
+
+  /* —— 侧边栏 —— */
+  aside{width:190px;flex-shrink:0;background:var(--sb-bg);position:sticky;top:0;height:100vh;
+        display:flex;flex-direction:column;padding:20px 12px}
+  .brand{padding:0 10px 16px;border-bottom:1px solid #1c2334;margin-bottom:14px}
+  .brand b{color:#e8ecf5;font-size:16px;letter-spacing:1px}
+  .brand span{display:block;color:var(--sb-text);font-size:11px;letter-spacing:2px;margin-top:3px}
+  nav{flex:1;display:flex;flex-direction:column;gap:4px}
+  nav button{display:flex;align-items:center;gap:10px;padding:10px 12px;border:0;border-radius:8px;
+             background:transparent;color:var(--sb-text);font-size:13.5px;text-align:left;transition:.15s}
+  nav button:hover{background:rgba(255,255,255,.05)}
+  nav button.active{background:var(--sb-active);color:var(--sb-active-text);font-weight:600}
+  nav button .ico{width:18px;text-align:center;font-size:15px}
+  .sb-foot{border-top:1px solid #1c2334;padding-top:12px;margin-top:12px}
+  .sb-foot button{width:100%;padding:7px 12px;border:0;border-radius:8px;background:transparent;
+                  color:var(--sb-text);font-size:12.5px;text-align:left}
+  .sb-foot button:hover{background:rgba(255,255,255,.05)}
+  .sb-foot .ver{color:var(--sb-text);font-size:10.5px;padding:6px 12px;opacity:.6}
+  .demo-tag{display:inline-block;background:var(--gold);color:#1a1405;font-size:10px;font-weight:700;
+            padding:1px 7px;border-radius:4px;margin-left:6px;vertical-align:2px;letter-spacing:1px}
+
+  main{flex:1;min-width:0;padding:22px 26px 48px}
+
+  /* —— 通用组件 —— */
+  .ph{display:flex;align-items:baseline;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+  .ph h1{font-size:20px;font-weight:700}
+  .ph .sub{color:var(--muted);font-size:12.5px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 18px}
+  .card h3{font-size:13.5px;font-weight:600;margin-bottom:10px;color:var(--text)}
+  .card h3 .hint{font-weight:400;color:var(--muted);font-size:11.5px;margin-left:8px}
+  .grid{display:grid;gap:14px}
+  .chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;padding:2px 9px;border-radius:20px;
+        border:1px solid var(--border);color:var(--muted)}
+  .chip.ok{color:var(--down);border-color:rgba(69,184,84,.4)}
+  .btn{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:7px 16px;font-size:13px}
+  .btn.ghost{background:transparent;border:1px solid var(--border);color:var(--text)}
+  .btn.sm{padding:4px 12px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{color:var(--muted);font-weight:500;text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px}
+  td{padding:8px 10px;border-bottom:1px solid var(--border)}
+  tbody tr:nth-child(even){background:var(--stripe)}
+  tbody tr.click{cursor:pointer}
+  tbody tr.click:hover{background:rgba(77,130,240,.08)}
+  tbody tr.sel{background:rgba(77,130,240,.14)}
+  .up{color:var(--up);font-weight:600}.down{color:var(--down);font-weight:600}
+  .muted{color:var(--muted)}
+  .badge{display:inline-block;font-size:11px;font-weight:600;padding:1px 8px;border-radius:4px}
+  .b-buy{background:rgba(255,82,87,.16);color:var(--up)}
+  .b-watch{background:rgba(230,162,60,.16);color:var(--warn)}
+  .b-new{background:rgba(77,130,240,.16);color:var(--accent)}
+  .b-reduce{background:rgba(69,184,84,.14);color:var(--down)}
+  .b-sell{background:rgba(69,184,84,.22);color:var(--down)}
+  .tabs{display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--border)}
+  .tabs button{border:0;background:transparent;color:var(--muted);font-size:13.5px;padding:8px 16px;
+              border-bottom:2px solid transparent;margin-bottom:-1px}
+  .tabs button.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+  .page{display:none}.page.show{display:block;animation:fade .2s}
+  @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1}}
+
+  /* —— 今日观点页 —— */
+  .verdict{background:linear-gradient(135deg,#16203a,#171c28);border:1px solid #2a3a5e;border-radius:12px;
+           padding:16px 20px;margin-bottom:14px;display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+  .verdict .big{font-size:15.5px;font-weight:600;line-height:1.7;flex:1;min-width:280px}
+  .verdict .big em{font-style:normal;color:var(--gold)}
+  .pipe-status{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted);text-align:right}
+  .action-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px}
+  .acard{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 16px;
+         cursor:pointer;transition:.15s;border-left:3px solid transparent}
+  .acard:hover{transform:translateY(-1px)}
+  .acard.sel{outline:1px solid var(--accent)}
+  .acard .n{font-size:24px;font-weight:700}
+  .acard .t{font-size:12px;color:var(--muted)}
+  .acard.c-buy{border-left-color:var(--up)} .acard.c-buy .n{color:var(--up)}
+  .acard.c-watch{border-left-color:var(--warn)} .acard.c-watch .n{color:var(--warn)}
+  .acard.c-reduce{border-left-color:var(--down)} .acard.c-reduce .n{color:var(--down)}
+  .acard.c-sell{border-left-color:#2f8a4e} .acard.c-sell .n{color:#2f8a4e}
+  .today-grid{display:grid;grid-template-columns:1fr 340px;gap:14px}
+  .mkt-strip{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px}
+  .mkt{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:8px 16px;
+       font-size:12.5px;display:flex;gap:10px;align-items:baseline}
+  .mkt b{font-size:15px}
+  .news-item{padding:9px 0;border-bottom:1px solid var(--border);font-size:12.5px}
+  .news-item:last-child{border-bottom:0}
+  .news-item .src{color:var(--muted);font-size:11px;margin-top:2px}
+  .kline-drawer{margin-top:14px;display:none}
+  .kline-drawer.show{display:block}
+
+  .metric-row{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:14px 0}
+  .metric{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 14px}
+  .metric .v{font-size:19px;font-weight:700}.metric .k{font-size:11.5px;color:var(--muted)}
+  .form-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+  select,input[type=text]{background:#101623;border:1px solid var(--border);color:var(--text);
+        border-radius:8px;padding:7px 10px;font-size:13px;font-family:inherit}
+  .flow-steps{display:flex;gap:0;margin:10px 0 4px;flex-wrap:wrap}
+  .flow-steps .st{flex:1;min-width:90px;text-align:center;padding:8px 4px;font-size:12px;color:var(--muted);position:relative}
+  .flow-steps .st::after{content:"›";position:absolute;right:-2px;top:8px;color:#333d55}
+  .flow-steps .st:last-child::after{display:none}
+  .flow-steps .st.ok{color:var(--down)}
+  .flow-steps .st .dot{display:block;width:8px;height:8px;border-radius:50%;background:#333d55;margin:0 auto 5px}
+  .flow-steps .st.ok .dot{background:var(--down)}
+
+  /* —— 重构说明页 —— */
+  .map-tbl td:first-child{color:var(--muted)}
+  .arrow{color:var(--accent);font-weight:700;padding:0 6px}
+  .prin{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}
+  .prin .card{border-top:2px solid var(--accent)}
+  .prin .card b{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="layout">
+
+  <!-- ============ 侧边栏：4 个入口（原 11 个） ============ -->
+  <aside>
+    <div class="brand"><b>QUANT·DESK</b><span>个人投研平台<span class="demo-tag">原型 v2</span></span></div>
+    <nav id="nav">
+      <button data-page="today" class="active"><span class="ico">☀</span>今日观点</button>
+      <button data-page="research"><span class="ico">⚗</span>策略研究</button>
+      <button data-page="track"><span class="ico">◷</span>组合跟踪</button>
+      <button data-page="data"><span class="ico">⇉</span>数据中心</button>
+    </nav>
+    <div class="sb-foot">
+      <button data-page="about" id="aboutBtn"><span style="margin-right:8px">ⓘ</span>重构说明</button>
+      <div class="ver">原型演示 · 数据为模拟样例</div>
+    </div>
+  </aside>
+
+  <main>
+
+  <!-- ============ 页 1：今日观点 ============ -->
+  <section class="page show" id="page-today">
+    <div class="ph">
+      <h1>今日观点</h1>
+      <span class="sub">2026-09-30 收盘后 · 信号由每日流水线自动产出</span>
+      <span class="chip ok">● 流水线 8/8 已完成</span>
+    </div>
+
+    <div class="verdict">
+      <div class="big">
+        今日主线：<em>高股息 + 电力设备</em>。策略共振选出 <em>3 只重点买入</em>，
+        其中「长江电力」连续 3 日命中且 RPS 强度突破；组合层面建议维持仓位 70%，
+        茅台触发减仓信号（动量跌破 20 日均线）。
+      </div>
+      <div class="pipe-status">
+        <span>信号口径：T+1 开盘建仓 · 持有 T+5</span>
+        <span>归因有效期：近 20 日胜率 61%</span>
+        <button class="btn ghost sm" style="margin-top:4px" onclick="gotoPage('about')">观点是怎么来的？</button>
+      </div>
+    </div>
+
+    <div class="action-cards" id="actionCards">
+      <div class="acard c-buy sel" data-f="buy"><div class="n">3</div><div class="t">重点买入</div></div>
+      <div class="acard c-watch" data-f="watch"><div class="n">5</div><div class="t">关注 / 新出现</div></div>
+      <div class="acard c-reduce" data-f="reduce"><div class="n">2</div><div class="t">减仓</div></div>
+      <div class="acard c-sell" data-f="sell"><div class="n">1</div><div class="t">卖出 / 移出</div></div>
+    </div>
+
+    <div class="today-grid">
+      <div>
+        <div class="card">
+          <h3>今日信号明细<span class="hint">点击任意行查看 K 线（原「信号中心」+「行情看板」合并）</span></h3>
+          <table id="signalTbl">
+            <thead><tr><th>标的</th><th>操作</th><th>现价</th><th>命中策略</th><th>连续</th><th>理由（一句话）</th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <div class="kline-drawer card" id="kdrawer" style="margin-top:14px">
+            <h3 id="ktitle">K 线</h3>
+            <svg id="kchart" width="100%" height="180" viewBox="0 0 640 180" preserveAspectRatio="none"></svg>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="mkt-strip" style="flex-direction:column;gap:8px">
+          <div class="mkt"><span class="muted">上证指数</span><b>3,247.85</b><span class="up">+0.62%</span></div>
+          <div class="mkt"><span class="muted">沪深300</span><b>4,012.33</b><span class="up">+0.48%</span></div>
+          <div class="mkt"><span class="muted">创业板指</span><b>2,156.40</b><span class="down">−0.31%</span></div>
+        </div>
+        <div class="card">
+          <h3>资讯快讯<span class="hint">原「资讯中心」收编为侧栏</span></h3>
+          <div class="news-item">发改委：加快新型电力系统建设，特高压投资提速<div class="src">东财要闻 · 14:32</div></div>
+          <div class="news-item">长江电力：前三季度发电量同比增长 8.2%<div class="src">个股公告 · 12:05</div></div>
+          <div class="news-item">北向资金今日净流入 42.6 亿元，连续 3 日加仓白酒<div class="src">新浪快讯 · 15:10</div></div>
+          <div class="news-item">雪球热榜：贵州茅台、宁德时代、中远海控<div class="src">雪球 · 16:00</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 页 2：策略研究（回测 / 寻优 / 因子 三合一工作台） ============ -->
+  <section class="page" id="page-research">
+    <div class="ph">
+      <h1>策略研究</h1>
+      <span class="sub">原「策略回测」「参数寻优」「因子挖掘」合并为一个工作台，验证一个想法不用换页</span>
+    </div>
+    <div class="tabs" id="resTabs">
+      <button class="active" data-t="bt">回测</button>
+      <button data-t="opt">参数寻优</button>
+      <button data-t="fac">因子检验</button>
+    </div>
+
+    <div class="rtab" id="rt-bt">
+      <div class="card">
+        <div class="form-row">
+          <select><option>双均线趋势</option><option>动量突破</option><option>中证800指数增强</option><option>沪深300指数增强</option></select>
+          <input type="text" value="sh600519 贵州茅台" style="width:180px">
+          <select><option>近 2 年</option><option>近 1 年</option><option>近 5 年</option></select>
+          <button class="btn">运行回测</button>
+        </div>
+        <div class="metric-row">
+          <div class="metric"><div class="v up">+38.2%</div><div class="k">总收益</div></div>
+          <div class="metric"><div class="v">17.4%</div><div class="k">年化收益</div></div>
+          <div class="metric"><div class="v down">−12.6%</div><div class="k">最大回撤</div></div>
+          <div class="metric"><div class="v">1.21</div><div class="k">夏普比率</div></div>
+          <div class="metric"><div class="v">57%</div><div class="k">胜率 · 21 笔</div></div>
+        </div>
+        <svg id="btchart" width="100%" height="220" viewBox="0 0 900 220" preserveAspectRatio="none"></svg>
+        <div style="display:flex;gap:16px;font-size:12px;color:var(--muted);margin-top:6px">
+          <span><i style="display:inline-block;width:14px;height:2px;background:var(--accent);vertical-align:middle"></i> 策略净值</span>
+          <span><i style="display:inline-block;width:14px;height:2px;background:var(--muted);vertical-align:middle"></i> 基准（沪深300）</span>
+        </div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <h3>回测历史<span class="hint">点击行可回看完整详情（保留现有能力）</span></h3>
+        <table><thead><tr><th>时间</th><th>策略</th><th>标的</th><th>区间</th><th>总收益</th><th>回撤</th><th>夏普</th></tr></thead>
+        <tbody>
+          <tr class="click"><td>09-29 21:14</td><td>双均线(5,20)</td><td>贵州茅台</td><td>2024–2026</td><td class="up">+38.2%</td><td class="down">−12.6%</td><td>1.21</td></tr>
+          <tr class="click"><td>09-28 22:40</td><td>中证800增强 Top30</td><td>000906</td><td>2023–2026</td><td class="up">+21.5%</td><td class="down">−9.8%</td><td>0.96</td></tr>
+          <tr class="click"><td>09-27 20:02</td><td>动量突破(20)</td><td>宁德时代</td><td>2024–2026</td><td class="up">+12.9%</td><td class="down">−18.3%</td><td>0.64</td></tr>
+        </tbody></table>
+      </div>
+    </div>
+
+    <div class="rtab" id="rt-opt" style="display:none">
+      <div class="card">
+        <h3>网格寻优 · 双均线趋势 / 贵州茅台<span class="hint">126 组参数 · 样本外验证</span></h3>
+        <div class="metric-row" style="grid-template-columns:repeat(4,1fr)">
+          <div class="metric"><div class="v">(5, 20)</div><div class="k">最优参数</div></div>
+          <div class="metric"><div class="v up">+38.2%</div><div class="k">样本内收益</div></div>
+          <div class="metric"><div class="v up">+16.7%</div><div class="k">样本外收益</div></div>
+          <div class="metric"><div class="v">稳健 ✓</div><div class="k">邻近参数均为正收益</div></div>
+        </div>
+        <table><thead><tr><th>慢线↓ / 快线→</th><th>3</th><th>5</th><th>10</th><th>15</th><th>20</th></tr></thead>
+        <tbody id="heatBody"></tbody></table>
+        <div class="form-row" style="margin-top:14px">
+          <button class="btn sm">用最优参数跑全区间回测</button>
+          <button class="btn ghost sm">直接建模拟盘</button>
+          <span class="muted" style="font-size:12px">← 原寻优页的「一键落地」，现在两步完成从研究到跟踪</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="rtab" id="rt-fac" style="display:none">
+      <div class="card">
+        <div class="form-row">
+          <input type="text" value="rank(pe_ttm) * -1 + rank(mom_20)" style="flex:1;min-width:260px">
+          <button class="btn">检验因子</button>
+          <button class="btn ghost">AI 生成表达式</button>
+        </div>
+        <table><thead><tr><th>因子</th><th>IC</th><th>ICIR</th><th>分组单调性</th><th>多空年化</th><th>状态</th></tr></thead>
+        <tbody>
+          <tr class="click"><td>mom_20（20日动量）</td><td>0.042</td><td>0.58</td><td>单调 ✓</td><td class="up">+14.2%</td><td><span class="badge b-new">已启用</span></td></tr>
+          <tr class="click"><td>pe_ttm 倒数（估值）</td><td>0.035</td><td>0.41</td><td>单调 ✓</td><td class="up">+9.8%</td><td><span class="badge b-new">已启用</span></td></tr>
+          <tr class="click"><td>news_senti（舆情情绪 v2）</td><td>0.028</td><td>0.33</td><td>基本单调</td><td class="up">+6.5%</td><td><span class="badge b-watch">待审</span></td></tr>
+          <tr class="click"><td>GP 精英 #017（挖掘）</td><td>0.051</td><td>0.62</td><td>单调 ✓</td><td class="up">+17.1%</td><td><span class="badge b-watch">待审</span></td></tr>
+        </tbody></table>
+        <div class="muted" style="font-size:12px;margin-top:10px">原「因子挖掘」页的 IC/ICIR/分组/多空报告 + GP 自动挖掘 + AI 生成，全部保留；挖掘出的因子一键「登记启用」即进入每日流水线。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 页 3：组合跟踪（模拟盘 + 归因） ============ -->
+  <section class="page" id="page-track">
+    <div class="ph">
+      <h1>组合跟踪</h1>
+      <span class="sub">原「模拟盘」+「归因分析」合并：策略跑得怎么样、信号靠不靠谱，一页看全</span>
+    </div>
+    <div class="metric-row" style="grid-template-columns:repeat(4,1fr)">
+      <div class="metric"><div class="v">¥1,284,300</div><div class="k">模拟盘总资产</div></div>
+      <div class="metric"><div class="v up">+28.4%</div><div class="k">累计收益（9 个月）</div></div>
+      <div class="metric"><div class="v up">+9.7%</div><div class="k">相对沪深300 超额</div></div>
+      <div class="metric"><div class="v">61%</div><div class="k">近 20 日信号胜率</div></div>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr">
+      <div class="card">
+        <h3>模拟盘净值<span class="hint">「双均线·茅台」任务运行中</span></h3>
+        <svg id="pfchart" width="100%" height="180" viewBox="0 0 440 180" preserveAspectRatio="none"></svg>
+      </div>
+      <div class="card">
+        <h3>当前持仓</h3>
+        <table><thead><tr><th>标的</th><th>数量</th><th>成本</th><th>现价</th><th>盈亏</th></tr></thead>
+        <tbody>
+          <tr><td>长江电力</td><td>2,000</td><td>26.10</td><td>28.45</td><td class="up">+9.0%</td></tr>
+          <tr><td>中国神华</td><td>1,000</td><td>38.20</td><td>41.06</td><td class="up">+7.5%</td></tr>
+          <tr><td>贵州茅台</td><td>100</td><td>1,520</td><td>1,486</td><td class="down">−2.2%</td></tr>
+        </tbody></table>
+      </div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h3>信号有效性归因<span class="hint">口径：T+1 开盘建仓，持有 T+N；超额 = 个股 − 全市场等权</span></h3>
+      <table><thead><tr><th>维度</th><th>分组</th><th>信号数</th><th>T+1</th><th>T+5</th><th>T+20</th><th>胜率</th></tr></thead>
+      <tbody>
+        <tr><td>按策略</td><td>均线量能</td><td>84</td><td class="up">+0.8%</td><td class="up">+2.1%</td><td class="up">+4.6%</td><td>63%</td></tr>
+        <tr><td>按策略</td><td>RPS强度突破</td><td>52</td><td class="up">+1.1%</td><td class="up">+2.8%</td><td class="up">+5.2%</td><td>65%</td></tr>
+        <tr><td>按连续性</td><td>连续 ≥3 日命中</td><td>37</td><td class="up">+1.4%</td><td class="up">+3.5%</td><td class="up">+7.1%</td><td>70%</td></tr>
+        <tr><td>按月份</td><td>2026-09</td><td>61</td><td class="down">−0.2%</td><td class="up">+1.3%</td><td>—</td><td>55%</td></tr>
+      </tbody></table>
+    </div>
+  </section>
+
+  <!-- ============ 页 4：数据中心（管道 + 监控合并，退居后台页） ============ -->
+  <section class="page" id="page-data">
+    <div class="ph">
+      <h1>数据中心</h1>
+      <span class="sub">原「数据管道」+「系统监控」合并为后台页——正常时不用进来，异常时一眼定位</span>
+      <span class="chip ok">● 全部正常</span>
+    </div>
+    <div class="card">
+      <h3>每日流水线<span class="hint">17:00 自动运行 · 失败自动隔离并告警</span></h3>
+      <div class="flow-steps">
+        <div class="st ok"><span class="dot"></span>数据采集</div>
+        <div class="st ok"><span class="dot"></span>数据质检</div>
+        <div class="st ok"><span class="dot"></span>策略选股</div>
+        <div class="st ok"><span class="dot"></span>信号判定</div>
+        <div class="st ok"><span class="dot"></span>回测刷新</div>
+        <div class="st ok"><span class="dot"></span>归因统计</div>
+        <div class="st ok"><span class="dot"></span>发布审查</div>
+        <div class="st ok"><span class="dot"></span>信号发布</div>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:8px">这就是原「研究驾驶舱」的 8 步流水线——重构后它不再是主导航页，而是这里的一条状态带 + 今日观点页的一枚状态徽章。</div>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:14px">
+      <div class="card">
+        <h3>数据资产健康度</h3>
+        <table><thead><tr><th>数据集</th><th>行数</th><th>最新日期</th><th>状态</th></tr></thead>
+        <tbody>
+          <tr><td>个股日K线</td><td>144.2 万</td><td>09-30</td><td><span class="badge b-new">正常</span></td></tr>
+          <tr><td>指数日K线</td><td>3.1 万</td><td>09-30</td><td><span class="badge b-new">正常</span></td></tr>
+          <tr><td>基本面截面</td><td>5,412</td><td>09-30</td><td><span class="badge b-new">正常</span></td></tr>
+          <tr><td>公众号语料</td><td>8.7 万</td><td>09-29</td><td><span class="badge b-watch">滞后 1 天</span></td></tr>
+        </tbody></table>
+        <div class="form-row" style="margin-top:12px"><button class="btn sm">一键修复异常数据集</button></div>
+      </div>
+      <div class="card">
+        <h3>系统运行</h3>
+        <table><tbody>
+          <tr><td class="muted">后端服务</td><td>运行 14 天 6 小时</td><td><span class="badge b-new">正常</span></td></tr>
+          <tr><td class="muted">SQLite 业务库</td><td>218 MB</td><td><span class="badge b-new">正常</span></td></tr>
+          <tr><td class="muted">DuckDB 分析库</td><td>1.2 GB</td><td><span class="badge b-new">正常</span></td></tr>
+          <tr><td class="muted">数据源</td><td>Tushare ✓ · akshare ✓</td><td><span class="badge b-new">正常</span></td></tr>
+        </tbody></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 页 5：重构说明 ============ -->
+  <section class="page" id="page-about">
+    <div class="ph"><h1>重构说明</h1><span class="sub">11 个页面 → 4 个入口，按「每日使用路径」而非「技术模块」组织</span></div>
+
+    <div class="prin">
+      <div class="card"><h3>原则 1 · <b>打开就有观点</b></h3><div style="font-size:12.5px;color:var(--muted)">默认页直接回答「今天买什么、卖什么、为什么」。信号、资讯、行情原来分散在 3 个页，现在聚合为「今日观点」。</div></div>
+      <div class="card"><h3>原则 2 · <b>研究不出工作台</b></h3><div style="font-size:12.5px;color:var(--muted)">回测 → 寻优 → 因子检验是同一个「验证想法」的循环，合并为「策略研究」的 3 个 Tab，参数和标的一键互带。</div></div>
+      <div class="card"><h3>原则 3 · <b>后台退居后台</b></h3><div style="font-size:12.5px;color:var(--muted)">管道、监控、驾驶舱是运维视角，个人用户 99% 的时间不需要。合并为「数据中心」，正常时只剩导航栏一枚状态徽章。</div></div>
+    </div>
+
+    <div class="card">
+      <h3>页面映射（旧 → 新）</h3>
+      <table class="map-tbl">
+        <thead><tr><th>原页面（11）</th><th></th><th>新位置（4）</th><th>处理方式</th></tr></thead>
+        <tbody>
+          <tr><td>信号中心</td><td class="arrow">→</td><td><b>今日观点</b></td><td>升级为核心：操作卡 + 信号明细 + 一句话理由</td></tr>
+          <tr><td>资讯中心</td><td class="arrow">→</td><td><b>今日观点</b></td><td>收编为右侧快讯栏</td></tr>
+          <tr><td>行情看板</td><td class="arrow">→</td><td><b>今日观点</b></td><td>K 线改为信号行的抽屉式展开，指数概览变顶部条</td></tr>
+          <tr><td>研究驾驶舱</td><td class="arrow">→</td><td><b>今日观点 / 数据中心</b></td><td>8 步流水线降级为状态徽章；人工闸门保留在数据中心</td></tr>
+          <tr><td>策略回测</td><td class="arrow">→</td><td><b>策略研究 · 回测 Tab</b></td><td>功能不变，并入工作台</td></tr>
+          <tr><td>参数寻优</td><td class="arrow">→</td><td><b>策略研究 · 寻优 Tab</b></td><td>功能不变；「一键落地」直达模拟盘</td></tr>
+          <tr><td>因子挖掘</td><td class="arrow">→</td><td><b>策略研究 · 因子 Tab</b></td><td>功能不变，更名「因子检验」对齐心智</td></tr>
+          <tr><td>模拟盘</td><td class="arrow">→</td><td><b>组合跟踪</b></td><td>与归因合并，回答「策略在实盘环境下行不行」</td></tr>
+          <tr><td>归因分析</td><td class="arrow">→</td><td><b>组合跟踪</b></td><td>并入，信号有效性直接标注在今日观点页</td></tr>
+          <tr><td>数据管道</td><td class="arrow">→</td><td><b>数据中心</b></td><td>合并，保留资产健康度与一键修复</td></tr>
+          <tr><td>系统监控</td><td class="arrow">→</td><td><b>数据中心</b></td><td>合并为「系统运行」卡</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h3>不改的部分</h3>
+      <div style="font-size:12.5px;color:var(--muted)">
+        后端 API、数据库、策略引擎、每日流水线全部不动——这次只重组前端信息架构。
+        旧 `frontend/` 三个静态页（index / backtest / paper）已被 React 版完全覆盖，实施时可直接删除。
+      </div>
+    </div>
+  </section>
+
+  </main>
+</div>
+
+<script>
+/* —— 模拟数据 —— */
+const SIGNALS = [
+  {sym:"sh600900",name:"长江电力",act:"buy",  actCn:"重点买入",badge:"b-buy",   px:"28.45", chg:"+1.8%", hit:"均线量能·RPS突破·高旗形",streak:3,reason:"放量突破 60 日新高，三策略共振"},
+  {sym:"sh601088",name:"中国神华",act:"buy",  actCn:"重点买入",badge:"b-buy",   px:"41.06", chg:"+0.9%", hit:"均线量能·双参数趋势",  streak:2,reason:"高股息+量能持续放大"},
+  {sym:"sz300750",name:"宁德时代",act:"buy",  actCn:"重点买入",badge:"b-buy",   px:"212.30",chg:"+2.4%", hit:"RPS突破",             streak:1,reason:"RPS 首次进入 90 分位"},
+  {sym:"sh601899",name:"紫金矿业",act:"watch",actCn:"关注",    badge:"b-watch", px:"18.92", chg:"+0.4%", hit:"高旗形整理",          streak:2,reason:"旗形整理末端，等待放量确认"},
+  {sym:"sz000858",name:"五粮液",  act:"watch",actCn:"关注",    badge:"b-watch", px:"128.60",chg:"−0.3%", hit:"均线量能",            streak:1,reason:"量能温和回升，趋势未确认"},
+  {sym:"sh601318",name:"中国平安",act:"watch",actCn:"新出现",  badge:"b-new",   px:"52.17", chg:"+1.1%", hit:"海龟突破",            streak:1,reason:"20 日通道上轨首次突破"},
+  {sym:"sh600519",name:"贵州茅台",act:"reduce",actCn:"减仓",   badge:"b-reduce",px:"1486.0",chg:"−1.2%", hit:"—",                  streak:0,reason:"收盘跌破 20 日均线，动量转弱"},
+  {sym:"sz000001",name:"平安银行",act:"reduce",actCn:"减仓",   badge:"b-reduce",px:"11.84", chg:"−0.6%", hit:"—",                  streak:0,reason:"RPS 跌出 70 分位"},
+  {sym:"sh600036",name:"招商银行",act:"sell", actCn:"卖出",    badge:"b-sell",  px:"36.55", chg:"−2.1%", hit:"—",                  streak:0,reason:"触发止损线（成本 −7%）"},
+];
+
+/* —— 信号表渲染 + 操作卡过滤 —— */
+const tbody = document.querySelector("#signalTbl tbody");
+function renderSignals(filter){
+  tbody.innerHTML = "";
+  SIGNALS.filter(s=>!filter||s.act===filter).forEach((s,i)=>{
+    const tr = document.createElement("tr");
+    tr.className = "click" + (i===0?" sel":"");
+    tr.innerHTML = `<td><b>${s.name}</b> <span class="muted" style="font-size:11px">${s.sym}</span></td>
+      <td><span class="badge ${s.badge}">${s.actCn}</span></td>
+      <td>${s.px} <span class="${s.chg.startsWith('+')?'up':'down'}" style="font-size:11px">${s.chg}</span></td>
+      <td style="font-size:12px">${s.hit}</td>
+      <td>${s.streak?`<span class="up">${s.streak} 日</span>`:"—"}</td>
+      <td style="font-size:12px" class="muted">${s.reason}</td>`;
+    tr.onclick = ()=>{ tbody.querySelectorAll("tr").forEach(r=>r.classList.remove("sel")); tr.classList.add("sel"); showKline(s); };
+    tbody.appendChild(tr);
+  });
+}
+renderSignals("buy");
+document.querySelectorAll("#actionCards .acard").forEach(c=>{
+  c.onclick = ()=>{
+    document.querySelectorAll("#actionCards .acard").forEach(x=>x.classList.remove("sel"));
+    c.classList.add("sel"); renderSignals(c.dataset.f);
+    document.getElementById("kdrawer").classList.remove("show");
+  };
+});
+
+/* —— 简易 SVG 图表（演示用伪随机，种子固定） —— */
+function seeded(seed){ let x=seed; return ()=>{ x=(x*9301+49297)%233280; return x/233280; }; }
+function spark(svg, seed, color, w, h, fill){
+  const r = seeded(seed), n = 60; let v = 1, pts = [];
+  for(let i=0;i<n;i++){ v *= 1 + (r()-0.46)*0.05; pts.push([i/(n-1)*w, h*0.92 - (v-0.8)/(1.6)*h]); }
+  const d = pts.map((p,i)=>(i?"L":"M")+p[0].toFixed(1)+","+Math.max(4,Math.min(h-4,p[1])).toFixed(1)).join(" ");
+  svg.innerHTML = (fill?`<path d="${d} L${w},${h} L0,${h} Z" fill="${color}18"/>`:"")+
+    `<path d="${d}" fill="none" stroke="${color}" stroke-width="2"/>`;
+}
+function showKline(s){
+  const d = document.getElementById("kdrawer");
+  d.classList.add("show");
+  document.getElementById("ktitle").textContent = `${s.name}（${s.sym}）日 K 线 · 近 60 日`;
+  spark(document.getElementById("kchart"), s.sym.charCodeAt(2)+s.streak*7, "#4d82f0", 640, 180, true);
+}
+
+/* —— 回测净值双曲线 —— */
+(function(){
+  const svg = document.getElementById("btchart"), w=900, h=220;
+  spark(svg, 42, "#4d82f0", w, h, true);
+  const inner = svg.innerHTML;
+  const r = seeded(7); let v=1, pts=[];
+  for(let i=0;i<60;i++){ v *= 1+(r()-0.485)*0.04; pts.push([i/59*w, h*0.92-(v-0.8)/1.6*h]); }
+  const d = pts.map((p,i)=>(i?"L":"M")+p[0].toFixed(1)+","+Math.max(4,Math.min(h-4,p[1])).toFixed(1)).join(" ");
+  svg.innerHTML = inner + `<path d="${d}" fill="none" stroke="#8b93a7" stroke-width="1.5" stroke-dasharray="5,4"/>`;
+})();
+spark(document.getElementById("pfchart"), 99, "#4d82f0", 440, 180, true);
+
+/* —— 寻优热力表 —— */
+(function(){
+  const slow=[10,20,30,60], fast=[3,5,10,15,20], r=seeded(5);
+  const hb = document.getElementById("heatBody");
+  slow.forEach(s=>{
+    let tds = `<td class="muted">${s}</td>`;
+    fast.forEach(f=>{
+      if(f>=s){ tds+="<td class='muted'>—</td>"; return; }
+      const v = (r()*50-10);
+      const best = (s===20&&f===5);
+      const bg = v>30?"rgba(255,82,87,.28)":v>15?"rgba(255,82,87,.14)":v>0?"rgba(255,82,87,.05)":"rgba(69,184,84,.12)";
+      tds += `<td style="background:${best?'rgba(77,130,240,.35)':bg};${best?'outline:1px solid var(--accent);font-weight:700':''}" class="${v>=0?'up':'down'}">${best?"+38.2%":(v>0?"+":"")+v.toFixed(1)+"%"}</td>`;
+    });
+    hb.innerHTML += `<tr>${tds}</tr>`;
+  });
+})();
+
+/* —— 页面切换 —— */
+function gotoPage(p){
+  document.querySelectorAll(".page").forEach(x=>x.classList.remove("show"));
+  document.getElementById("page-"+p).classList.add("show");
+  document.querySelectorAll("#nav button").forEach(b=>b.classList.toggle("active", b.dataset.page===p));
+  window.scrollTo(0,0);
+}
+document.querySelectorAll("#nav button").forEach(b=> b.onclick = ()=>gotoPage(b.dataset.page));
+document.getElementById("aboutBtn").onclick = ()=>gotoPage("about");
+
+/* —— 研究页 Tab —— */
+document.querySelectorAll("#resTabs button").forEach(b=>{
+  b.onclick = ()=>{
+    document.querySelectorAll("#resTabs button").forEach(x=>x.classList.remove("active"));
+    b.classList.add("active");
+    ["bt","opt","fac"].forEach(t=> document.getElementById("rt-"+t).style.display = t===b.dataset.t?"block":"none");
+  };
+});
+
+/* —— 默认展示第一行 K 线 —— */
+showKline(SIGNALS[0]);
+</script>
+</body>
+</html>

@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 from sqlalchemy import select, func
 
@@ -16,8 +16,8 @@ from app.models import (
     IndexKlineDaily,
     IndexMembership,
     KlineDaily,
-    NewsMarketDaily,
     PipelineRun,
+    ResearchRun,
 )
 
 _WEIGHTS = {"collect": 0.35, "process": 0.35, "apply": 0.30}
@@ -71,6 +71,9 @@ def health_report(db=None) -> dict:
         if run:
             ago = ""
             if run.started_at:
+                # 注意：PipelineRun.started_at 由模型默认 datetime.utcnow 写入（UTC），
+                # 只能用 utcnow 相减。别被「时间看着像本地」误导改成 datetime.now()，
+                # 那会凭空多算 8 小时（东八区）。
                 mins = int((datetime.utcnow() - run.started_at).total_seconds() / 60)
                 ago = f"({mins} 分钟前)"
             collect_checks.append(_mk(
@@ -79,6 +82,29 @@ def health_report(db=None) -> dict:
                 f"#{run.id} {run.status} {ago}", "SUCCESS/RUNNING"))
         else:
             collect_checks.append(_mk("数据管道最近运行", None, "从未运行", "有记录"))
+
+        # 研究流水线（Orchestrator）最近一次运行（P4 监控整合）
+        try:
+            res_run = db.execute(
+                select(ResearchRun).order_by(ResearchRun.id.desc()).limit(1)
+            ).scalars().first()
+        except Exception:  # noqa: BLE001
+            res_run = None
+        if res_run:
+            ok = res_run.status in ("SUCCESS", "RUNNING")
+            # 今日已跑过（无论成败与否都说明调度活着）；检查调度是否停摆超 3 天
+            sched_alive = bool(res_run.started_at) and (
+                # ResearchRun.started_at 为 UTC（模型默认 utcnow），必须用 utcnow 相减
+                datetime.utcnow() - res_run.started_at).days < 3
+            mins = (int((datetime.utcnow() - res_run.started_at).total_seconds() // 60)
+                    if res_run.started_at else -1)
+            collect_checks.append(_mk(
+                "研究流水线最近运行",
+                ok and sched_alive,
+                f"#{res_run.id} {res_run.status} ({mins} 分钟前)",
+                "SUCCESS 且 3 天内"))
+        else:
+            collect_checks.append(_mk("研究流水线最近运行", None, "从未运行", "有记录"))
 
         from app.datahub.registry import RAW_DIR as bronze_dir
         n_bronze = 0
@@ -100,15 +126,6 @@ def health_report(db=None) -> dict:
         process_checks.append(_mk("成分快照月更",
                                   mem_latest is not None and mem_latest >= this_month,
                                   str(mem_latest), f"≥{this_month}"))
-
-        # 新闻情绪近 14 天覆盖
-        from_date = date.today() - timedelta(days=14)
-        news_days = db.execute(
-            select(func.count()).select_from(NewsMarketDaily)
-            .where(NewsMarketDaily.date >= from_date, NewsMarketDaily.n_finance > 0)
-        ).scalar() or 0
-        process_checks.append(_mk("新闻情绪连续性", news_days >= 6,
-                                  f"14 天内 {news_days} 天", "≥6 天"))
 
         # 最近质检报告（Silver 层）
         try:

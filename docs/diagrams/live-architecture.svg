@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="452" viewBox="0 0 680 452">
+<title>上实盘架构：平台与终端的边界</title>
+<rect width="680" height="452" fill="#FFFFFF"/>
+<text x="40" y="28" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="15" font-weight="500" fill="#2C2C2A">上实盘架构 · 平台与终端的边界</text>
+<text x="40" y="50" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="12" fill="#5F5E5A">2026-10-23 起券商终端封闭沙箱：禁文件读写、禁外部网络，两侧只能靠人工</text>
+<text x="40" y="82" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="12" font-weight="500" fill="#27500A">平台侧 · Mac / Linux</text>
+<text x="390" y="82" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="12" font-weight="500" fill="#412402">终端侧 · QMT / Windows</text>
+<rect x="40" y="96" width="250" height="58" rx="8" fill="#EAF3DE" stroke="#3B6D11" stroke-width="0.5"/>
+<text x="56" y="118" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="13" font-weight="500" fill="#27500A" dominant-baseline="central">数据层</text>
+<text x="56" y="137" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="12" fill="#3B6D11" dominant-baseline="central">K线 · 复权 · 信号 · 每日 19:00</text>
+<rect x="40" y="168" width="250" height="58" rx="8" fill="#EAF3DE" stroke="#3B6D11" stroke-width="0.5"/>
+<text x="56" y="190" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="13" font-weight="500" fill="#27500A" dominant-baseline="central">研究层</text>
+<text x="56" y="209" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="12" fill="#3B6D11" dominant-baseline="central">回测 · 因子 · 门控阈值验证</text>
+<rect x="40" y="240" width="250" height="58" rx="8" fill="#EAF3DE" stroke="#3B6D11" stroke-width="0.5"/>
+<text x="56" y="262" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="13" font-weight="500" fill="#27500A" dominant-baseline="central">基准库</text>
+<text x="56" y="281" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="12" fill="#3B6D11" dominant-baseline="central">每日应选名单 · 移植比对基准</text>
+<rect x="40" y="312" width="250" height="58" rx="8" fill="#EAF3DE" stroke="#3B6D11" stroke-width="0.5"/>
+<text x="56" y="334" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="13" font-weight="500" fill="#27500A" dominant-baseline="central">对账层</text>
+<text x="56" y="353" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="12" fill="#3B6D11" dominant-baseline="central">滑点 · 成交率 · 影子漂移</text>
+<rect x="390" y="96" width="250" height="58" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+<text x="406" y="118" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="13" font-weight="500" fill="#412402" dominant-baseline="central">行情接口</text>
+<text x="406" y="137" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="12" fill="#854F0B" dominant-baseline="central">get_market_data_ex（内置）</text>
+<rect x="390" y="168" width="250" height="58" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+<text x="406" y="190" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="13" font-weight="500" fill="#412402" dominant-baseline="central">策略内核</text>
+<text x="406" y="209" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="12" fill="#854F0B" dominant-baseline="central">缠论 537 行 · 选股 · 风控</text>
+<rect x="390" y="240" width="250" height="58" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+<text x="406" y="262" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="13" font-weight="500" fill="#412402" dominant-baseline="central">状态持久化</text>
+<text x="406" y="281" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="12" fill="#854F0B" dominant-baseline="central">save_py_key · 替代本地文件</text>
+<rect x="390" y="312" width="250" height="58" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+<text x="406" y="334" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="13" font-weight="500" fill="#412402" dominant-baseline="central">下单</text>
+<text x="406" y="353" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="12" fill="#854F0B" dominant-baseline="central">passorder · 指令在终端生成</text>
+<rect x="302" y="96" width="76" height="274" rx="8" fill="#FCEBEB" stroke="#A32D2D" stroke-width="0.5" stroke-dasharray="4 3"/>
+<text x="340" y="216" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="13" font-weight="500" fill="#791F1F" text-anchor="middle" dominant-baseline="central">人工</text>
+<text x="340" y="236" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="13" font-weight="500" fill="#791F1F" text-anchor="middle" dominant-baseline="central">搬运</text>
+<text x="340" y="262" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="11" fill="#A32D2D" text-anchor="middle" dominant-baseline="central">唯一通道</text>
+<path d="M292 140 L300 140" fill="none" stroke="#A32D2D" stroke-width="1" stroke-dasharray="3 2"/>
+<path d="M380 140 L388 140" fill="none" stroke="#A32D2D" stroke-width="1" stroke-dasharray="3 2"/>
+<rect x="40" y="392" width="600" height="1" fill="#D3D1C7"/>
+<text x="40" y="412" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="12" fill="#444441">判据：候选池/参数是数据，可传；订单是指令，禁止。删一只股票 不等于 删一笔单。</text>
+<text x="40" y="432" font-family="system-ui, -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif" font-size="12" fill="#444441">终端内策略不得发起 HTTP/TCP 请求、不得读写本地文件 —— 两侧无程序化通道。</text>
+</svg>

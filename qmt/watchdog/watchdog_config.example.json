@@ -1,0 +1,58 @@
+{
+  "_说明": "复制成 watchdog_config.json 再改。真实配置含账号路径，别提交到 git。",
+
+  "qmt": {
+    "_说明": "process_names 用任务管理器里看到的进程名；exe_path 用 --probe-logs 或右键快捷方式查属性得到",
+    "process_names": ["XtItClient.exe", "XtTradeClient.exe"],
+    "exe_path": "D:\\QMT交易端\\bin.x64\\XtItClient.exe",
+    "exe_args": [],
+    "exe_cwd": ""
+  },
+
+  "logs": {
+    "_说明": "策略 print 落到哪个文件，各券商版本不一样。先跑 python watchdog.py --probe-logs 看哪个命中，把没命中的删掉",
+    "globs": [
+      "%USERPROFILE%\\.xtquant\\log\\*.log",
+      "D:\\QMT交易端\\bin.x64\\userdata\\log\\*.log",
+      "%APPDATA%\\QMT\\log\\*.log"
+    ],
+    "max_files": 3,
+    "tail_bytes": 131072
+  },
+
+  "probe": {
+    "_说明": "hb_max_age_min 要大于策略里 HB_EVERY_MIN（15 分钟），留一倍余量防止偶发延迟误报",
+    "hb_tag": "[hb]",
+    "done_tag": "[done]",
+    "alert_tag": "[alert]",
+    "hb_max_age_min": 35
+  },
+
+  "schedule": {
+    "_说明": "只在交易日这些时段里干活。14:50 前后是策略执行窗口，15:05 之后才催结果",
+    "interval_sec": 120,
+    "start_time": "08:50",
+    "alive_check_from": "09:20",
+    "alive_check_to": "15:00",
+    "done_check_after": "15:05",
+    "stop_time": "15:45"
+  },
+
+  "action": {
+    "_说明": "fail_threshold 连续失败几次才重启；max_restart_per_day 是防重启风暴的硬上限",
+    "fail_threshold": 3,
+    "cooldown_sec": 600,
+    "restart_wait_sec": 90,
+    "max_restart_per_day": 3
+  },
+
+  "alert": {
+    "_说明": "channel: wecom / feishu / log。webhook 留空则只写本地 watchdog.log，不发网络请求",
+    "channel": "wecom",
+    "webhook": "",
+    "dedup_sec": 1800,
+    "escalate_after": 3
+  },
+
+  "calendar_file": "calendar.json"
+}

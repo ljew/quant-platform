@@ -14,6 +14,10 @@ const SIGNAL_LABELS: Record<string, string> = {
   突破买入: "突破买入", 破位卖出: "破位卖出",
   // MACD + 布林
   macd_boll: "MACD布林", boll_break: "跌破下轨",
+  // jk 系列（jk001 沪深300 / jk002 全A）：因子选股 + 月频调仓 + 止损 + 趋势仓位
+  jk_rebalance: "jk调仓买入", jk_exit: "jk调仓卖出",
+  jk_stop_loss: "jk固定止损", jk_trailing_stop: "jk移动止损",
+  jk_bearish: "jk看空清仓", jk_vol_trim: "jk波动减仓",
   // 风控
   risk_forced: "风控强平",
   // 通用

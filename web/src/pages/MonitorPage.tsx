@@ -71,6 +71,9 @@ export default function MonitorPage() {
       />
       {error && <div style={{ color: colors.up, marginBottom: 10 }}>{error}</div>}
 
+      {/* —— 节假日静默横幅 —— */}
+      {health?.holiday && <HolidayBanner holiday={health.holiday} colors={colors} onChange={refresh} />}
+
       {/* —— 第一屏：一句话结论 + 三个数据新鲜度大字 —— */}
       {health && (
         <Card colors={colors} style={{ marginBottom: 14 }}>
@@ -118,7 +121,7 @@ export default function MonitorPage() {
                   <div style={{ padding: "6px 16px", background: colors.tableStripe, fontWeight: 600, fontSize: 12 }}>{ly.label}</div>
                   {(ly.checks || []).map((c) => (
                     <div key={c.name} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 16px", fontSize: 12.5, borderBottom: `1px solid ${colors.border}` }}>
-                      <span style={{ color: c.status === "ok" ? colors.down : c.status === "error" ? colors.up : "#e8a520", width: 14 }}>{c.status === "ok" ? "●" : c.status === "warn" ? "◐" : "✕"}</span>
+                      <span style={{ color: c.status === "ok" ? colors.down : c.status === "error" ? colors.up : "#e8a520", width: 14 }}>{c.muted ? "😴" : c.status === "ok" ? "●" : c.status === "warn" ? "◐" : "✕"}</span>
                       <span style={{ width: 190 }}>{c.name}</span>
                       <span className="num" style={{ flex: 1, color: colors.muted }}>{c.value}</span>
                       <span style={{ color: colors.muted }}>期望: {c.expect}</span>
@@ -215,7 +218,6 @@ export default function MonitorPage() {
             <FlowCol title="④ Gold 因子层（最新数据）" colors={colors}>
               <LayerRow label="个股K线" v={`${(dataflow.gold.kline_daily as number).toLocaleString()} 行 @${dataflow.gold.kline_latest}`} colors={colors} />
               <LayerRow label="因子截面" v={`${(dataflow.gold.factor_daily as number).toLocaleString()} 行 @${dataflow.gold.factor_latest}`} colors={colors} />
-              <LayerRow label="新闻情绪" v={`市场 ${dataflow.gold.news_market_daily} 天 / 个股 ${(dataflow.gold.news_stock_daily as number).toLocaleString()} 行`} colors={colors} />
               <LayerRow label="注册因子" v={`${dataflow.gold.registry_enabled} 启用 · ${(dataflow.gold.mined_rows as number).toLocaleString()} 行`} colors={colors} />
             </FlowCol>
           </div>
@@ -241,10 +243,9 @@ function FreshGrid({ dataflow, colors }: { dataflow: DataflowReport | null; colo
   const items = [
     { k: "行情K线", latest: dataflow.gold.kline_latest as string },
     { k: "因子截面", latest: dataflow.gold.factor_latest as string },
-    { k: "新闻情绪", latest: dataflow.gold.news_latest as string },
   ];
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 10 }}>
       {items.map((it) => {
         const ago = daysAgo(it.latest);
         const toneColor = ago <= 1 ? colors.down : ago <= 3 ? "#e8a520" : colors.up;
@@ -325,4 +326,52 @@ function fmtUptime(sec: number) {
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
   return h > 0 ? `${h}时${m}分` : `${m}分`;
+}
+
+/** 节假日静默横幅：非交易日自动静音「数据停更」类告警；可手动强制开/关。 */
+function HolidayBanner({ holiday, colors, onChange }: {
+  holiday: { mode: "auto" | "on" | "off"; active: boolean; trading_day: boolean; next_trading_day: string | null };
+  colors: ThemeColors;
+  onChange: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const setMode = async (mode: "auto" | "on" | "off") => {
+    setBusy(true);
+    try { await api.setHolidayMode(mode); onChange(); } finally { setBusy(false); }
+  };
+  const MODES: { k: "auto" | "on" | "off"; label: string }[] = [
+    { k: "auto", label: "自动" }, { k: "on", label: "强制静默" }, { k: "off", label: "关闭" },
+  ];
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
+      padding: "9px 14px", marginBottom: 14, borderRadius: 9, fontSize: 12.5,
+      background: holiday.active ? "#b9770e14" : colors.card,
+      border: `1px solid ${holiday.active ? "#b9770e55" : colors.border}`,
+    }}>
+      <span style={{ fontSize: 15 }}>{holiday.active ? "😴" : "🔔"}</span>
+      {holiday.active ? (
+        <span>
+          <b>节假日静默中</b>
+          <span style={{ color: colors.muted }}>
+            （{holiday.mode === "on" ? "手动开启" : "非交易日自动"}）· 数据停更属预期，相关告警已静音
+            {holiday.next_trading_day ? `，${holiday.next_trading_day.slice(5)} 开市恢复` : ""}
+          </span>
+        </span>
+      ) : (
+        <span style={{ color: colors.muted }}>
+          告警正常开启{holiday.trading_day ? "（今日交易日）" : ""} · 节假日自动静音「数据停更」类误报
+        </span>
+      )}
+      <span style={{ marginLeft: "auto", display: "inline-flex", borderRadius: 7, overflow: "hidden", border: `1px solid ${colors.border}` }}>
+        {MODES.map((m) => (
+          <button key={m.k} disabled={busy} onClick={() => setMode(m.k)} style={{
+            padding: "4px 11px", fontSize: 11.5, border: 0, cursor: busy ? "wait" : "pointer",
+            background: holiday.mode === m.k ? colors.accent : "transparent",
+            color: holiday.mode === m.k ? "#fff" : colors.muted,
+          }}>{m.label}</button>
+        ))}
+      </span>
+    </div>
+  );
 }
