@@ -165,12 +165,20 @@ def run_now() -> tuple[bool, str]:
     return ok, msg
 
 
+_sched_thread: threading.Thread | None = None
+
+
 def start_nsi_scheduler(enabled: bool = True) -> threading.Thread:
     """启动 NSI 信号更新 daemon 线程。"""
+    global _sched_thread
+    if _sched_thread is not None and _sched_thread.is_alive():
+        logger.info("调度器已在运行，跳过重复启动（start_nsi_scheduler）")
+        return _sched_thread
     with _lock:
         _status["enabled"] = enabled
     t = threading.Thread(target=_loop, args=(enabled,), daemon=True, name="nsi-scheduler")
     t.start()
+    _sched_thread = t
     logger.info("NSI 调度器已启动（enabled=%s，每交易日 %s 更新信号）",
                 enabled, " / ".join(f"{h:02d}:{m:02d}" for h, m in SLOTS))
     return t

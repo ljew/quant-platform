@@ -231,12 +231,20 @@ def _loop(enabled: bool) -> None:
         threading.Event().wait(IDLE_INTERVAL)
 
 
+_sched_thread: threading.Thread | None = None
+
+
 def start_etf_flow_scheduler(enabled: bool = True) -> threading.Thread:
     """启动 ETF 资金流 daemon 线程。"""
+    global _sched_thread
+    if _sched_thread is not None and _sched_thread.is_alive():
+        logger.info("调度器已在运行，跳过重复启动（start_etf_flow_scheduler）")
+        return _sched_thread
     with _lock:
         _status["enabled"] = enabled
     t = threading.Thread(target=_loop, args=(enabled,), daemon=True,
                          name="etf-flow-scheduler")
     t.start()
+    _sched_thread = t
     logger.info("ETF 资金流调度器已启动（enabled=%s）", enabled)
     return t

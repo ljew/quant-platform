@@ -349,6 +349,44 @@ def _refresh_valuation_if_due(now: datetime) -> bool:
     return True
 
 
+_FIN_LAST_TRY = 0.0
+_FIN_GAP = 6 * 3600        # 财报接口 6 小时冷却（一个季度实际只需 1 次调用）
+
+
+def _refresh_financials_if_due(now: datetime) -> bool:
+    """财务三表按报告期增量更新。
+
+    背景：`financials_raw` 原本只有 2026-10-08 那次从旧研究缓存的一次性导入，
+    **没有任何增量更新路径**。结果是 11-06 时最新只到 2026-06-30 期，
+    2026Q3（9-30 期）一行没有 —— 三季报 10-31 就该披露完。
+
+    与估值表那次静默滞后同一类问题：不报错，只有人肉翻日期才会发现。
+    逻辑见 `services/financials.py`：按法定披露截止日算「本应已有」的期次，
+    落后就拉，截止日后 45 天内允许重拉以捞晚披露与更正。
+    """
+    global _FIN_LAST_TRY
+    if now.timestamp() - _FIN_LAST_TRY < _FIN_GAP:
+        return False
+
+    from app.database import SessionLocal
+    from app.services import financials as fin
+
+    try:
+        with SessionLocal() as db:
+            todo = fin.periods_to_fetch(db)
+            if not todo:
+                return False          # 已是最新且不在重拉窗口内
+            _FIN_LAST_TRY = now.timestamp()
+            n = fin.update(db)
+    except Exception as e:  # noqa: BLE001
+        _FIN_LAST_TRY = now.timestamp()
+        logger.warning("财报快照刷新失败: %s", str(e)[:200])
+        return False
+
+    logger.info("财报已更新：%s，共 %d 行", [str(p) for p in todo], n)
+    return True
+
+
 def _run_verify(strategies: str) -> tuple[bool, str]:
     """自动策略验证（子进程隔离 + 硬超时 + 内存上限）。
 
@@ -434,6 +472,12 @@ def _loop(enabled: bool) -> None:
                 except Exception as e:  # noqa: BLE001
                     logger.warning("估值快照巡检异常: %s", e)
 
+                # 财务三表：报告期落后就补（Q3 曾静默空了近一周）
+                try:
+                    _refresh_financials_if_due(now)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("财报快照巡检异常: %s", e)
+
                 # 定时触发（交易日 19:00 后）或断供自愈（只要该有的数据没到就补跑）
                 due = (_is_trading_day(now)
                        and (now.hour, now.minute) >= (RUN_HOUR, RUN_MIN))
@@ -515,8 +559,15 @@ def _loop(enabled: bool) -> None:
         time.sleep(_CHECK_INTERVAL)
 
 
+_sched_thread: threading.Thread | None = None
+
+
 def start_data_scheduler(enabled: bool | None = None) -> threading.Thread:
     """启动调度 daemon 线程。enabled 缺省读 env QUANT_DATA_SCHEDULE。"""
+    global _sched_thread
+    if _sched_thread is not None and _sched_thread.is_alive():
+        logger.info("调度器已在运行，跳过重复启动（start_data_scheduler）")
+        return _sched_thread
     if enabled is None:
         enabled = os.getenv("QUANT_DATA_SCHEDULE", "0") == "1"
     # 启动时先清理上次遗留的 RUNNING 僵尸。
@@ -527,5 +578,6 @@ def start_data_scheduler(enabled: bool | None = None) -> threading.Thread:
     _status["enabled"] = enabled
     t = threading.Thread(target=_loop, args=(enabled,), daemon=True, name="data-scheduler")
     t.start()
+    _sched_thread = t
     logger.info("数据调度器已启动（enabled=%s，每交易日 %02d:%02d 后自动日更）", enabled, RUN_HOUR, RUN_MIN)
     return t

@@ -199,8 +199,15 @@ def check_once(send_mail: bool = True) -> dict:
         db.close()
 
 
+_sched_started = False
+
+
 def start_watchdog(interval_sec: int | None = None) -> None:
     """启动看门狗线程（daemon，随进程退出）。"""
+    global _sched_started
+    if _sched_started:
+        logger.info("调度器已在运行，跳过重复启动（start_watchdog）")
+        return
     interval = int(interval_sec or CHECK_INTERVAL_SEC)
 
     _load_state()
@@ -226,6 +233,7 @@ def start_watchdog(interval_sec: int | None = None) -> None:
             threading.Event().wait(interval)
 
     threading.Thread(target=_loop, daemon=True, name="watchdog").start()
+    _sched_started = True
     logger.info("看门狗已启动（每 %ss 体检一次）", interval)
 
 
