@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+
+from app.core.subproc import run_with_timeout
 import sys
 import threading
 import time
@@ -121,9 +123,11 @@ def _step_data(db: Session, run_id: int) -> None:
            step="data", status="running")
     db.commit()
     try:
-        proc = subprocess.run([sys.executable, "-c", code], env=env, cwd=backend,
-                              capture_output=True, text=True,
-                              timeout=DATA_STEP_TIMEOUT)
+        # ⚠️ 必须走 run_with_timeout：subprocess.run 的 timeout 只杀**直接子进程**，
+        # 孙进程仍持有 stdout 管道时 communicate() 会一直等 EOF —— 2026-11-05
+        # 这一处实际跑了 20.2 小时才返回，DATA_STEP_TIMEOUT=1800 形同虚设。
+        proc = run_with_timeout([sys.executable, "-c", code], env=env, cwd=backend,
+                                timeout=DATA_STEP_TIMEOUT)
     except subprocess.TimeoutExpired:
         _event(db, run_id, "data", f"数据管道超过 {DATA_STEP_TIMEOUT}s 已终止",
                step="data", status="fail", level="error")

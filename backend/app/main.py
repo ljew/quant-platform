@@ -11,6 +11,7 @@ from app.database import init_db
 from app.routers import data, market, strategy, paper, hedge, monitor, factor, llm, signal, agent, news, auto, research, live_ops, wechat
 from app.schemas import HealthResponse
 
+import logging
 import os
 
 app = FastAPI(title=settings.app_name, version="0.2.0", debug=settings.debug)
@@ -64,6 +65,23 @@ app.include_router(research.router, prefix=settings.api_prefix)
 
 @app.on_event("startup")
 def on_startup():
+    # 统一日志可见性：uvicorn 只给 uvicorn.* 配 handler，其余 logger 继承 root
+    # （默认 WARNING 且无 handler）→ 各调度模块的 logger.info 被静默丢弃，
+    # 只有 warning+ 靠 lastResort 打得出来。2026-11-04/05 排查「策略验证连续
+    # 两晚没跑」时，日志里既没有「跳过」也没有「完成」，正是这个原因。
+    # 这里借用 uvicorn 已配好的 handler 把 root 提到 INFO，并压掉嘈杂的第三方。
+    # 直接给调度器 logger 挂独立 handler：它们不属于 uvicorn.*，root 默认 WARNING
+    # 且无 handler，logger.info 会被静默丢弃（只有 warning+ 走 lastResort 可见）。
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    for _name in ("data_scheduler", "wechat_scheduler",
+                  "app.services.auto_research", "app.core.nsi_scheduler"):
+        _lg = logging.getLogger(_name)
+        if not _lg.handlers:
+            _lg.addHandler(_h)
+            _lg.setLevel(logging.INFO)
+            _lg.propagate = False
     init_db()
     # 首次升级：把 .env 里已配的 LLM key 落成一条记录（仅当表为空），
     # 之后配置统一在页面上维护，改完即时生效无需重启。
@@ -92,7 +110,6 @@ def on_startup():
         start_wechat_scheduler()
     except Exception as _e:  # noqa: BLE001
         # 公众号是附加模块，起不来不能拖垮主服务
-        import logging
         logging.getLogger(__name__).warning("公众号调度器启动失败：%s", _e)
 
     # 国家队介入强度指数（NSI）每日信号：19:30 刷新 nsi_signal.csv，
@@ -101,7 +118,6 @@ def on_startup():
         from app.core.nsi_scheduler import start_nsi_scheduler
         start_nsi_scheduler()
     except Exception as _e:  # noqa: BLE001
-        import logging
         logging.getLogger(__name__).warning("NSI 调度器启动失败：%s", _e)
 
 
@@ -123,7 +139,6 @@ _front_dir = settings.frontend_dir
 if os.path.isdir(_front_dir) and os.path.exists(os.path.join(_front_dir, "index.html")):
     app.mount("/", StaticFiles(directory=_front_dir, html=True), name="frontend")
 else:
-    import logging
     logging.getLogger(__name__).warning(
         "前端构建产物缺失：%s/index.html 不存在，仅提供 API（/docs）。"
         "请执行 cd web && npm run build", _front_dir)

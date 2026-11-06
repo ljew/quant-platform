@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+
+from app.core.subproc import run_with_timeout
 import sys
 import threading
 import time
@@ -117,9 +119,9 @@ def _run_update() -> bool:
     )
     rid = None
     try:
-        proc = subprocess.run(
+        proc = run_with_timeout(
             [sys.executable, "-c", code],
-            env=env, cwd=backend, capture_output=True, text=True,
+            env=env, cwd=backend,
             timeout=_PIPELINE_TIMEOUT,
         )
         import re
@@ -157,12 +159,10 @@ def _run_update() -> bool:
     # 子进程整体失败/无记录 → 降级 etl_daily 兜底
     script = os.path.join(backend, "scripts", "etl_daily.py")
     try:
-        proc = subprocess.run(
+        proc = run_with_timeout(
             [sys.executable, script],
             env=env,
             cwd=backend,
-            capture_output=True,
-            text=True,
             timeout=3600,
         )
         if proc.returncode == 0:
@@ -323,8 +323,7 @@ def _run_verify(strategies: str) -> tuple[bool, str]:
                       "--strategy", strategies, "--quick"])
     cmd = ["/bin/sh", "-c", f"ulimit -v {_VERIFY_MEM_LIMIT_KB}; exec {inner}"]
     try:
-        proc = subprocess.run(cmd, env=env, cwd=backend, capture_output=True,
-                              text=True, timeout=_VERIFY_TIMEOUT)
+        proc = run_with_timeout(cmd, env=env, cwd=backend, timeout=_VERIFY_TIMEOUT)
     except subprocess.TimeoutExpired:
         msg = f"验证超时（>{_VERIFY_TIMEOUT}s）已终止"
         logger.warning(msg)
@@ -368,9 +367,17 @@ def _loop(enabled: bool) -> None:
     # 一次瞬时故障（数据源抖动、瞬时 DNS）就会吃掉当天全部重试机会 ——
     # 这个模式在公众号采集、编排器、验证上各踩过一次（2026-09~11 共四次）。
     retry = {"date": "", "etl_n": 0, "etl_ts": 0.0, "ver_n": 0, "ver_ts": 0.0}
+    last_beat = 0.0
     while True:
         try:
             now = datetime.now()
+            # 每 30 分钟一条心跳：2026-11-04/05 连续两晚没跑策略验证，事后翻日志
+            # 既没有「跳过」也没有「完成」，无法判断是循环没转、还是条件没满足。
+            if now.timestamp() - last_beat >= 1800:
+                last_beat = now.timestamp()
+                logger.info("data-scheduler 心跳：enabled=%s 上次 ETL=%s 上次验证=%s",
+                            enabled, last_run_date or "-",
+                            _status["verify"].get("last_run_date") or "-")
             if retry["date"] != _today_str():
                 retry = {"date": _today_str(), "etl_n": 0, "etl_ts": 0.0,
                          "ver_n": 0, "ver_ts": 0.0}
