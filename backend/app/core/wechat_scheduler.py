@@ -43,11 +43,48 @@ _status = {
 
 _done: set[str] = set()          # 已完成（成功）的时间点（形如 2026-11-02#08:20）
 _retry: dict[str, dict] = {}     # 失败重试记账：key -> {attempts, last_ts}
+
+_COOL_FILE = Path(settings.wechat_data_dir) / "state" / "collect_cooldown.json"
+
+
+def _load_cooldown() -> float:
+    """读上次落盘的限流冷却截止时间（epoch 秒）。读不到就当没有。"""
+    import json
+
+    try:
+        d = json.loads(_COOL_FILE.read_text(encoding="utf-8"))
+        return float(d.get("until") or 0)
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _save_cooldown(until: float, reason: str) -> None:
+    import json
+    import time
+
+    try:
+        _COOL_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _COOL_FILE.write_text(
+            json.dumps({"until": until, "reason": reason[:160], "saved_at": time.time()},
+                       ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("写入限流冷却失败：%s", e)
+
+
+_cool_until = _load_cooldown()
 _MAX_ATTEMPTS = 3                # 同一 slot 每天最多试 3 次
 _RETRY_GAP = 600                 # 失败后至少隔 10 分钟再试（避开唤醒瞬间网络未就绪）
 # 限流专属退避：微信读书返回 HTTP 499 时，10 分钟一次的「立刻重打」只会加重风控。
 # 2026-11-06 实测：21:40 起 cover/content 全部 499，而调度仍按 10 分钟重试 3 次。
 _THROTTLE_GAP = 1800             # 疑似限流（退出码 3 / 499）时隔 30 分钟再试
+_THROTTLE_COOLDOWN = 3600        # 限流后的**全局**冷却（跨 slot、跨重启，落盘）
+_CATCHUP_HOURS = 12              # 错过 slot 后最多补 12 小时
+# 为什么需要 catch-up 窗口：原判定只有 `now < slot` 才跳过，于是晚上 22:49 仍会去补
+# 早上 08:20 的 slot，与 20:40 的 slot 叠加 → 限流期间一晚上打了 4 次。
+# 为什么需要全局冷却：冷却/重试记账原本只在内存，容器一重启就清零。2026-11-06 晚
+# 排查时重启了 5 次，每次重启都立刻重打一遍，把 499 窗口越拉越长（实测 ≥70 分钟）。
 _lock = threading.Lock()
 
 
@@ -120,13 +157,21 @@ def _run_crawl() -> tuple[bool, str]:
 
 
 def _loop(enabled: bool) -> None:
+    global _cool_until          # 限流时会重设并落盘；global 必须在本函数任何读取之前
     while True:
         try:
             if enabled:
                 now = datetime.now()
                 for h, m in SLOTS:
+                    slot_dt = now.replace(hour=h, minute=m, second=0, microsecond=0)
+                    if now < slot_dt:
+                        continue                      # 还没到点
+                    if (now - slot_dt).total_seconds() > _CATCHUP_HOURS * 3600:
+                        continue                      # 错过太久，当天放弃该 slot
+                    if now.timestamp() < _cool_until:
+                        break                         # 限流全局冷却中（重启也生效）
                     key = f"{_today()}#{h:02d}:{m:02d}"
-                    if (now.hour, now.minute) < (h, m) or key in _done:
+                    if key in _done:
                         continue
                     # 失败不再当天一票否决：2026-11-03 Mac 睡眠唤醒瞬间 DNS 未就绪，
                     # 08:20 那轮 5 个号就熔断退出，而 slot 已被记 done → 整个上午不再重试，
@@ -156,6 +201,12 @@ def _loop(enabled: bool) -> None:
                             # 限流要有专属退避：499 属于风控，密集重试只会把窗口拉长
                             throttled = ("退出码 3" in msg) or ("499" in msg)
                             st["gap"] = _THROTTLE_GAP if throttled else _RETRY_GAP
+                            if throttled:
+                                _cool_until = now.timestamp() + _THROTTLE_COOLDOWN
+                                _save_cooldown(_cool_until, msg)
+                                logger.warning(
+                                    "命中限流，全局冷却 %s 分钟（落盘，重启不清零）",
+                                    _THROTTLE_COOLDOWN // 60)
                             _status["last_error"] = msg
                             logger.warning("公众号抓取失败（第 %s/%s 次，%s退避 %ss）：%s",
                                            st["attempts"], _MAX_ATTEMPTS,
@@ -167,14 +218,22 @@ def _loop(enabled: bool) -> None:
         threading.Event().wait(_CHECK_INTERVAL)
 
 
+_sched_thread: threading.Thread | None = None
+
+
 def start_wechat_scheduler(enabled: bool | None = None) -> threading.Thread:
     """启动抓取 daemon 线程。enabled 缺省读 QUANT_WECHAT_SCHEDULE（默认开）。"""
+    global _sched_thread
+    if _sched_thread is not None and _sched_thread.is_alive():
+        logger.info("调度器已在运行，跳过重复启动（start_wechat_scheduler）")
+        return _sched_thread
     if enabled is None:
         enabled = settings.wechat_schedule
     with _lock:
         _status["enabled"] = enabled
     t = threading.Thread(target=_loop, args=(enabled,), daemon=True, name="wechat-scheduler")
     t.start()
+    _sched_thread = t
     logger.info("公众号调度器已启动（enabled=%s，每天 %s 抓增量）",
                 enabled, " / ".join(f"{h:02d}:{m:02d}" for h, m in SLOTS))
     return t

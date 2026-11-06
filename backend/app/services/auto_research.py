@@ -474,8 +474,15 @@ def _reap_zombie_runs(older_than_hours: int = 2) -> int:
         db.close()
 
 
+_sched_started = False
+
+
 def start_auto_scheduler() -> None:
     """自动研究调度线程（60s 一跳，幂等 + 当日/当周补跑）。"""
+    global _sched_started
+    if _sched_started:
+        logger.info("调度器已在运行，跳过重复启动（start_auto_scheduler）")
+        return
     _reap_zombie_runs()          # 启动先清理上一条进程留下的 RUNNING
 
     def _loop() -> None:
@@ -519,3 +526,4 @@ def start_auto_scheduler() -> None:
             time.sleep(60)
 
     threading.Thread(target=_loop, daemon=True, name="auto-research").start()
+    _sched_started = True

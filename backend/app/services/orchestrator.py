@@ -531,6 +531,9 @@ def _reap_zombie_runs(older_than_hours: int = 3) -> int:
         return 0
 
 
+_sched_started = False
+
+
 def start_daily_scheduler() -> None:
     """启动每日定时线程（守护线程，60s 一跳）。
 
@@ -538,6 +541,10 @@ def start_daily_scheduler() -> None:
     之后检测到「今天还没跑」时立即补跑（catch-up），重启进程亦会补跑。
     与 19:00 的 data_scheduler 不冲突（均幂等，管道步骤对已新数据快速跳过）。
     """
+    global _sched_started
+    if _sched_started:
+        print("[orchestrator] 调度器已在运行，跳过重复启动")
+        return
     _reap_zombie_runs()
 
     def _loop() -> None:
@@ -616,3 +623,4 @@ def start_daily_scheduler() -> None:
 
     threading.Thread(target=_loop, daemon=True,
                      name="orchestrator-daily").start()
+    _sched_started = True
