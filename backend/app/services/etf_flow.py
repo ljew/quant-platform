@@ -835,6 +835,76 @@ def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
     }
 
 
+def _signal_vs_view(nsi: dict, t_net: float | None, tail_mult: float | None,
+                    tail_today: float | None) -> dict:
+    """把「信号」和「观察」两套口径摆在一起，明确当天是同向还是分歧。
+
+    为什么必须有：NSI 是 5 只核心 ETF 的份额信号（T+1），本看板是 20 只 / 分钟量能的
+    观察视图。同一天完全可能一个说「加仓中」、另一个说「看不到护盘痕迹」——
+    以前页面上两块各说各话，只在页脚写了句「以 NSI 为准」，等于没处理冲突。
+
+    判定顺序（有强证据就不用弱证据）：
+      1. 当日份额已出 → 用净流入判断资金方向（强）
+      2. 份额未出 → 用尾盘集中度判断有没有进场痕迹（弱）
+      3. 两者都没有 → 不下判断
+    """
+    pos = nsi.get("position") or 0.0
+    base = nsi.get("base_position") or 0.7
+    boost = pos > base + 1e-6
+    sig = f"{'加仓中' if boost else '未触发'}（仓位 {pos:.0%}）"
+
+    # evidence：strong=份额口径（有方向）、weak=量能口径（只有活跃度，分不清买卖）
+    if t_net is not None:
+        evidence = "strong"
+        if t_net >= SUPPORT_THRESHOLD:
+            obs, obs_txt = "in", f"当日净流入 {t_net:+.0f} 亿，越过托底门槛"
+        elif t_net < 0:
+            obs, obs_txt = "out", f"当日净流出 {t_net:.0f} 亿"
+        else:
+            obs, obs_txt = "flat", f"当日净流入 {t_net:+.0f} 亿，未达门槛"
+    elif tail_mult is not None:
+        evidence = "weak"
+        obs_txt = (f"尾盘占比 {tail_mult:.2f}×"
+                   + (f"（{tail_today:.1f}%）" if tail_today is not None else ""))
+        if tail_mult >= 1.3:
+            obs, obs_txt = "in", obs_txt + "，收盘前集中放量"
+        elif tail_mult <= 0.8:
+            obs, obs_txt = "out", obs_txt + "，尾盘缩量"
+        else:
+            obs, obs_txt = "flat", obs_txt + "，尾盘量能正常"
+    else:
+        evidence = "none"
+        obs, obs_txt = "none", "当日无资金面数据"
+
+    # ⚠️ 「尾盘缩量」不是「资金在流出」，只是「看不到痕迹」—— 量能分不清买卖方向。
+    # 所以只有**份额口径反向**才叫分歧；量能不足一律归入「未获印证」。
+    if boost and obs == "in" and evidence == "strong":
+        status, label = "aligned", "两边印证"
+        note = "信号在加仓，当日份额口径也确实净流入。这是最可信的状态。"
+    elif boost and obs == "in":
+        status, label = "aligned", "量能配合"
+        note = ("信号在加仓，尾盘也出现集中放量。但量能只说明「有资金在动」，"
+                "分不清买卖方向 —— 属于弱印证，要等份额出来才能确认。")
+    elif boost and obs == "out" and evidence == "strong":
+        status, label = "divergent", "出现分歧"
+        note = ("信号仍在加仓，但当日份额口径是净流出。先当作单日扰动看待；"
+                "若连续两三日同向背离，说明份额信号可能已滞后于真实资金流向。")
+    elif boost:
+        status, label = "unconfirmed", "未获印证"
+        note = ("信号在加仓，但当日盘面看不到护盘痕迹。「没有印证」不等于「被否定」——"
+                "份额要 T+1 才出，当天本来就可能什么都看不出来。")
+    elif obs == "in" and evidence == "strong":
+        status, label = "divergent", "观察领先"
+        note = ("信号尚未触发，但当日份额口径已见净流入。可能是份额还没累积到阈值，"
+                "等下一交易日再判断。")
+    else:
+        status, label = "aligned", "两边一致"
+        note = "信号未触发，当日观察也没有异常 —— 一致地处于常态。"
+
+    return {"status": status, "label": label, "signal": sig,
+            "observation": obs_txt, "evidence": evidence, "note": note}
+
+
 def build_dashboard(db: Session) -> dict:
     """组装前端所需的全部数据（结构与前端 EtfFlowPage 约定）。"""
     now = datetime.now()
@@ -1393,6 +1463,11 @@ def build_dashboard(db: Session) -> dict:
         len(support_days),
         f"{active[:4]}-{active[4:6]}-{active[6:]}" if active else "",
         live_now, tail.get("mult"), tail.get("today"))
+
+    # 信号 vs 观察：同屏两块口径可能打架，把结论写在一处
+    if nsi_data.get("available"):
+        nsi_data["consistency"] = _signal_vs_view(
+            nsi_data, t_net, tail.get("mult"), tail.get("today"))
 
     return {
         "meta": {
