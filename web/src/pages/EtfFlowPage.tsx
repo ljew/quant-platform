@@ -1215,6 +1215,45 @@ function NsiCard({
         />
       </div>
 
+      {(() => {
+        const c = nsi.consistency;
+        if (!c) return null;
+        const tone = c.status === "aligned"
+          ? { fg: colors.accent, bg: rgba(colors.accent, 0.05), bd: rgba(colors.accent, 0.28) }
+          : c.status === "divergent"
+            ? { fg: "#b9770e", bg: "#b9770e0c", bd: "#b9770e44" }
+            : { fg: colors.muted, bg: colors.tableStripe, bd: colors.border };
+        const evTxt = c.evidence === "strong" ? "份额口径（强）"
+          : c.evidence === "weak" ? "量能口径（弱，分不清买卖）" : "无当日数据";
+        return (
+          <div style={{
+            background: tone.bg, border: `1px solid ${tone.bd}`,
+            borderLeft: `3px solid ${tone.fg}`,
+            borderRadius: 8, padding: "9px 12px", margin: "0 0 12px",
+          }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 9, flexWrap: "wrap", marginBottom: 4 }}>
+              <span style={{
+                fontSize: 11, fontWeight: 700, color: tone.fg,
+                background: rgba(tone.fg === colors.muted ? colors.border : tone.fg, 0.13),
+                borderRadius: 3, padding: "1px 6px",
+              }}>{c.label}</span>
+              <span style={{ fontSize: 12, color: colors.text }}>
+                信号 <b>{c.signal}</b>
+              </span>
+              <span style={{ fontSize: 12, color: colors.muted }}>
+                观察 <b style={{ color: colors.text }}>{c.observation}</b>
+              </span>
+            </div>
+            <div style={{ fontSize: 11.5, color: colors.muted, lineHeight: 1.7 }}>
+              {c.note}
+              <span style={{ color: colors.axis }}>
+                {" "}· 证据强度：{evTxt} · 冲突时以 NSI 为准（它经过回测，观察视图不进任何策略）
+              </span>
+            </div>
+          </div>
+        );
+      })()}
+
       <EChart option={opt} height={272} />
       <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 6, lineHeight: 1.7 }}>
         上：score 与触发阈值（{f2(hi)}）；下：建议仓位。NSI 只做加法——score 低不会触发减仓，

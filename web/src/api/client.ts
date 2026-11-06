@@ -920,6 +920,16 @@ export interface EtfFlowNsi {
   data_warning?: string | null;
   note?: string;
   history?: NsiHistoryPoint[];
+  /** 信号口径与观察视图当天是否配合（服务端判定） */
+  consistency?: {
+    status: "aligned" | "divergent" | "unconfirmed";
+    label: string;
+    signal: string;
+    observation: string;
+    /** strong=份额口径（有方向）· weak=量能口径（只有活跃度）· none=无数据 */
+    evidence: "strong" | "weak" | "none";
+    note: string;
+  };
 }
 
 /** 尾盘集中度：最后 30 分钟成交额占全天的比例，与 20 日均值对比 */
