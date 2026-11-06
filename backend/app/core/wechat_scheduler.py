@@ -45,6 +45,9 @@ _done: set[str] = set()          # 已完成（成功）的时间点（形如 20
 _retry: dict[str, dict] = {}     # 失败重试记账：key -> {attempts, last_ts}
 _MAX_ATTEMPTS = 3                # 同一 slot 每天最多试 3 次
 _RETRY_GAP = 600                 # 失败后至少隔 10 分钟再试（避开唤醒瞬间网络未就绪）
+# 限流专属退避：微信读书返回 HTTP 499 时，10 分钟一次的「立刻重打」只会加重风控。
+# 2026-11-06 实测：21:40 起 cover/content 全部 499，而调度仍按 10 分钟重试 3 次。
+_THROTTLE_GAP = 1800             # 疑似限流（退出码 3 / 499）时隔 30 分钟再试
 _lock = threading.Lock()
 
 
@@ -131,7 +134,8 @@ def _loop(enabled: bool) -> None:
                     st = _retry.get(key, {"attempts": 0, "last_ts": 0.0})
                     if st["attempts"] >= _MAX_ATTEMPTS:
                         continue
-                    if st["last_ts"] and now.timestamp() - st["last_ts"] < _RETRY_GAP:
+                    gap = st.get("gap") or _RETRY_GAP
+                    if st["last_ts"] and now.timestamp() - st["last_ts"] < gap:
                         continue
                     st["attempts"] += 1
                     _retry[key] = st
@@ -149,9 +153,14 @@ def _loop(enabled: bool) -> None:
                             logger.info("公众号抓取完成：%s", msg)
                         else:
                             st["last_ts"] = now.timestamp()
+                            # 限流要有专属退避：499 属于风控，密集重试只会把窗口拉长
+                            throttled = ("退出码 3" in msg) or ("499" in msg)
+                            st["gap"] = _THROTTLE_GAP if throttled else _RETRY_GAP
                             _status["last_error"] = msg
-                            logger.warning("公众号抓取失败（第 %s/%s 次）：%s",
-                                           st["attempts"], _MAX_ATTEMPTS, msg)
+                            logger.warning("公众号抓取失败（第 %s/%s 次，%s退避 %ss）：%s",
+                                           st["attempts"], _MAX_ATTEMPTS,
+                                           "限流" if throttled else "普通",
+                                           st["gap"], msg)
                     break  # 一轮只处理一个 slot
         except Exception as e:  # noqa: BLE001
             logger.warning("公众号调度循环异常：%s", e)

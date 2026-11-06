@@ -213,15 +213,16 @@ def collect(limit: int = 0):
 # ───────────────────────── 订阅号管理 ─────────────────────────
 
 class FeedCreate(BaseModel):
+    # 接受「整条分享链接 / 完整 reviewId / MP_WXS 编号」三种写法，服务端统一解析
     mp_id: str
-    mp_name: str
+    mp_name: str = ""   # 可留空：服务端会调 cover 接口自动取公众号真名
 
 
 @router.post("/feeds")
 def add_feed(req: FeedCreate):
-    """新增订阅号：写入 feeds.json，下一轮采集生效。
+    """新增订阅号：写入 feeds.json，下一轮采集（08:20 / 20:40）生效。
 
-    mp_id 形如 `MP_WXS_3698093049`，可在微信读书文章链接的 reviewId 前缀里找到。
+    只需从微信读书复制一篇文章的分享链接整条粘进来，不用手工截取编号。
     """
     try:
         return wechat_svc.add_feed(req.mp_id, req.mp_name)

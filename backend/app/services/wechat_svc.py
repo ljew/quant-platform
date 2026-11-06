@@ -254,22 +254,38 @@ def recent_days(days: int = 14) -> list[dict]:
 
 # ───────────────────────── 订阅号管理 ─────────────────────────
 
-def add_feed(mp_id: str, mp_name: str, verify: bool = True) -> dict:
+def parse_mp_id(raw: str) -> str:
+    """从用户粘贴的内容里提取公众号 bookId。
+
+    用户不需要理解格式 —— 以下三种写法都接受，指向同一串东西：
+      ① 整条链接  https://weread.qq.com/web/mp/content?reviewId=MP_WXS_3698093049_u96u8...
+      ② 完整 reviewId                      MP_WXS_3698093049_u96u8Gimgcy3rLRtOhoBbw
+      ③ 纯 bookId                          MP_WXS_3698093049
+    """
+    import re
+
+    s = (raw or "").strip()
+    m = re.search(r"MP_WXS_(\d+)", s)
+    if not m:
+        raise ValueError(
+            "没找到公众号编号。请粘贴微信读书里那篇文章的分享链接"
+            "（形如 https://weread.qq.com/web/mp/content?reviewId=MP_WXS_...），"
+            "或直接填 MP_WXS_ 开头的那串编号。"
+        )
+    return "MP_WXS_" + m.group(1)
+
+
+def add_feed(raw_id: str, mp_name: str = "", verify: bool = True) -> dict:
     """新增订阅号：写入 feeds.json（采集脚本读这份清单）。
 
-    `mp_id` 形如 `MP_WXS_3698093049` —— 在微信读书里打开该号任意一篇文章，
-    地址栏 `reviewId` 的前缀就是它（`MP_WXS_xxxx_<base64>`）。
+    只需给 `raw_id`（链接 / reviewId / bookId 均可，见 parse_mp_id）。
+    `mp_name` 可留空 —— 会自动调微信读书 cover 接口取公众号真名。
     已存在则只更新名称，不重复插入。
     """
     import json
-    import re
 
-    mp_id = (mp_id or "").strip()
+    mp_id = parse_mp_id(raw_id)
     mp_name = (mp_name or "").strip()
-    if not re.fullmatch(r"MP_WXS_\d+", mp_id):
-        raise ValueError("mp_id 格式应为 MP_WXS_数字（微信读书文章链接里 reviewId 的前缀）")
-    if not mp_name:
-        raise ValueError("请填写公众号名称")
 
     feeds_file = Path(CHAT_DB) / "feeds.json"
     feeds: list[dict] = []
@@ -279,49 +295,98 @@ def add_feed(mp_id: str, mp_name: str, verify: bool = True) -> dict:
         except Exception:  # noqa: BLE001
             feeds = []
 
+    # 名称来源优先级：用户填的 → cover 接口返回的 name → 库里的历史名 → 编号兜底
+    info: dict = {}
+    note = ""
+    if verify:
+        try:
+            info = _probe_mp(mp_id)
+            note = info.get("note") or ""
+        except Exception as e:  # noqa: BLE001
+            note = f"校验异常：{type(e).__name__}（已写入，下轮采集再看）"
+    auto_name = (info or {}).get("name") or ""
+    name = (mp_name or auto_name or _name_from_db(mp_id) or "").strip()
+
     for f in feeds:
         if f.get("mp_id") == mp_id:
-            f["mp_name"] = mp_name
+            # ⚠️ 只有确实拿到真名才更新。2026-11-06 实测：probe 因 UA 被拒失败，
+            # 这里拿编号兜底，把已有的「ABS视界」覆盖成了 MP_WXS_3698093049。
+            if name and not name.startswith("MP_WXS_"):
+                f["mp_name"] = name
             feeds_file.write_text(json.dumps(feeds, ensure_ascii=False, indent=1),
                                   encoding="utf-8")
             return {"ok": True, "created": False, "mp_id": mp_id,
-                    "mp_name": mp_name, "total": len(feeds)}
+                    "mp_name": f.get("mp_name", ""), "verified": note,
+                    "total": len(feeds)}
 
-    verified = ""
-    if verify:
-        try:
-            verified = _probe_mp(mp_id)
-        except Exception as e:  # noqa: BLE001
-            verified = f"校验异常：{type(e).__name__}（已写入，下轮采集再看）"
+    mp_name = name or mp_id
 
     feeds.append({"mp_id": mp_id, "mp_name": mp_name, "cover": ""})
     feeds.sort(key=lambda f: f.get("mp_name", ""))
     feeds_file.write_text(json.dumps(feeds, ensure_ascii=False, indent=1), encoding="utf-8")
     return {"ok": True, "created": True, "mp_id": mp_id, "mp_name": mp_name,
-            "verified": verified, "total": len(feeds)}
+            "verified": note, "auto_named": bool(auto_name and not (mp_name or "").startswith("MP_WXS_")),
+            "total": len(feeds)}
 
 
-def _probe_mp(mp_id: str) -> str:
-    """调微信读书 cover 接口确认这个号能取到文章；返回公众号名或错误说明。"""
+def _name_from_db(mp_id: str) -> str:
+    """从已采集的文章里反查公众号名（probe 失败时的兜底，避免存成编号）。"""
+    con = _connect()
+    if con is None:
+        return ""
+    try:
+        row = con.execute(
+            "select mp_name from articles where mp_id = ? and mp_name <> '' limit 1",
+            (mp_id,),
+        ).fetchone()
+        return (row[0] if row else "") or ""
+    except Exception:  # noqa: BLE001
+        return ""
+    finally:
+        con.close()
+
+
+def _probe_mp(mp_id: str) -> dict:
+    """调微信读书 cover 接口确认这个号能取到文章。
+
+    返回 {"name": 公众号名, "title": 最新一篇标题, "note": 异常说明}。
+    """
     import json as _json
+    import urllib.error
     import urllib.request
 
     ck = Path(CHAT_DB) / "weread_cookie.json"
     if not ck.exists():
-        return "未配置 Cookie，跳过校验"
+        return {"note": "未配置 Cookie，跳过校验"}
     raw = _json.loads(ck.read_text(encoding="utf-8"))
     cookie = raw if isinstance(raw, str) else "; ".join(
         f"{c['name']}={c['value']}" for c in raw)
     req = urllib.request.Request(
         f"https://weread.qq.com/api/mp/cover?bookId={mp_id}",
-        headers={"Cookie": cookie, "Referer": "https://weread.qq.com/",
-                 "User-Agent": "Mozilla/5.0"},
+        headers={
+            "Cookie": cookie,
+            "Referer": "https://weread.qq.com/",
+            # 实测：UA 只写 "Mozilla/5.0" 会被微信读书直接拒（HTTPError 403），
+            # 必须是完整 Chrome UA 才返回 JSON。
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/126.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+        },
     )
-    with urllib.request.urlopen(req, timeout=15) as r:
-        d = _json.loads(r.read().decode("utf-8", "ignore"))
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            d = _json.loads(r.read().decode("utf-8", "ignore"))
+    except urllib.error.HTTPError as e:
+        # 499 = 微信读书风控限流（不是 Cookie 失效、也不是号有问题）。
+        # 2026-11-06 实测：连续请求多了之后 cover/content 一律 499，
+        # 采集脚本同一时间也在报「连续 5 个号取列表失败」而被熔断。
+        if e.code == 499:
+            return {"note": "微信读书正在限流（HTTP 499），已写入，等它自动恢复即可"}
+        raise
     ec = d.get("errCode", d.get("errcode"))
     if ec in (-2010, -2011, -2012, -2041):
-        return f"Cookie 失效（{ec}），已写入但需续期后才能采"
+        return {"note": f"Cookie 失效（{ec}），已写入但需续期后才能采"}
     if not d.get("reviewId"):
-        return f"该号暂无可采文章（{d.get('errMsg') or '无 reviewId'}）"
-    return d.get("name") or "OK"
+        return {"name": d.get("name") or "", "note": "该号暂无可采文章（无 reviewId）"}
+    return {"name": d.get("name") or "", "title": d.get("title") or ""}

@@ -65,17 +65,27 @@ export default function WechatPage() {
 
   /** 快速新增订阅号：mp_id 取微信读书文章链接里 reviewId 的前缀。 */
   const quickAddFeed = useCallback(async () => {
-    const id = window.prompt(
-      "新增公众号订阅\n\n请粘贴 mp_id（形如 MP_WXS_3698093049）\n获取方式：微信读书里打开该号任意一篇文章，地址栏 reviewId 的前缀就是它。",
+    // 用户只需「复制一条链接」：服务端会用正则从中提取 MP_WXS 编号。
+    // 微信读书网页版没有任何公众号入口（/web/mp 404），只能在手机 App 里找号，
+    // 所以提示必须写清 App 路径，别再让用户去找什么「地址栏前缀」。
+    const raw = window.prompt(
+      "新增公众号订阅\n\n" +
+        "① 手机「微信读书」App，顶部搜索框输入公众号名称\n" +
+        "② 结果页顶部切到「公众号」分类，点进该号\n" +
+        "③ 随便打开一篇文章 → 右上角「···」→ 复制链接\n" +
+        "④ 把整条链接粘到这里（不用截取，粘全就行）\n\n" +
+        "也可以直接填 MP_WXS_ 开头的那串编号。",
       "",
     );
-    if (!id || !id.trim()) return;
-    const name = window.prompt("给这个号起个名字（列表里显示）", "");
-    if (!name || !name.trim()) return;
+    if (!raw || !raw.trim()) return;
+    const name = window.prompt("公众号名称（留空自动识别，直接回车即可）", "");
     try {
-      const r = await wechatApi.addFeed(id.trim(), name.trim());
-      const head = r.created ? `已添加（共 ${r.total} 个号）` : "该号已存在，名称已更新";
-      window.alert(`${head}\n${r.verified ? "校验：" + r.verified + "\n" : ""}下一轮采集（20:40 / 08:20）生效`);
+      const r = await wechatApi.addFeed(raw.trim(), (name || "").trim());
+      const head = r.created ? `已添加「${r.mp_name}」（共 ${r.total} 个号）` : `已更新名称「${r.mp_name}」`;
+      window.alert(
+        `${head}\n${r.verified ? "提醒：" + r.verified + "\n" : ""}` +
+          "下一轮采集（20:40 / 08:20）生效"
+      );
       const d = await wechatApi.mps(300);
       setMps(d.items);
       wechatApi.stats().then(setStats).catch(() => {});
