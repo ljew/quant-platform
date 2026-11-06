@@ -852,3 +852,196 @@ export const wechatApi = {
   daily: (date = "") => get<WechatDailyResp>(`/wechat/daily${date ? `?date=${date}` : ""}`),
   trend: (days = 14) => get<WechatTrendResp>(`/wechat/trend?days=${days}`),
 };
+
+// ══════════════════════════════════════════════════════════════════
+// ETF 资金流（国家队 ETF 资金看板 · 观察口径）
+//
+// 与 nsiApi（信号口径）的区别见后端 services/etf_flow.py 开头：
+// 这里是 20 只 / 12 类宽基 / 分钟量能，只用于观察，不参与任何仓位决策。
+// ══════════════════════════════════════════════════════════════════
+
+export interface EtfUniverseItem {
+  symbol: string;
+  name: string;
+  category: string;
+  scale: number;
+}
+
+export interface EtfFlowMeta {
+  as_of: string;
+  prev_trade_date: string;
+  last_minute: string;
+  count: number;
+  live: boolean;
+  is_today: boolean;
+  /** 这一屏分钟线是官方 1min 线、实时采样拼的，还是今天压根没有 */
+  bars_source: "official" | "sampled" | "none";
+  /** 采样模式下首个有效点的时刻（如 "14:51"），官方模式为 null */
+  sampled_from: string | null;
+  /** 采样模式下累计到多少个有效分钟点，官方模式为 null */
+  sampled_count: number | null;
+  partial_from: number | null;   // 盘中启动时首个有效点的下标
+  generated_at: string;
+  universe: EtfUniverseItem[];
+}
+
+export interface NsiHistoryPoint {
+  date: string;
+  score: number;
+  nsi: number | null;
+  position: number | null;
+}
+
+export interface EtfFlowNsi {
+  available: boolean;
+  as_of?: string;
+  score?: number;
+  nsi_raw?: number;
+  pos_penalty?: number;
+  p750?: number;
+  score_percentile?: number;
+  hi_threshold?: number;
+  flow?: number;
+  behav?: number;
+  press?: number;
+  position?: number;
+  base_position?: number;
+  last_change?: string;
+  holding_days?: number;
+  hhi?: number;
+  buyer_type?: string;
+  regime?: string;
+  etf_share_as_of?: string;
+  data_lag_days?: number | null;
+  data_warning?: string | null;
+  note?: string;
+  history?: NsiHistoryPoint[];
+}
+
+export interface EtfFlowMinute {
+  labels: string[];
+  count: number;
+  today_amount: (number | null)[];
+  prev_amount: number[];
+  avg20_amount: number[];
+  today_index: (number | null)[];
+  today_cum: (number | null)[];
+  prev_cum: (number | null)[];
+  avg20_cum: (number | null)[];
+  last: number | null;
+  prev_close: number | null;
+}
+
+export interface EtfFlowSlots {
+  labels: string[];
+  surge_amount: number[];
+  surge_chg: number[];
+  normal_amount: number[];
+  normal_chg: number[];
+  surge_samples: number;
+  normal_samples: number;
+}
+
+export interface EtfSupportDay {
+  date: string;
+  net_inflow: number;
+  turnover: number;
+  index: number | null;
+  index_chg: number;
+}
+
+export interface EtfFlowSupport {
+  excluded: { start: string; end: string; reason: string }[];
+  days: EtfSupportDay[];
+  today_turnover: number;
+  today_estimate: number;
+  threshold: number;
+  sample_count: number;
+  raw_count: number;
+}
+
+export interface EtfFlowDaily {
+  dates: string[];
+  index: (number | null)[];
+  chg: number[];
+  turnover: (number | null)[];
+  net_inflow: (number | null)[];
+}
+
+export interface EtfFlowCategory {
+  labels: string[];
+  scale: number[];
+  dates: string[];
+  matrix: number[][];
+  month_total: number[];
+  turnover: number[];
+}
+
+export interface EtfFlowSummaryMetric {
+  label: string;
+  value: string;
+  unit: string;
+  sub: string;
+  tone: "up" | "down" | "plain";
+}
+
+export interface EtfFlowSummaryPoint {
+  tag: string;   // 量能 / 方向 / 信号
+  text: string;
+}
+
+/** 顶部结论卡：后端规则驱动生成，判断口径见 services/etf_flow.py::_build_summary。 */
+export interface EtfFlowSummary {
+  as_of: string;
+  live: boolean;
+  headline: string;
+  tone: "up" | "down" | "warn" | "calm";
+  metrics: EtfFlowSummaryMetric[];
+  points: EtfFlowSummaryPoint[];
+  caveat: string;
+}
+
+export interface EtfFlowDetailItem {
+  symbol: string;
+  name: string;
+  category: string;
+  amount: number;      // 当日成交额（亿元）
+  share: number;       // 占 20 只合计的百分比
+  pct_chg: number | null;
+  rel: number;         // 相对成交额最大者的比例（0–1，用作条形长度）
+}
+
+export interface EtfFlowDashboard {
+  meta: EtfFlowMeta;
+  summary: EtfFlowSummary;
+  etf_detail: EtfFlowDetailItem[];
+  nsi: EtfFlowNsi;
+  minute: EtfFlowMinute;
+  intraday_15m: EtfFlowSlots;
+  support: EtfFlowSupport;
+  daily: EtfFlowDaily;
+  category: EtfFlowCategory;
+}
+
+export interface EtfFlowStatus {
+  universe: number;
+  share_rows: number;
+  minute_rows: number;
+  flow_days: number;
+  last_share_date: string | null;
+  last_flow_date: string | null;
+  last_sample: string | null;
+  task: { running: boolean; kind: string | null; message: string };
+  task_elapsed: number | null;
+}
+
+export const etfFlowApi = {
+  dashboard: () => get<EtfFlowDashboard>("/etf-flow/dashboard"),
+  status: () => get<EtfFlowStatus>("/etf-flow/status"),
+  bootstrap: (force = false) =>
+    post<{ ok: boolean; message: string }>(`/etf-flow/bootstrap?force=${force}`, {}),
+  update: () => post<{ ok: boolean; message: string }>("/etf-flow/update", {}),
+  sample: () => post<{ ok: boolean; points: number }>("/etf-flow/sample", {}),
+  /** 强制拉当日官方 1min 线；ok=false 表示源站还没发布，不是出错 */
+  minutes: () => post<{ ok: boolean; symbols: number; message: string }>("/etf-flow/minutes", {}),
+};

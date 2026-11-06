@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings, BASE_DIR
 from app.database import init_db
-from app.routers import data, market, strategy, paper, hedge, monitor, factor, llm, signal, agent, news, auto, research, live_ops, wechat
+from app.routers import data, market, strategy, paper, hedge, monitor, factor, llm, signal, agent, news, auto, research, live_ops, wechat, etf_flow
 from app.schemas import HealthResponse
 
 import logging
@@ -61,6 +61,7 @@ app.include_router(news.router, prefix=settings.api_prefix)
 app.include_router(wechat.router, prefix=settings.api_prefix)
 app.include_router(auto.router, prefix=settings.api_prefix)
 app.include_router(research.router, prefix=settings.api_prefix)
+app.include_router(etf_flow.router, prefix=settings.api_prefix)
 
 
 @app.on_event("startup")
@@ -76,7 +77,8 @@ def on_startup():
     _h.setFormatter(logging.Formatter(
         "%(asctime)s %(levelname)s %(name)s: %(message)s"))
     for _name in ("data_scheduler", "wechat_scheduler",
-                  "app.services.auto_research", "app.core.nsi_scheduler"):
+                  "app.services.auto_research", "app.core.nsi_scheduler",
+                  "etf_flow_scheduler"):
         _lg = logging.getLogger(_name)
         if not _lg.handlers:
             _lg.addHandler(_h)
@@ -111,6 +113,15 @@ def on_startup():
     except Exception as _e:  # noqa: BLE001
         # 公众号是附加模块，起不来不能拖垮主服务
         logging.getLogger(__name__).warning("公众号调度器启动失败：%s", _e)
+
+    # ETF 资金流看板（观察口径，非信号）：盘中每分钟采样 + 15:05–20:00 反复补官方分钟线
+    # + 19:30 日更 + 次日 08:30 补份额。
+    # 与下面 NSI 的分工见 services/etf_flow.py 开头；本模块不进任何策略。
+    try:
+        from app.core.etf_flow_scheduler import start_etf_flow_scheduler
+        start_etf_flow_scheduler()
+    except Exception as _e:  # noqa: BLE001
+        logging.getLogger(__name__).warning("ETF 资金流调度器启动失败：%s", _e)
 
     # 国家队介入强度指数（NSI）每日信号：19:30 刷新 nsi_signal.csv，
     # 供 national_team 策略读取。脚本缺失/更新失败只影响该策略，不影响主服务。
