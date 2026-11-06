@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -21,7 +21,8 @@ from sqlalchemy import select
 from app.core.engine.backtest_engine import BacktestEngine
 from app.core.engine.portfolio_backtest import PortfolioBacktestEngine
 from app.core.strategies.registry import get_strategy
-from app.models import Stock, PaperTask, PaperTrade, PaperSnapshot, FundamentalsHistory
+from app.models import (Stock, PaperTask, PaperTrade, PaperSnapshot,
+                        FundamentalsHistory, FinancialsRaw)
 from app.services.data_source import get_realtime_prices
 from app.services.membership_store import get_membership as _get_membership
 # 复用回测路由里的数据加载函数（DB 优先、缺失回源落地），避免重复实现
@@ -106,6 +107,13 @@ def _load_portfolio(db, task: PaperTask) -> dict:
     end = date.today()
     sd = date(end.year - 5, 1, 1)
     start = sd.isoformat()
+    # ⚠️ 必须往前多取预热数据：jk 这类策略要 260 根 bar 才出第一个信号。
+    # 原来从 sd 当天开始取、warmup 只跳 125 根 → 策略看到的历史不足，
+    # `_build_pool` 返回空、rebalance 静默 return，整段 5 年零交易
+    # （2026-11-06 实测：模拟盘 0 笔 vs 同参数回测 3101 笔）。
+    # 口径与 routers/strategy.py 的回测一致：warmup_days * 1.6 + 40 天。
+    warmup_days = int(params.get("warmup_days", 0) or 0)
+    load_start = (sd - timedelta(days=int(warmup_days * 1.6) + 40)) if warmup_days > 0 else sd
 
     membership = _get_membership(db, index_code, sd, end)
     if not membership:
@@ -129,7 +137,7 @@ def _load_portfolio(db, task: PaperTask) -> dict:
     )
     data: dict[str, list[dict]] = {}
     for sym in union:
-        b = _load_bars(db, sym, start, end.isoformat(), task.adj)
+        b = _load_bars(db, sym, load_start.isoformat(), end.isoformat(), task.adj)
         if len(b) >= warmup_min:
             data[sym] = b
     if len(data) < 20:
@@ -153,6 +161,24 @@ def _load_portfolio(db, task: PaperTask) -> dict:
         }
         for r in attrs_rows
     }
+
+    # PIT 财务明细（现金流 / 资本开支 / 总资产）：jk 这类 FCF 策略的
+    # ROE / FCF-OE 筛选全靠它。2026-11-06 实测漏传 → ctx.financial() 全空
+    # → _screen_fundamentals 返回 0 只 → rebalance 静默 return → 5 年零交易
+    # （同参数回测 3101 笔，模拟盘 0 笔）。照抄 routers/strategy.py 的口径。
+    fin_rows = db.execute(
+        select(FinancialsRaw.symbol, FinancialsRaw.ann_date, FinancialsRaw.end_date,
+               FinancialsRaw.roe, FinancialsRaw.n_cashflow_act, FinancialsRaw.capex,
+               FinancialsRaw.total_assets)
+        .where(FinancialsRaw.symbol.in_(syms))
+    ).all()
+    financials_raw: dict[str, list] = {}
+    for r in fin_rows:
+        financials_raw.setdefault(r.symbol, []).append({
+            "ann_date": r.ann_date, "end_date": r.end_date, "roe": r.roe,
+            "ocf": r.n_cashflow_act, "capex": r.capex,
+            "total_assets": r.total_assets,
+        })
 
     # 基本面历史快照（PEAD 盈余惊喜等时序因子用）
     fund_rows = db.execute(
@@ -181,8 +207,13 @@ def _load_portfolio(db, task: PaperTask) -> dict:
         data, benchmark,
         initial_cash=task.initial_cash, commission=task.commission, slippage=task.slippage,
         rebalance_period=int(params.get("rebalance_period", 21)),
-        warmup=warmup_min, attributes=attributes, membership=membership,
+        # warmup 必须取策略声明的 warmup_days（jk=270），否则引擎从第 125 根就开跑，
+        # 策略的 260 日回看拿不满 → 选股全空。start_date 让引擎把「第 0 天」锚回 sd。
+        warmup=max(warmup_min, int(params.get("warmup_days", 0) or 0)),
+        attributes=attributes, membership=membership,
         risk_limits=risk_limits or None, fundamentals=fundamentals or None,
+        financials_raw=financials_raw or None,
+        start_date=sd,
     )
     result = engine.run(meta["cls"], params)
 
