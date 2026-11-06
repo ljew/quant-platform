@@ -348,7 +348,16 @@ def main() -> int:
             time.sleep(args.interval)
             continue
         ts = parse_publish_ts(html)
-        url = f"https://weread.qq.com/web/mp/content?reviewId={rid}"
+        # 优先存「微信原文链接」：weread 的 /web/mp/content 需要微信读书登录态，
+        # 浏览器里点开只会看到登录页（2026-11-06 用户反馈「查看原文打不开」）。
+        # 正文 HTML 里有 var msg_link = "https://mp.weixin.qq.com/s?__biz=...#rd"。
+        m_link = re.search(r'var\s+msg_link\s*=\s*["\']([^"\']+)', html)
+        msg_link = ""
+        if m_link:
+            msg_link = (m_link.group(1)
+                        .replace("\\x26amp;", "&").replace("\\x26", "&")
+                        .replace("&amp;", "&"))
+        url = msg_link or f"https://weread.qq.com/web/mp/content?reviewId={rid}"
         if args.dry_run:
             print(f"[{i}/{len(feeds)}] DRY {mp_name}《{title[:26]}》 {len(text)} 字 "
                   f"{datetime.fromtimestamp(ts):%Y-%m-%d}")

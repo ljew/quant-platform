@@ -63,6 +63,27 @@ export default function WechatPage() {
     wechatApi.mps(300).then((d) => setMps(d.items)).catch(() => {});
   }, []);
 
+  /** 快速新增订阅号：mp_id 取微信读书文章链接里 reviewId 的前缀。 */
+  const quickAddFeed = useCallback(async () => {
+    const id = window.prompt(
+      "新增公众号订阅\n\n请粘贴 mp_id（形如 MP_WXS_3698093049）\n获取方式：微信读书里打开该号任意一篇文章，地址栏 reviewId 的前缀就是它。",
+      "",
+    );
+    if (!id || !id.trim()) return;
+    const name = window.prompt("给这个号起个名字（列表里显示）", "");
+    if (!name || !name.trim()) return;
+    try {
+      const r = await wechatApi.addFeed(id.trim(), name.trim());
+      const head = r.created ? `已添加（共 ${r.total} 个号）` : "该号已存在，名称已更新";
+      window.alert(`${head}\n${r.verified ? "校验：" + r.verified + "\n" : ""}下一轮采集（20:40 / 08:20）生效`);
+      const d = await wechatApi.mps(300);
+      setMps(d.items);
+      wechatApi.stats().then(setStats).catch(() => {});
+    } catch (e) {
+      window.alert("添加失败：" + String(e).slice(0, 300));
+    }
+  }, []);
+
   // —— 文章流 ——
   const loadList = useCallback(
     (nextOffset: number, append: boolean) => {
@@ -289,7 +310,7 @@ export default function WechatPage() {
       <div style={{ display: "grid", gridTemplateColumns: "186px minmax(0,1fr) minmax(0,1.35fr)", gap: 12, alignItems: "start" }}>
 
         {/* 左：公众号列表 */}
-        <Card title="公众号" colors={colors} pad={0} style={{ maxHeight: "calc(100vh - 250px)", display: "flex", flexDirection: "column" }}>
+        <Card title="公众号" extra={<Btn small onClick={quickAddFeed}>+ 新增</Btn>} colors={colors} pad={0} bodyStyle={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }} style={{ maxHeight: "calc(100vh - 250px)", display: "flex", flexDirection: "column" }}>
           <div style={{ padding: "8px 10px", borderBottom: `1px solid ${colors.border}` }}>
             <input
               value={mpFilter}
@@ -325,7 +346,7 @@ export default function WechatPage() {
         </Card>
 
         {/* 中：文章流 */}
-        <Card pad={0} colors={colors} style={{ maxHeight: "calc(100vh - 250px)", display: "flex", flexDirection: "column" }}>
+        <Card pad={0} colors={colors} bodyStyle={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }} style={{ maxHeight: "calc(100vh - 250px)", display: "flex", flexDirection: "column" }}>
           <div style={{ padding: "10px 12px", borderBottom: `1px solid ${colors.border}`, display: "flex", flexDirection: "column", gap: 8 }}>
             <div style={{ display: "flex", gap: 6 }}>
               <input
@@ -417,13 +438,21 @@ export default function WechatPage() {
         <Card
           title={detail ? detail.mp_name : "阅读"}
           extra={detail && (
-            <a href={detail.url} target="_blank" rel="noreferrer"
-               style={{ fontSize: 11.5, color: colors.accent, textDecoration: "none" }}>
-              原文 ↗
+            <a
+              href={detail.url}
+              target="_blank"
+              rel="noreferrer"
+              title={detail.url?.includes("weread.qq.com")
+                ? "这条存的是微信读书正文页，浏览器打开需要微信读书登录；此后新采集的文章会直接给公众号原文链接"
+                : "在浏览器打开公众号原文"}
+              style={{ fontSize: 11.5, color: colors.accent, textDecoration: "none" }}
+            >
+              {detail.url?.includes("weread.qq.com") ? "微信读书 ↗" : "原文 ↗"}
             </a>
           )}
           colors={colors}
           pad={0}
+          bodyStyle={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
           style={{ maxHeight: "calc(100vh - 250px)", display: "flex", flexDirection: "column" }}
         >
           {!detail && !detailBusy && (

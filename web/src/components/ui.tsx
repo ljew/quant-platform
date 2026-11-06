@@ -10,6 +10,7 @@ export function Card({
   colors,
   pad = 16,
   style,
+  bodyStyle,
 }: {
   title?: ReactNode;
   extra?: ReactNode;
@@ -17,6 +18,9 @@ export function Card({
   colors: { card: string; border: string; text: string; muted: string };
   pad?: number;
   style?: React.CSSProperties;
+  /** 内容容器的额外样式。需要「撑满剩余高度 + 内部滚动」时传
+   *  { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }。 */
+  bodyStyle?: React.CSSProperties;
 }) {
   return (
     <div
@@ -43,7 +47,7 @@ export function Card({
           {extra}
         </div>
       )}
-      <div style={{ padding: pad }}>{children}</div>
+      <div style={{ padding: pad, ...bodyStyle }}>{children}</div>
     </div>
   );
 }

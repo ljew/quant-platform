@@ -250,3 +250,78 @@ def recent_days(days: int = 14) -> list[dict]:
         return []
     finally:
         con.close()
+
+
+# ───────────────────────── 订阅号管理 ─────────────────────────
+
+def add_feed(mp_id: str, mp_name: str, verify: bool = True) -> dict:
+    """新增订阅号：写入 feeds.json（采集脚本读这份清单）。
+
+    `mp_id` 形如 `MP_WXS_3698093049` —— 在微信读书里打开该号任意一篇文章，
+    地址栏 `reviewId` 的前缀就是它（`MP_WXS_xxxx_<base64>`）。
+    已存在则只更新名称，不重复插入。
+    """
+    import json
+    import re
+
+    mp_id = (mp_id or "").strip()
+    mp_name = (mp_name or "").strip()
+    if not re.fullmatch(r"MP_WXS_\d+", mp_id):
+        raise ValueError("mp_id 格式应为 MP_WXS_数字（微信读书文章链接里 reviewId 的前缀）")
+    if not mp_name:
+        raise ValueError("请填写公众号名称")
+
+    feeds_file = Path(CHAT_DB) / "feeds.json"
+    feeds: list[dict] = []
+    if feeds_file.exists():
+        try:
+            feeds = json.loads(feeds_file.read_text(encoding="utf-8")) or []
+        except Exception:  # noqa: BLE001
+            feeds = []
+
+    for f in feeds:
+        if f.get("mp_id") == mp_id:
+            f["mp_name"] = mp_name
+            feeds_file.write_text(json.dumps(feeds, ensure_ascii=False, indent=1),
+                                  encoding="utf-8")
+            return {"ok": True, "created": False, "mp_id": mp_id,
+                    "mp_name": mp_name, "total": len(feeds)}
+
+    verified = ""
+    if verify:
+        try:
+            verified = _probe_mp(mp_id)
+        except Exception as e:  # noqa: BLE001
+            verified = f"校验异常：{type(e).__name__}（已写入，下轮采集再看）"
+
+    feeds.append({"mp_id": mp_id, "mp_name": mp_name, "cover": ""})
+    feeds.sort(key=lambda f: f.get("mp_name", ""))
+    feeds_file.write_text(json.dumps(feeds, ensure_ascii=False, indent=1), encoding="utf-8")
+    return {"ok": True, "created": True, "mp_id": mp_id, "mp_name": mp_name,
+            "verified": verified, "total": len(feeds)}
+
+
+def _probe_mp(mp_id: str) -> str:
+    """调微信读书 cover 接口确认这个号能取到文章；返回公众号名或错误说明。"""
+    import json as _json
+    import urllib.request
+
+    ck = Path(CHAT_DB) / "weread_cookie.json"
+    if not ck.exists():
+        return "未配置 Cookie，跳过校验"
+    raw = _json.loads(ck.read_text(encoding="utf-8"))
+    cookie = raw if isinstance(raw, str) else "; ".join(
+        f"{c['name']}={c['value']}" for c in raw)
+    req = urllib.request.Request(
+        f"https://weread.qq.com/api/mp/cover?bookId={mp_id}",
+        headers={"Cookie": cookie, "Referer": "https://weread.qq.com/",
+                 "User-Agent": "Mozilla/5.0"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:
+        d = _json.loads(r.read().decode("utf-8", "ignore"))
+    ec = d.get("errCode", d.get("errcode"))
+    if ec in (-2010, -2011, -2012, -2041):
+        return f"Cookie 失效（{ec}），已写入但需续期后才能采"
+    if not d.get("reviewId"):
+        return f"该号暂无可采文章（{d.get('errMsg') or '无 reviewId'}）"
+    return d.get("name") or "OK"
