@@ -496,6 +496,41 @@ def scheduler_state() -> dict:
     }
 
 
+def _reap_zombie_runs(older_than_hours: int = 3) -> int:
+    """启动时把残留的 RUNNING 编排标 FAILED。
+
+    正常编排全流程 ≤ 30 分钟（data 步骤硬超时 1800s）。超过 3 小时仍 RUNNING
+    必然是执行线程已随进程退出、记录没来得及收尾。2026-11-06 实测库里积了
+    11 条，最早停在 9-30，监控页「流水线状态」因此长期显示「运行中」。
+    """
+    from sqlalchemy import select as _select
+
+    from app.database import SessionLocal
+    from app.models import ResearchRun
+
+    cutoff = datetime.now() - timedelta(hours=older_than_hours)
+    try:
+        with SessionLocal() as db:
+            rows = db.execute(
+                _select(ResearchRun).where(
+                    ResearchRun.status == "RUNNING",
+                    ResearchRun.started_at < cutoff,
+                )
+            ).scalars().all()
+            for r in rows:
+                r.status = "FAILED"
+                r.gate_status = "cancelled"
+                r.error = f"僵尸运行：超过 {older_than_hours} 小时仍 RUNNING（执行线程已退出）"
+                r.finished_at = datetime.now()
+            db.commit()
+        if rows:
+            print(f"[orchestrator] 清理僵尸编排 {len(rows)} 条")
+        return len(rows)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[orchestrator] 清理僵尸编排失败: {exc}")
+        return 0
+
+
 def start_daily_scheduler() -> None:
     """启动每日定时线程（守护线程，60s 一跳）。
 
@@ -503,6 +538,8 @@ def start_daily_scheduler() -> None:
     之后检测到「今天还没跑」时立即补跑（catch-up），重启进程亦会补跑。
     与 19:00 的 data_scheduler 不冲突（均幂等，管道步骤对已新数据快速跳过）。
     """
+    _reap_zombie_runs()
+
     def _loop() -> None:
         # ⚠️ 必须在此导入：本模块其它函数都是「函数内局部导入」，
         # 模块作用域并无 SessionLocal —— 直接引用会抛 NameError，
@@ -533,6 +570,29 @@ def start_daily_scheduler() -> None:
                 today = now.date().isoformat()
                 due = (now.hour, now.minute) >= (DAILY_HOUR, DAILY_MINUTE)
                 pending = due and _daily_state["last_run_date"] != today
+                # ⚠️ 重启后 _daily_state 是空的，只看内存会重复触发。
+                # 2026-11-06 实测：18:36~18:40 容器重启 3 次，连续起了 #307/#308/#309
+                # 三条并发编排，每条都会走到 gate 并各发一封邮件。必须回查 DB。
+                if pending:
+                    try:
+                        from sqlalchemy import select as _select
+
+                        from app.database import SessionLocal as _SL
+                        from app.models import ResearchRun as _RR
+
+                        with _SL() as _db:
+                            done = _db.execute(
+                                _select(_RR.id).where(
+                                    _RR.status == "SUCCESS",
+                                    _RR.finished_at >= datetime.combine(
+                                        now.date(), datetime.min.time()),
+                                ).limit(1)
+                            ).first()
+                        if done:
+                            _daily_state["last_run_date"] = today
+                            pending = False
+                    except Exception:  # noqa: BLE001
+                        pass   # 查不到按未跑处理：宁可多跑一次，不要漏跑
                 if pending and not STATE["running"]:
                     from app.core.trading_calendar import is_trading_day
 

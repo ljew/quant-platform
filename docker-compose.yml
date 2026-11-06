@@ -46,6 +46,9 @@ services:
       - QUANT_FRONTEND_DIR=/frontend
       - QUANT_TUSHARE_TOKEN=${QUANT_TUSHARE_TOKEN:-}
       - QUANT_DATA_SCHEDULE=1
+      # 每晚 20:05 自动验证的策略（逗号分隔）。jk001r 是聚宽 R 版移植，
+      # 与 jk001 分开留档，便于对比「等权 vs 名次加权」的指标漂移。
+      - QUANT_VERIFY_STRATEGIES=jk001,jk001r
       - QUANT_DEBUG=false
       - QUANT_SOURCES_YAML=/app/config/sources.yaml
       # 公众号全文库：代码在 /app/data 是空目录，真实数据挂在 /data（bind mount），
@@ -69,8 +72,10 @@ services:
       # 不必重建镜像（原来 dist 烤在镜像里，每次改 UI 都要 build 一遍）。
       - ./web/dist:/frontend:ro
     ports:
-      # 宿主 8000 直接对外（切换后宿主机不再跑 uvicorn）
-      - "8000:8000"
+      # ⚠️ 只绑本机回环（2026-11-06 安全加固）：服务无鉴权，原 "8000:8000"
+      # 会让局域网任何设备读写数据、触发回测、改邮件/LLM 凭据。
+      # 需要手机或别的机器访问时：改成 "8000:8000"，或走 SSH 隧道 / Tailscale。
+      - "127.0.0.1:8000:8000"
     healthcheck:
       # 用 /openapi.json 而非 /health：后者会调 check_akshare()（联网校验），
       # 可能拖到超时，造成容器被反复判死。

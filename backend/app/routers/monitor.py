@@ -254,8 +254,6 @@ def health_run_now():
     return run_rules(SessionLocal())
 
 
-import threading
-
 _running_pipeline = {"locked": False}
 
 

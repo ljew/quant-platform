@@ -163,7 +163,6 @@ def step_extract_eastmoney_news(db) -> int:
     from app.datahub.scorers.dict_v1 import DictScorerV1
     from app.datahub.cleaners.core import (load_name_map, match_stock_mentions,
                                            upsert_stock_sentiment)
-    from app.models import NewsMarketDaily, NewsStockDaily
 
     params = src.get("params", {})
     pages = int(params.get("pages", 8))
@@ -245,7 +244,6 @@ def step_extract_announcements(db) -> int:
     from app.datahub.extractors.eastmoney_announcements import EastmoneyAnnouncementExtractor
     from app.datahub.scorers.dict_v1 import DictScorerV1
     from app.datahub.cleaners.core import upsert_stock_sentiment
-    from app.models import NewsStockDaily
 
     params = src.get("params", {})
     try:
@@ -442,7 +440,6 @@ def step_compute_mined_factors(db) -> int:
     「启用」以研究卡为准（research_card_svc.enabled_factor_names）：注册表
     status=='enabled' 且卡状态 enabled 才计算；无卡的按旧行为保底并告警。
     """
-    from app.models import FactorRegistry, FactorMinedDaily
     from app.core.engine.factor_expr import eval_factor
     from app.services.research_card_svc import enabled_factor_names
 

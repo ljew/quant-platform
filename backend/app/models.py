@@ -55,6 +55,37 @@ class Stock(Base):
         return f"<Stock {self.symbol} {self.name}>"
 
 
+class MarketValuationDaily(Base):
+    """全市场估值日频聚合（2019 起），供「估值 × 资金流」条件判断。
+
+    为什么单独一张表、而不是每次从 `stock_valuation_daily` 现算：
+    源表 900 万行，按日算中位数要扫全表（秒级、且吃内存）；聚合后只有 1900 行，
+    看板每次请求直接读，O(1)。
+
+    口径（写死在代码里，改动会影响历史可比性）：
+      · pe_median  = 全 A 股 PE(TTM) 中位数，**剔除亏损（pe≤0）与 >300 倍的极端值**
+      · pe_weighted= 总市值加权（Σ总市值 / Σ总市值÷PE），同样只含 pe>0 的样本
+      · pb_median  = PB 中位数，剔除 pb≤0 与 >30
+      · pct_pe     = 当日 pe_median 在过去 1250 个交易日（约 5 年）中的分位，%
+                     —— 滚动窗口而非全样本，贴近「估值星级」的直觉；
+                     前 250 个交易日样本不足，留空
+
+    为什么用中位数而不是加权：A 股 PE 分布极右偏（少数百倍股会拉高均值），
+    中位数更稳；加权值同时存下来用于交叉校验。
+    """
+
+    __tablename__ = "market_valuation_daily"
+
+    trade_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    pe_median: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pe_weighted: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pb_median: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    pct_pe: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pct_pb: Mapped[float | None] = mapped_column(Float, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
 class StockValuationDaily(Base):
     """估值时序表（symbol × trade_date），**PIT 因子挖掘的数据基础**。
 

@@ -305,6 +305,50 @@ def _refresh_membership_if_due(now: datetime) -> bool:
     return True
 
 
+_VAL_LAST_TRY = 0.0
+
+
+def _refresh_valuation_if_due(now: datetime) -> bool:
+    """全市场估值快照补齐（源表 `stock_valuation_daily` + 聚合表 `market_valuation_daily`）。
+
+    背景：这两张表之前只有 2026-10-08 的一次手工回填，之后无人维护，到 11-06
+    已落后 21 个交易日。ETF 资金流看板的「估值分位」依赖它们，不补就一直显示
+    旧分位 —— 而且**不会报任何错**，静默失真最难发现。
+
+    幂等：源表与聚合表都够新时直接返回。19:30 之后才动，避开 ETL 抢 tushare 配额
+    （估值是 daily_basic 按日全市场，一天一次调用，成本很低）。
+    失败只记日志、按 _RETRY_GAP 重试，不影响主流程。
+    """
+    global _VAL_LAST_TRY
+    if (now.hour, now.minute) < (19, 30):
+        return False
+    if now.timestamp() - _VAL_LAST_TRY < _RETRY_GAP:
+        return False
+
+    from sqlalchemy import func, select
+
+    from app.database import SessionLocal
+    from app.models import MarketValuationDaily, StockValuationDaily
+    from app.services import market_valuation as mv
+
+    try:
+        with SessionLocal() as db:
+            src = db.scalar(select(func.max(StockValuationDaily.trade_date)))
+            agg = db.scalar(select(func.max(MarketValuationDaily.trade_date)))
+            if src is not None and agg is not None and agg >= src and not mv.missing_days(db):
+                return False          # 都齐了，什么都不做
+            _VAL_LAST_TRY = now.timestamp()
+            added = mv.update(db)
+            days = mv.rebuild(db)
+    except Exception as e:  # noqa: BLE001
+        _VAL_LAST_TRY = now.timestamp()
+        logger.warning("估值快照刷新失败: %s", str(e)[:200])
+        return False
+
+    logger.info("估值快照已刷新：源表 +%d 行，聚合 %d 个交易日", added, days)
+    return True
+
+
 def _run_verify(strategies: str) -> tuple[bool, str]:
     """自动策略验证（子进程隔离 + 硬超时 + 内存上限）。
 
@@ -382,6 +426,14 @@ def _loop(enabled: bool) -> None:
                 retry = {"date": _today_str(), "etl_n": 0, "etl_ts": 0.0,
                          "ver_n": 0, "ver_ts": 0.0}
             if enabled:
+                # 全市场估值：独立于 ETL —— ETL 分支一天只进一次（跑完即锁 last_run_date），
+                # 挂在里面就永远等不到 19:30 之后的重试窗口。本函数自带 15 分钟冷却，
+                # 每 60 秒评估一次的成本只是一条 MAX 查询。
+                try:
+                    _refresh_valuation_if_due(now)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("估值快照巡检异常: %s", e)
+
                 # 定时触发（交易日 19:00 后）或断供自愈（只要该有的数据没到就补跑）
                 due = (_is_trading_day(now)
                        and (now.hour, now.minute) >= (RUN_HOUR, RUN_MIN))
@@ -423,6 +475,7 @@ def _loop(enabled: bool) -> None:
                         _refresh_membership_if_due(now)
                     except Exception as e:  # noqa: BLE001
                         logger.warning("成分快照巡检异常: %s", e)
+
 
                     # 策略自动验证：数据更新之后、每晚一次（20:30 后）。
                     # 成功才记 last_run_date；失败按 _RETRY_GAP 重试，最多 _MAX_RETRY 次。

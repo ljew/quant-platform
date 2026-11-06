@@ -918,6 +918,17 @@ export interface EtfFlowNsi {
   history?: NsiHistoryPoint[];
 }
 
+/** 尾盘集中度：最后 30 分钟成交额占全天的比例，与 20 日均值对比 */
+export interface EtfFlowTailDay { date: string; ratio: number }
+
+export interface EtfFlowTail {
+  window: string;
+  today: number | null;
+  avg20: number | null;
+  mult: number | null;
+  series: EtfFlowTailDay[];
+}
+
 export interface EtfFlowMinute {
   labels: string[];
   count: number;
@@ -930,6 +941,7 @@ export interface EtfFlowMinute {
   avg20_cum: (number | null)[];
   last: number | null;
   prev_close: number | null;
+  tail: EtfFlowTail;
 }
 
 export interface EtfFlowSlots {
@@ -950,6 +962,74 @@ export interface EtfSupportDay {
   index_chg: number;
 }
 
+/** 托底日之后：T+n 前瞻收益的事后统计（同指数口径，非可交易回测） */
+export interface EtfFlowForwardStat {
+  n: number;
+  up: number;
+  win: number;      // 上涨概率 %
+  mean: number;
+  median: number;
+  worst: number;
+  best: number;
+}
+
+export interface EtfFlowForwardPoint {
+  date: string;
+  net_inflow: number;
+  index_chg: number;
+  t5: number | null;
+  t20: number | null;
+  t60: number | null;
+}
+
+export interface EtfFlowForward {
+  horizons: number[];
+  stats: Record<string, EtfFlowForwardStat>;
+  corr: Record<string, number | null>;
+  points: EtfFlowForwardPoint[];
+}
+
+/** 全市场估值（滚动 5 年分位），供「估值 × 资金流」条件判断 */
+export interface EtfFlowValuation {
+  available: boolean;
+  as_of?: string;
+  pe?: number | null;
+  pct?: number | null;
+  pb?: number | null;
+  pct_pb?: number | null;
+  start?: string;
+  count?: number;
+  dates?: string[];
+  pe_series?: (number | null)[];
+  pct_series?: (number | null)[];
+  /** 托底日当天的估值分位，用于在 PE 曲线上打点 */
+  support_marks?: { date: string; pct: number }[];
+  support_pct?: {
+    n: number; median: number; p25: number; p75: number;
+    low_share: number; high_share: number;
+  } | null;
+  /** 按年看托底时的估值分位中位数 —— 最能说明行为模式变化 */
+  support_yearly?: { year: string; n: number; median: number }[];
+}
+
+/** 焦点切换：当日成交额 top3 与前一日的对比 */
+export interface EtfFlowFocusItem {
+  symbol: string;
+  name: string;
+  amount: number;
+  share: number;
+}
+
+export interface EtfFlowFocus {
+  today: EtfFlowFocusItem[];
+  prev: EtfFlowFocusItem[];
+  prev_date: string;
+  overlap: number;
+  top1_changed: boolean;
+  hhi: number | null;
+  hhi_prev: number | null;
+}
+
 export interface EtfFlowSupport {
   excluded: { start: string; end: string; reason: string }[];
   days: EtfSupportDay[];
@@ -958,6 +1038,7 @@ export interface EtfFlowSupport {
   threshold: number;
   sample_count: number;
   raw_count: number;
+  forward: EtfFlowForward;
 }
 
 export interface EtfFlowDaily {
@@ -1015,6 +1096,8 @@ export interface EtfFlowDashboard {
   meta: EtfFlowMeta;
   summary: EtfFlowSummary;
   etf_detail: EtfFlowDetailItem[];
+  focus: EtfFlowFocus;
+  valuation: EtfFlowValuation;
   nsi: EtfFlowNsi;
   minute: EtfFlowMinute;
   intraday_15m: EtfFlowSlots;
