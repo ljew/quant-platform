@@ -1115,6 +1115,7 @@ def build_dashboard(db: Session) -> dict:
 
     fwd_stats: dict[str, dict] = {}
     fwd_corr: dict[str, float | None] = {}
+    forward_block: dict = {}
     for n in FWD_HORIZONS:
         vals = [p[f"t{n}"] for p in fwd_pts if p[f"t{n}"] is not None]
         if vals:
@@ -1137,6 +1138,16 @@ def build_dashboard(db: Session) -> dict:
             fwd_stats[str(n)] = {"n": 0, "up": 0, "win": 0.0, "mean": 0.0,
                                  "median": 0.0, "worst": 0.0, "best": 0.0}
             fwd_corr[str(n)] = None
+
+    forward_block = {
+        "horizons": list(FWD_HORIZONS),
+        "stats": fwd_stats,
+        "corr": fwd_corr,
+        "points": fwd_pts,
+        # 按托底时的估值分位分组 —— 估值决定不了「会不会托底」，
+        # 但强烈决定「托底之后赚不赚」，这里把这件事量化出来
+        "by_valuation": [],
+    }
 
     # ── 分类矩阵 ──
     crows = db.execute(select(
@@ -1257,6 +1268,34 @@ def build_dashboard(db: Session) -> dict:
             valuation["support_yearly"] = [
                 {"year": y, "n": len(v), "median": round(float(pd.Series(v).median()), 1)}
                 for y, v in sorted(_by_year.items())]
+
+            # ── 按估值分位分组看托底后的表现 ──
+            # 这是整张看板里最能用的一条：估值不决定托底「会不会发生」（前面已证中位 62%），
+            # 但决定托底「值不值得跟」——低估值那组 T+60 胜率 86%，高估值那组只有 33%。
+            _pct_of = {m["date"]: m["pct"] for m in marks}
+
+            def _grp(vals: list[float]) -> dict | None:
+                if not vals:
+                    return None
+                _s = pd.Series(vals)
+                return {"n": len(vals), "up": int((_s > 0).sum()),
+                        "win": round(float((_s > 0).mean() * 100), 1),
+                        "median": round(float(_s.median()), 2),
+                        "mean": round(float(_s.mean()), 2)}
+
+            _by_val = []
+            for _label, _lo, _hi in (("低（≤30%）", -0.1, 30.0),
+                                     ("中（30–70%）", 30.0, 70.0),
+                                     ("高（>70%）", 70.0, 100.1)):
+                _pts = [x for x in fwd_pts
+                        if _pct_of.get(x["date"]) is not None
+                        and _lo <= _pct_of[x["date"]] < _hi]
+                _item: dict = {"label": _label, "n": len(_pts)}
+                for _n in FWD_HORIZONS:
+                    _item[f"t{_n}"] = _grp([x[f"t{_n}"] for x in _pts
+                                            if x[f"t{_n}"] is not None])
+                _by_val.append(_item)
+            forward_block["by_valuation"] = _by_val
         else:
             valuation["support_marks"] = []
             valuation["support_pct"] = None
@@ -1383,14 +1422,9 @@ def build_dashboard(db: Session) -> dict:
             "threshold": SUPPORT_THRESHOLD,
             "sample_count": len(support_days),
             "raw_count": raw_n,
-            # 托底日之后的表现：每个 horizon 的胜率／中位／尾部，以及流入规模与
-            # 后市涨幅的相关系数（没关系本身也是结论）
-            "forward": {
-                "horizons": list(FWD_HORIZONS),
-                "stats": fwd_stats,
-                "corr": fwd_corr,
-                "points": fwd_pts,
-            },
+            # 托底日之后的表现：每个 horizon 的胜率／中位／尾部，流入规模的相关性，
+            # 以及按估值分位分组的对比
+            "forward": forward_block,
         },
         "daily": {
             "dates": [f"{d[:4]}-{d[4:6]}-{d[6:]}" for d in dates],

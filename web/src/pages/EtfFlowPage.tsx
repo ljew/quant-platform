@@ -812,11 +812,79 @@ function ForwardCard({
         </div>
       </div>
 
+      {(() => {
+        const gs = (forward.by_valuation ?? []).filter((g) => g.t60 && g.t60.n > 0);
+        if (!gs.length) return null;
+        return (
+          <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${colors.border}` }}>
+            <div style={{
+              display: "flex", alignItems: "baseline", gap: 10, marginBottom: 9, flexWrap: "wrap",
+            }}>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: colors.text }}>
+                按托底时的估值分位分组 · 看 T+60
+              </span>
+              <span style={{ fontSize: 11, color: colors.muted }}>
+                同一个「托底」，估值位置不同，结果差一大截
+              </span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              {gs.map((g) => {
+                const st = g.t60!;
+                const tone = st.win >= 60 ? colors.up : st.win <= 40 ? colors.down : colors.muted;
+                return (
+                  <div key={g.label} style={{
+                    display: "grid",
+                    gridTemplateColumns: "128px 1fr 66px 96px 76px",
+                    alignItems: "center", gap: 10, fontSize: 12,
+                  }}>
+                    <span style={{ color: colors.text, whiteSpace: "nowrap" }}>{g.label}</span>
+                    <div style={{
+                      height: 8, background: colors.tableStripe,
+                      borderRadius: 4, overflow: "hidden",
+                    }}>
+                      <div style={{
+                        width: `${Math.max(2, st.win)}%`, height: "100%",
+                        background: tone, opacity: 0.75, borderRadius: 4,
+                      }} />
+                    </div>
+                    <span style={{
+                      textAlign: "right", fontWeight: 700, color: tone,
+                      fontVariantNumeric: "tabular-nums",
+                    }}>{st.win.toFixed(0)}%</span>
+                    <span style={{
+                      textAlign: "right", fontVariantNumeric: "tabular-nums",
+                      color: st.median >= 0 ? colors.up : colors.down,
+                    }}>中位 {sgn(st.median)}{f2(st.median)}%</span>
+                    <span style={{ textAlign: "right", color: colors.axis, fontSize: 11 }}>
+                      n={st.n}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{
+              marginTop: 9, fontSize: 11.5, color: colors.muted, lineHeight: 1.7,
+            }}>
+              估值的意义不在「决定会不会托底」（中位分位 62%，两头都有），而在
+              <strong style={{ color: colors.text }}>决定托底之后值不值得跟</strong>：
+              低估值组的 T+60 胜率与中位收益都明显高于高估值组。
+              中段样本很少（n 见右列），只作参考，重点看两端。
+            </div>
+          </div>
+        );
+      })()}
+
       <Note colors={colors}>
         这张图回答的是「托底之后会怎样」，而前面几张只回答「今天像不像托底」。
         三个横截面各有含义：<strong>T+5 看情绪</strong>（通常还没走出来）、
         <strong>T+20 看资金落地</strong>、<strong>T+60 看趋势是否成立</strong>。
         横截面越长，样本越少（最近的托底日还没有 60 个交易日的后市数据），所以每格都标了 n。
+        <br />
+        <span style={{ color: colors.text }}>
+          要特别说明：上面 T+60 的 56.5% 是<strong>两拨方向相反的样本平均出来的</strong> ——
+          低估值组 86%、高估值组 33%，平均之后就成了一个「什么都说明不了」的数字。
+          这就是上面那张分组对比的意义。
+        </span>
         <br />
         <span style={{ color: colors.axis }}>
           注意这是<strong>同一指数口径的事后统计</strong>，不是可交易策略回测：没扣成本、没算滑点、
