@@ -41,6 +41,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.config import DATA_DIR, settings
+from app.services import market_valuation
 from app.models import (
     EtfCategoryDaily,
     EtfDailyBar,
@@ -1226,6 +1227,41 @@ def build_dashboard(db: Session) -> dict:
             return None
         return round(sum((v / tot) ** 2 for v in vals), 4)
 
+    # ── 估值分位（全 A 股 PE/PB 中位数的滚动 5 年分位）──
+    # 螺丝钉那套方法的核心前提是「国家队主要在低估值区动手」。这里用可算的口径
+    # 去验证它：把 66 个托底日发生时的估值分位拉出来，看是否真的集中在低位。
+    valuation = market_valuation.series(db)
+    if valuation.get("available"):
+        pct_map = dict(zip(valuation["dates"], valuation["pct_series"]))
+        marks = [{"date": d["date"], "pct": pct_map[d["date"]]}
+                 for d in support_days
+                 if d["date"] in pct_map and pct_map[d["date"]] is not None]
+        if marks:
+            _v = sorted(m["pct"] for m in marks)
+            _se = pd.Series(_v)
+            valuation["support_marks"] = marks
+            valuation["support_pct"] = {
+                "n": len(_v),
+                "median": round(float(_se.median()), 1),
+                "p25": round(float(_se.quantile(0.25)), 1),
+                "p75": round(float(_se.quantile(0.75)), 1),
+                # 分布是双峰的：既有 2024 年那种极端低估救市，也有 2025-26 年
+                # 在中高位持续买入。只给中位数会把这件事抹平，所以两头都给。
+                "low_share": round(float((_se <= 20).mean() * 100), 1),
+                "high_share": round(float((_se >= 80).mean() * 100), 1),
+            }
+            # 按年看模式变化：这是最有说服力的一张表
+            _by_year: dict[str, list[float]] = {}
+            for m in marks:
+                _by_year.setdefault(m["date"][:4], []).append(m["pct"])
+            valuation["support_yearly"] = [
+                {"year": y, "n": len(v), "median": round(float(pd.Series(v).median()), 1)}
+                for y, v in sorted(_by_year.items())]
+        else:
+            valuation["support_marks"] = []
+            valuation["support_pct"] = None
+            valuation["support_yearly"] = []
+
     f_today, f_prev = _top3(active), _top3(cmp_prev)
     focus = {
         "today": f_today,
@@ -1311,6 +1347,7 @@ def build_dashboard(db: Session) -> dict:
         "summary": summary,
         "etf_detail": etf_detail,
         "focus": focus,
+        "valuation": valuation,
         "minute": {
             "labels": LABELS,
             "count": cnt,

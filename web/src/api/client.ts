@@ -989,6 +989,29 @@ export interface EtfFlowForward {
   points: EtfFlowForwardPoint[];
 }
 
+/** 全市场估值（滚动 5 年分位），供「估值 × 资金流」条件判断 */
+export interface EtfFlowValuation {
+  available: boolean;
+  as_of?: string;
+  pe?: number | null;
+  pct?: number | null;
+  pb?: number | null;
+  pct_pb?: number | null;
+  start?: string;
+  count?: number;
+  dates?: string[];
+  pe_series?: (number | null)[];
+  pct_series?: (number | null)[];
+  /** 托底日当天的估值分位，用于在 PE 曲线上打点 */
+  support_marks?: { date: string; pct: number }[];
+  support_pct?: {
+    n: number; median: number; p25: number; p75: number;
+    low_share: number; high_share: number;
+  } | null;
+  /** 按年看托底时的估值分位中位数 —— 最能说明行为模式变化 */
+  support_yearly?: { year: string; n: number; median: number }[];
+}
+
 /** 焦点切换：当日成交额 top3 与前一日的对比 */
 export interface EtfFlowFocusItem {
   symbol: string;
@@ -1074,6 +1097,7 @@ export interface EtfFlowDashboard {
   summary: EtfFlowSummary;
   etf_detail: EtfFlowDetailItem[];
   focus: EtfFlowFocus;
+  valuation: EtfFlowValuation;
   nsi: EtfFlowNsi;
   minute: EtfFlowMinute;
   intraday_15m: EtfFlowSlots;

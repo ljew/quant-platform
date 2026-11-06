@@ -119,7 +119,7 @@ export default function EtfFlowPage() {
     );
   }
 
-  const { meta, nsi, minute, support, daily, category, intraday_15m, summary, etf_detail, focus } = data;
+  const { meta, nsi, minute, support, daily, category, intraday_15m, summary, etf_detail, focus, valuation } = data;
   const empty = meta.universe.length === 0;
 
   return (
@@ -250,6 +250,7 @@ export default function EtfFlowPage() {
       />
       <SupportCard support={support} meta={meta} colors={colors} mode={mode} />
       <ForwardCard forward={support.forward} colors={colors} />
+      <ValuationCard v={valuation} colors={colors} />
 
       {/* ═══ 四、日度资金全景 ═══ */}
       <SectionTitle
@@ -290,6 +291,11 @@ export default function EtfFlowPage() {
         <div>
           · <b>尾盘集中度</b> = 14:31–15:00 成交额 ÷ 全天成交额，与过去 20 个交易日均值对比。
           这是「当日净流入」公布之前唯一可用的前置指标，但同样只反映量能，<b>不区分买卖方向</b>。
+        </div>
+        <div>
+          · <b>估值序列</b>来自 tushare <code>daily_basic</code> 的逐股 PE/PB，按日聚合成全市场中位数
+          （源表 900 万行 → 聚合表 1900 行），分位取<strong>滚动 5 年</strong>窗口。每日 19:30 后由数据调度器
+          自动补齐缺口；源表落后时看板会显示旧分位，<strong>不会报错</strong>，所以看卡片右上角的日期。
         </div>
         <div>
           · 样本池 {meta.universe.length} 只，按类别内「规模排名 × 0.6 + 成交额排名 × 0.4」自动筛选；
@@ -816,6 +822,167 @@ function ForwardCard({
           注意这是<strong>同一指数口径的事后统计</strong>，不是可交易策略回测：没扣成本、没算滑点、
           没做样本外；连续托底日的持有期还会互相重叠，样本并不独立。
           它的用途是校准预期，不能当收益承诺，更不该据此定仓位 —— 那件事归 NSI。
+        </span>
+      </Note>
+    </div>
+  );
+}
+
+/* ── 估值 × 资金流 ──────────────────────────────────────────────── */
+function ValuationCard({
+  v, colors,
+}: {
+  v: EtfFlowDashboard["valuation"] | undefined;
+  colors: ReturnType<typeof useTheme>["colors"];
+}) {
+  const opt = useMemo<EChartsOption>(() => {
+    const dates = v?.dates ?? [];
+    const pe = v?.pe_series ?? [];
+    const idx = new Map(dates.map((d, i) => [d, i] as const));
+    const marks = (v?.support_marks ?? [])
+      .map((m) => {
+        const i = idx.get(m.date);
+        return i == null || pe[i] == null ? null : { value: [i, pe[i]], _m: m };
+      })
+      .filter((x): x is { value: number[]; _m: { date: string; pct: number } } => x != null);
+    return {
+      grid: { left: 48, right: 16, top: 20, bottom: 26 },
+      tooltip: {
+        trigger: "axis",
+        backgroundColor: colors.card, borderColor: colors.border,
+        textStyle: { color: colors.text, fontSize: 12 },
+        formatter: (ps) => {
+          const arr = ps as unknown as { axisValue?: string; seriesName?: string; value: number | number[] }[];
+          const a = arr?.[0];
+          if (!a) return "";
+          const d = a.axisValue ?? "";
+          const i = idx.get(d);
+          const p = i == null ? null : v?.pct_series?.[i];
+          let out = `<div style="font-size:11px;color:${colors.muted};margin-bottom:3px">${d}</div>`;
+          out += `PE 中位数 <b>${f2(pe[i ?? -1] ?? null)}</b>`;
+          if (p != null) out += ` · 5 年分位 <b>${p.toFixed(1)}%</b>`;
+          const mk = arr.find((x) => x.seriesName === "托底日");
+          if (mk) out += `<br/><span style="color:${colors.up}">● 当日为历史托底日</span>`;
+          return out;
+        },
+      },
+      xAxis: {
+        type: "category",
+        data: dates,
+        axisLine: { lineStyle: { color: colors.border } },
+        axisTick: { show: false },
+        axisLabel: {
+          color: colors.axis, fontSize: 9.5, hideOverlap: true,
+          formatter: (val: string) => val.slice(0, 7),
+        },
+      },
+      yAxis: {
+        type: "value", scale: true,
+        axisLabel: { color: colors.axis, fontSize: 9.5 },
+        splitLine: { lineStyle: { color: colors.border } },
+        splitNumber: 4,
+      },
+      series: [
+        {
+          name: "PE 中位数", type: "line", data: pe, showSymbol: false,
+          lineStyle: { color: colors.accent, width: 1.4 },
+          itemStyle: { color: colors.accent },
+          areaStyle: {
+            color: {
+              type: "linear", x: 0, y: 0, x2: 0, y2: 1,
+              colorStops: [
+                { offset: 0, color: rgba(colors.accent, 0.16) },
+                { offset: 1, color: rgba(colors.accent, 0) },
+              ],
+            },
+          },
+        },
+        {
+          name: "托底日", type: "scatter", data: marks, symbolSize: 7, z: 5,
+          itemStyle: { color: rgba(colors.up, 0.85), borderColor: colors.card, borderWidth: 0.5 },
+        },
+      ],
+    };
+  }, [v, colors]);
+
+  if (!v || !v.available) return null;
+  const sp = v.support_pct;
+
+  const blocks = [
+    {
+      label: "当前估值分位",
+      main: v.pct == null ? "—" : `${v.pct.toFixed(1)}%`,
+      tone: v.pct == null ? colors.text
+        : v.pct <= 30 ? colors.down : v.pct >= 70 ? colors.up : colors.text,
+      sub: `PE ${f2(v.pe)} · PB 分位 ${v.pct_pb == null ? "—" : v.pct_pb.toFixed(0) + "%"}`,
+      tail: `${v.start} 起 ${v.count} 个交易日`,
+    },
+    {
+      label: "托底日的中位分位",
+      main: sp ? `${sp.median.toFixed(1)}%` : "—",
+      tone: sp && sp.median >= 50 ? colors.up : colors.text,
+      sub: sp ? `样本 n=${sp.n} · 四分位 ${sp.p25.toFixed(0)}% ~ ${sp.p75.toFixed(0)}%` : "样本不足",
+      tail: sp ? `低估值区(≤20%) 占 ${sp.low_share.toFixed(0)}% · 高位区(≥80%) 占 ${sp.high_share.toFixed(0)}%` : "",
+    },
+    {
+      label: "托底时的估值跨度",
+      main: sp ? `${sp.p25.toFixed(0)}–${sp.p75.toFixed(0)}%` : "—",
+      tone: colors.text,
+      sub: sp && sp.p75 - sp.p25 > 50 ? "跨度极大，不存在统一门槛" : "分布相对集中",
+      tail: (v.support_yearly ?? []).length
+        ? `年度中位：${(v.support_yearly ?? []).map((y) => `${y.year} ${y.median.toFixed(0)}%`).join(" · ")}`
+        : "",
+    },
+  ];
+
+  return (
+    <div style={cardStyle(colors)}>
+      <CardHead
+        title="估值 × 资金流"
+        tag={`全 A 股 PE(TTM) 中位数 · 滚动 5 年分位 · ${v.as_of}`}
+        colors={colors}
+      />
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, margin: "2px 0 12px" }}>
+        {blocks.map((b) => (
+          <div key={b.label} style={{
+            background: colors.card, border: `1px solid ${colors.border}`,
+            borderRadius: 8, padding: "9px 12px", minWidth: 0,
+          }}>
+            <div style={{ fontSize: 11, color: colors.muted, marginBottom: 3 }}>{b.label}</div>
+            <div style={{
+              fontSize: 20, fontWeight: 700, color: b.tone,
+              fontVariantNumeric: "tabular-nums", lineHeight: 1.2,
+            }}>{b.main}</div>
+            <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 4, lineHeight: 1.6 }}>{b.sub}</div>
+            <div style={{
+              fontSize: 11, color: colors.axis, marginTop: 2, lineHeight: 1.55,
+            }}>{b.tail}</div>
+          </div>
+        ))}
+      </div>
+
+      <EChart option={opt} height={260} />
+
+      <Note colors={colors}>
+        蓝线是全 A 股 PE(TTM) 中位数（剔除亏损与 300 倍以上的极端值），
+        <span style={{ color: colors.up }}>红点</span>是 {sp?.n ?? 0} 个历史托底日。
+        它要回答的是一个容易被说反的问题：<strong>国家队真的是「跌到低估值才出手」吗？</strong>
+        <br />
+        按年看中位分位反而更清楚 —— {sp && sp.p75 - sp.p25 > 50
+          ? <span style={{ color: colors.text }}>
+              托底横跨了估值谱系的两端：2024 年是极端低估时的救市（中位个位数分位），
+              2025–2026 年则在估值中高位持续买入，更像是<strong>常态化护盘</strong>而不是抄底。
+              四分之一落在 20% 分位以下、另有近两成落在 80% 分位以上，没有一个统一的估值门槛。
+            </span>
+          : <span style={{ color: colors.text }}>
+              托底集中在相对集中的估值区间，说明存在某种隐性的估值门槛。
+            </span>}
+        <br />
+        <span style={{ color: colors.axis }}>
+          口径提醒：这里是<strong>全 A 股 PE 中位数的 5 年滚动分位</strong>，与市面上按中证 800
+          或等权口径算的「估值星级」并不等价，绝对值不可直接对照；看趋势与相对位置即可。
+          估值只说明「贵不贵」，不说明「会不会买」—— 与资金流叠加才有意义。
         </span>
       </Note>
     </div>
