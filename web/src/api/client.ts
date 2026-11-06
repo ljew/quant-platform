@@ -982,11 +982,21 @@ export interface EtfFlowForwardPoint {
   t60: number | null;
 }
 
+export interface EtfFlowForwardGroup {
+  label: string;
+  n: number;
+  t5: Omit<EtfFlowForwardStat, "worst" | "best" | "mean"> | null;
+  t20: Omit<EtfFlowForwardStat, "worst" | "best" | "mean"> | null;
+  t60: Omit<EtfFlowForwardStat, "worst" | "best" | "mean"> | null;
+}
+
 export interface EtfFlowForward {
   horizons: number[];
   stats: Record<string, EtfFlowForwardStat>;
   corr: Record<string, number | null>;
   points: EtfFlowForwardPoint[];
+  /** 按托底时的估值分位分组后的后市表现 */
+  by_valuation: EtfFlowForwardGroup[];
 }
 
 /** 全市场估值（滚动 5 年分位），供「估值 × 资金流」条件判断 */
