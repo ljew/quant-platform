@@ -60,6 +60,11 @@ services:
       # 代价是改代码即时生效、没有 review 环节 —— 语法错误会让容器起不来，
       # 出问题改回宿主机文件即可恢复，不必重建镜像。
       - ./backend/app:/app/app
+      # ⚠️ scripts 也必须挂载：verify_strategy / etl_daily / 公众号采集都在这里。
+      # 2026-11-06 发现只挂 app 的后果——宿主机改过的 collect_weread.py（凭证失效
+      # 快速退出）和 verify_strategy.py 都没进容器，跑的一直是镜像里的旧版本，
+      # 「改了没生效」排查了半天。挂上之后改脚本只需 restart，不必 rebuild。
+      - ./backend/scripts:/app/scripts
       # 前端产物也挂进来：改完 `cd web && npm run build` 只需 restart，
       # 不必重建镜像（原来 dist 烤在镜像里，每次改 UI 都要 build 一遍）。
       - ./web/dist:/frontend:ro
