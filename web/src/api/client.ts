@@ -1001,6 +1001,14 @@ export interface EtfFlowForward {
   points: EtfFlowForwardPoint[];
   /** 按托底时的估值分位分组后的后市表现 */
   by_valuation: EtfFlowForwardGroup[];
+  /** 稳健性：按「托底段」去重（连续多日只取首日）后的 T+60 */
+  dedup?: {
+    segments: number;
+    days: number;
+    low: { n: number; up: number; win: number; median: number; mean: number } | null;
+    mid: { n: number; up: number; win: number; median: number; mean: number } | null;
+    high: { n: number; up: number; win: number; median: number; mean: number } | null;
+  };
 }
 
 /** 全市场估值（滚动 5 年分位），供「估值 × 资金流」条件判断 */

@@ -1296,6 +1296,36 @@ def build_dashboard(db: Session) -> dict:
                                             if x[f"t{_n}"] is not None])
                 _by_val.append(_item)
             forward_block["by_valuation"] = _by_val
+
+            # ── 稳健性检验：按「托底段」去重 ──
+            # 连续多日托底（2024-01~02、2024-09 那种）会让 T+60 窗口大段重叠，
+            # 同一段行情被数好几遍，胜率会被放大。这里只取每段首日重算一遍。
+            _pos_map = {d: _i for _i, d in enumerate(dates)}
+            _sup_idx = [_pos_map[x["date"].replace("-", "")] for x in support_days
+                        if x["date"].replace("-", "") in _pos_map]
+            _seg_idx, _prev = [], -99
+            for _i in _sup_idx:
+                if _i - _prev > 1:
+                    _seg_idx.append(_i)
+                _prev = _i
+            _seg_dates = {dates[_i] for _i in _seg_idx}
+            _seg_pts = [x for x in fwd_pts
+                        if x["date"].replace("-", "") in _seg_dates]
+
+            def _win(group: list[dict], n: int) -> dict | None:
+                vals = [x[f"t{n}"] for x in group if x[f"t{n}"] is not None]
+                return _grp(vals)
+
+            forward_block["dedup"] = {
+                "segments": len(_seg_idx),
+                "days": len(_seg_pts),
+                "low": _win([x for x in _seg_pts if _pct_of.get(x["date"]) is not None
+                             and _pct_of[x["date"]] <= 30], 60),
+                "mid": _win([x for x in _seg_pts if _pct_of.get(x["date"]) is not None
+                             and 30 < _pct_of[x["date"]] <= 70], 60),
+                "high": _win([x for x in _seg_pts if _pct_of.get(x["date"]) is not None
+                              and _pct_of[x["date"]] > 70], 60),
+            }
         else:
             valuation["support_marks"] = []
             valuation["support_pct"] = None

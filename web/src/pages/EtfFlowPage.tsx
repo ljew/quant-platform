@@ -870,6 +870,34 @@ function ForwardCard({
               低估值组的 T+60 胜率与中位收益都明显高于高估值组。
               中段样本很少（n 见右列），只作参考，重点看两端。
             </div>
+
+            {(() => {
+              const dd = forward.dedup;
+              if (!dd || !dd.low || !dd.high) return null;
+              return (
+                <div style={{
+                  marginTop: 7, padding: "7px 10px",
+                  background: colors.tableStripe, borderRadius: 6,
+                  fontSize: 11.5, lineHeight: 1.75, color: colors.muted,
+                }}>
+                  <b style={{ color: colors.text }}>稳健性检验 · 按托底段去重</b>
+                  <span style={{ color: colors.axis }}>
+                    （{dd.segments} 段，连续多日只取首日，避免同一段行情被重复计数）
+                  </span>
+                  <br />
+                  低估值 <b style={{ color: colors.up }}>{dd.low.win.toFixed(0)}%</b>
+                  <span style={{ color: colors.axis }}>（n={dd.low.n}，中位 {sgn(dd.low.median)}{f2(dd.low.median)}%）</span>
+                  {" · "}
+                  高估值 <b style={{ color: colors.down }}>{dd.high.win.toFixed(0)}%</b>
+                  <span style={{ color: colors.axis }}>（n={dd.high.n}，中位 {sgn(dd.high.median)}{f2(dd.high.median)}%）</span>
+                  <br />
+                  <span style={{ color: colors.text }}>
+                    方向不变，但样本掉到 {dd.low.n}/{dd.high.n}，两者 95% 置信区间
+                    <strong>已经重叠</strong> —— 这只能当假设看，还不能当规则用。
+                  </span>
+                </div>
+              );
+            })()}
           </div>
         );
       })()}
