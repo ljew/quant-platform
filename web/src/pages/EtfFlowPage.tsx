@@ -119,7 +119,7 @@ export default function EtfFlowPage() {
     );
   }
 
-  const { meta, nsi, minute, support, daily, category, intraday_15m, summary, etf_detail } = data;
+  const { meta, nsi, minute, support, daily, category, intraday_15m, summary, etf_detail, focus } = data;
   const empty = meta.universe.length === 0;
 
   return (
@@ -215,6 +215,7 @@ export default function EtfFlowPage() {
       />
       <MinuteCard meta={meta} minute={minute} colors={colors} mode={mode} />
       <CumCard meta={meta} minute={minute} colors={colors} mode={mode} />
+      <TailCard tail={minute.tail} asOf={meta.as_of} colors={colors} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
         <SlotCard
           title="历史放量日 · 15 分钟形态"
@@ -239,7 +240,7 @@ export default function EtfFlowPage() {
         />
       </div>
 
-      <EtfDetailTable detail={etf_detail} asOf={meta.as_of} colors={colors} />
+      <EtfDetailTable detail={etf_detail} focus={focus} asOf={meta.as_of} colors={colors} />
 
       {/* ═══ 三、ETF 托底信号 ═══ */}
       <SectionTitle
@@ -248,6 +249,7 @@ export default function EtfFlowPage() {
         colors={colors}
       />
       <SupportCard support={support} meta={meta} colors={colors} mode={mode} />
+      <ForwardCard forward={support.forward} colors={colors} />
 
       {/* ═══ 四、日度资金全景 ═══ */}
       <SectionTitle
@@ -274,6 +276,20 @@ export default function EtfFlowPage() {
         <div>
           · <b>与 NSI 的分工</b>：NSI 是 5 只核心 ETF 的份额信号（T+1 执行），本页面是 20 只 /
           12 类宽基的观察视图。两者数据同源、口径不同，<b>不可互相替代</b>。
+        </div>
+        <div>
+          · <b>为什么用份额而不是持仓</b>：2026 年起 ETF 前十大持有人数据不再对外披露，
+          季报/年报的持仓路径已经断了。<b>每日份额变化是目前唯一能当天（T+1）看到国家队足迹的公开口径</b>，
+          也是 2024 年以来各类测算净买入额的通用算法（Δ份额 × 区间平均净值）的日频化版本。
+        </div>
+        <div>
+          · <b>托底之后</b>是同一指数口径的<b>事后统计</b>，不是可交易回测：未扣成本与滑点、未做样本外，
+          连续托底日的持有期还会互相重叠（样本不独立）。它只用来校准预期，不构成收益承诺；
+          仓位依据仍以顶部 NSI 为准。
+        </div>
+        <div>
+          · <b>尾盘集中度</b> = 14:31–15:00 成交额 ÷ 全天成交额，与过去 20 个交易日均值对比。
+          这是「当日净流入」公布之前唯一可用的前置指标，但同样只反映量能，<b>不区分买卖方向</b>。
         </div>
         <div>
           · 样本池 {meta.universe.length} 只，按类别内「规模排名 × 0.6 + 成交额排名 × 0.4」自动筛选；
@@ -452,9 +468,10 @@ function SummaryCard({
 
 /* ── 单只 ETF 当日表现 ──────────────────────────────────────────── */
 function EtfDetailTable({
-  detail, asOf, colors,
+  detail, focus, asOf, colors,
 }: {
   detail: EtfFlowDashboard["etf_detail"] | undefined;
+  focus: EtfFlowDashboard["focus"] | undefined;
   asOf: string;
   colors: ReturnType<typeof useTheme>["colors"];
 }) {
@@ -467,6 +484,36 @@ function EtfDetailTable({
         tag={`${asOf} · 按成交额降序`}
         colors={colors}
       />
+
+      {focus && focus.today.length > 0 && (
+        <div style={{
+          display: "flex", gap: 16, flexWrap: "wrap", alignItems: "baseline",
+          fontSize: 12, color: colors.muted, margin: "2px 0 8px",
+          paddingBottom: 8, borderBottom: `1px solid ${colors.border}`,
+        }}>
+          <span>
+            今日焦点 <b style={{ color: colors.text }}>{focus.today[0].name}</b>
+            <span style={{ color: colors.axis }}> {focus.today[0].amount} 亿 · {focus.today[0].share}%</span>
+          </span>
+          <span>
+            {focus.top1_changed
+              ? `较 ${focus.prev_date.slice(5)} 换标的（原为 ${focus.prev[0]?.name ?? "—"}）`
+              : "与上一交易日同一焦点"}
+          </span>
+          <span>
+            top3 重合 <b style={{ color: focus.overlap >= 2 ? colors.text : colors.down }}>
+              {focus.overlap}/3
+            </b>
+          </span>
+          <span>
+            集中度 HHI <b style={{ color: colors.text }}>{focus.hhi == null ? "—" : focus.hhi.toFixed(3)}</b>
+            {focus.hhi_prev != null && (
+              <span style={{ color: colors.axis }}>（前日 {focus.hhi_prev.toFixed(3)}）</span>
+            )}
+          </span>
+        </div>
+      )}
+
       <div style={{ overflowX: "auto", marginTop: 8 }}>
         <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
           <thead>
@@ -512,9 +559,264 @@ function EtfDetailTable({
       </div>
       <Note colors={colors} label="这张表在讲什么">
         上面两张分钟图看的是 20 只 ETF 的<strong>整体合力</strong>，这张表把它拆开、看<strong>到底是谁在放量</strong>。
+        顶部的「焦点切换」是另一层信息：国家队不盯着一只买，经常今天买 A、明天买 B，
+        所以 <strong>top3 每天大幅换人</strong>本身就是它的痕迹；反过来连续几天压在同一只上，
+        更像是单一渠道的持续申购。
         成交额最大的一只往往就是当天资金的焦点，占比直接读出它一家占了多少权重；涨跌幅则告诉你资金是
         「越跌越买」还是「追涨」——两者组合起来，比单看总量更能判断这波资金是防御性的托底，
         还是进攻性的抢筹。
+      </Note>
+    </div>
+  );
+}
+
+/* ── 尾盘集中度 ─────────────────────────────────────────────────── */
+function TailCard({
+  tail, asOf, colors,
+}: {
+  tail: EtfFlowDashboard["minute"]["tail"];
+  asOf: string;
+  colors: ReturnType<typeof useTheme>["colors"];
+}) {
+  const opt = useMemo<EChartsOption>(() => {
+    const hist = tail.series.map((x) => ({ label: x.date.slice(5), ratio: x.ratio, hot: false }));
+    const pts = tail.today != null
+      ? [...hist, { label: "今日", ratio: tail.today, hot: true }]
+      : hist;
+    return {
+      grid: { left: 42, right: 12, top: 14, bottom: 24 },
+      tooltip: {
+        trigger: "axis",
+        backgroundColor: colors.card, borderColor: colors.border,
+        textStyle: { color: colors.text, fontSize: 12 },
+        formatter: (ps) => {
+          const arr = ps as unknown as { name: string; value: number }[];
+          const a = arr[0];
+          return a ? `${a.name}｜尾盘占比 ${Number(a.value).toFixed(2)}%` : "";
+        },
+      },
+      xAxis: {
+        type: "category",
+        data: pts.map((x) => x.label),
+        axisLine: { lineStyle: { color: colors.border } },
+        axisTick: { show: false },
+        axisLabel: {
+          color: colors.axis, fontSize: 9.5, hideOverlap: true,
+          interval: (i: number, _v: string) => i % 4 === 0 || i === pts.length - 1,
+        },
+      },
+      yAxis: {
+        type: "value",
+        axisLabel: { color: colors.axis, fontSize: 9.5, formatter: "{value}%" },
+        splitLine: { lineStyle: { color: colors.border } },
+        splitNumber: 3,
+      },
+      series: [{
+        type: "bar", barWidth: "58%",
+        data: pts.map((x) => ({
+          value: x.ratio,
+          itemStyle: {
+            color: x.hot ? colors.accent : rgba(colors.accent, 0.26),
+            borderRadius: [2, 2, 0, 0],
+          },
+        })),
+        markLine: tail.avg20 != null ? {
+          silent: true, symbol: "none", animation: false,
+          lineStyle: { color: colors.muted, type: "dashed", width: 1 },
+          label: { show: false },
+          data: [{ yAxis: tail.avg20 }],
+        } : undefined,
+      }],
+    };
+  }, [tail, colors]);
+
+  const mult = tail.mult;
+  const tone = mult == null ? colors.text : mult >= 1.3 ? colors.up : mult <= 0.8 ? colors.down : colors.text;
+
+  return (
+    <div style={cardStyle(colors)}>
+      <CardHead
+        title="尾盘集中度"
+        tag={`${tail.window} 成交额 ÷ 全天 · 虚线为 20 日均值`}
+        colors={colors}
+      />
+      <div style={{
+        display: "grid", gridTemplateColumns: "232px 1fr",
+        gap: 18, alignItems: "center", marginTop: 2,
+      }}>
+        <div>
+          <div style={{ fontSize: 11, color: colors.muted, marginBottom: 2 }}>当日尾盘占比</div>
+          <div style={{
+            fontSize: 30, fontWeight: 700, lineHeight: 1.1, color: tone,
+            fontVariantNumeric: "tabular-nums",
+          }}>
+            {tail.today == null ? "—" : `${tail.today.toFixed(2)}%`}
+          </div>
+          <div style={{ fontSize: 12, color: colors.muted, marginTop: 7, lineHeight: 1.7 }}>
+            20 日均值 {tail.avg20 == null ? "—" : `${tail.avg20.toFixed(2)}%`}
+            {mult != null && (
+              <> · <b style={{ color: tone, fontSize: 13 }}>{mult.toFixed(2)}×</b></>
+            )}
+          </div>
+          <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 3 }}>
+            {asOf} · 前 {tail.series.length} 个交易日对照
+          </div>
+        </div>
+        <EChart option={opt} height={168} />
+      </div>
+      <Note colors={colors}>
+        份额要等 T+1 才有，盘中唯一能当天就用的就是量能结构。国家队进场的典型形态是
+        <strong>尾盘一根放量柱</strong> —— 最后 30 分钟的成交额占比会明显抬升。
+        这里把它压成一个数：<strong>14:31–15:00 成交额 ÷ 全天成交额</strong>，再和过去 20 个交易日的均值比。
+        倍数明显大于 1 说明资金在收盘前集中进场；明显小于 1 说明尾盘在缩，连护盘痕迹都不明显。
+        这是「当日净流入」公布之前，唯一能替代它的前置指标。
+      </Note>
+    </div>
+  );
+}
+
+/* ── 托底之后：T+n 前瞻收益 ─────────────────────────────────────── */
+function ForwardCard({
+  forward, colors,
+}: {
+  forward: EtfFlowDashboard["support"]["forward"];
+  colors: ReturnType<typeof useTheme>["colors"];
+}) {
+  const opt = useMemo<EChartsOption>(() => {
+    const pts = forward.points.filter((x) => x.t20 != null);
+    return {
+      grid: { left: 54, right: 20, top: 22, bottom: 34 },
+      tooltip: {
+        backgroundColor: colors.card, borderColor: colors.border,
+        textStyle: { color: colors.text, fontSize: 12 },
+        formatter: (ps) => {
+          const arr = ps as unknown as { data: { _p?: EtfFlowDashboard["support"]["forward"]["points"][number] } }[];
+          const x = arr[0]?.data?._p;
+          if (!x) return "";
+          const c20 = (x.t20 ?? 0) >= 0 ? colors.up : colors.down;
+          const c60 = (x.t60 ?? 0) >= 0 ? colors.up : colors.down;
+          return `<div style="font-size:11px;color:${colors.muted};margin-bottom:3px">${x.date}</div>`
+            + `净流入 <b>${f1(x.net_inflow)}</b> 亿 · 当日指数 ${sgn(x.index_chg)}${f2(x.index_chg)}%<br/>`
+            + `T+20 <b style="color:${c20}">${sgn(x.t20 ?? 0)}${f2(x.t20)}%</b>`
+            + (x.t60 != null ? ` · T+60 <b style="color:${c60}">${sgn(x.t60)}${f2(x.t60)}%</b>` : "");
+        },
+      },
+      xAxis: {
+        type: "value",
+        name: "净流入（亿元）", nameLocation: "middle", nameGap: 22,
+        nameTextStyle: { color: colors.axis, fontSize: 10 },
+        axisLabel: { color: colors.axis, fontSize: 9.5 },
+        axisLine: { lineStyle: { color: colors.border } },
+        splitLine: { show: false },
+      },
+      yAxis: {
+        type: "value",
+        name: "T+20 收益 %", nameLocation: "end", nameGap: 8,
+        nameTextStyle: { color: colors.axis, fontSize: 10, align: "left" },
+        axisLabel: { color: colors.axis, fontSize: 9.5, formatter: "{value}%" },
+        splitLine: { lineStyle: { color: colors.border } },
+        splitNumber: 4,
+      },
+      series: [{
+        type: "scatter", symbolSize: 8,
+        data: pts.map((x) => ({
+          value: [x.net_inflow, x.t20],
+          _p: x,
+          itemStyle: {
+            color: (x.t20 ?? 0) >= 0 ? rgba(colors.up, 0.8) : rgba(colors.down, 0.8),
+            borderColor: colors.card, borderWidth: 0.5,
+          },
+        })),
+        markLine: {
+          silent: true, symbol: "none", animation: false,
+          lineStyle: { color: colors.muted, type: "dashed", width: 1, opacity: 0.7 },
+          label: { show: false },
+          data: [{ yAxis: 0 }],
+        },
+      }],
+    };
+  }, [forward, colors]);
+
+  const hs = forward.horizons;
+  const corr20 = forward.corr["20"] ?? forward.corr[20 as unknown as string];
+
+  return (
+    <div style={cardStyle(colors)}>
+      <CardHead
+        title={`托底之后：${forward.points.length} 个托底日的后市`}
+        tag="同一指数口径的事后统计 · 非可交易回测"
+        colors={colors}
+      />
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, margin: "2px 0 12px" }}>
+        {hs.map((h) => {
+          const st = forward.stats[String(h)];
+          if (!st || !st.n) return null;
+          const tone = st.win >= 55 ? colors.up : st.win <= 45 ? colors.down : colors.text;
+          return (
+            <div key={h} style={{
+              background: colors.card, border: `1px solid ${colors.border}`,
+              borderRadius: 8, padding: "9px 12px",
+            }}>
+              <div style={{ fontSize: 11, color: colors.muted, marginBottom: 3 }}>
+                托底后 {h} 个交易日
+              </div>
+              <div style={{
+                fontSize: 20, fontWeight: 700, color: tone,
+                fontVariantNumeric: "tabular-nums", lineHeight: 1.2,
+              }}>
+                {st.win.toFixed(1)}%
+                <span style={{ fontSize: 11, fontWeight: 500, color: colors.muted, marginLeft: 3 }}>
+                  上涨
+                </span>
+              </div>
+              <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 4, lineHeight: 1.6 }}>
+                中位 <b style={{ color: st.median >= 0 ? colors.up : colors.down }}>{sgn(st.median)}{f2(st.median)}%</b>
+                {" · "}均值 {sgn(st.mean)}{f2(st.mean)}%
+                <br />
+                区间 {f2(st.worst)}% ~ {sgn(st.best)}{f2(st.best)}% · n={st.n}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 236px", gap: 16, alignItems: "center" }}>
+        <EChart option={opt} height={252} />
+        <div style={{ fontSize: 12, color: colors.muted, lineHeight: 1.9 }}>
+          <div style={{ fontWeight: 600, color: colors.text, marginBottom: 4 }}>
+            流入规模重要吗？
+          </div>
+          与 T+20 收益的相关系数
+          <b style={{ color: colors.text, marginLeft: 4 }}>
+            {corr20 == null ? "—" : corr20.toFixed(2)}
+          </b>
+          <div style={{ marginTop: 2 }}>
+            {corr20 == null
+              ? "样本不足，无法判断。"
+              : Math.abs(corr20) < 0.2
+                ? "几乎无关 —— 托底金额大小不预示涨幅，别按「买得多就涨得多」推。"
+                : Math.abs(corr20) < 0.45
+                  ? "弱相关 —— 流入大的那次后市略好，但解释力很有限。"
+                  : "明显相关 —— 流入规模可作为后市强弱的参考。"}
+          </div>
+          <div style={{ marginTop: 8, color: colors.axis, fontSize: 11.5 }}>
+            横轴 = 当日净流入，纵轴 = T+20 收益。虚线是 0 轴，点在虚线上方即为上涨。
+          </div>
+        </div>
+      </div>
+
+      <Note colors={colors}>
+        这张图回答的是「托底之后会怎样」，而前面几张只回答「今天像不像托底」。
+        三个横截面各有含义：<strong>T+5 看情绪</strong>（通常还没走出来）、
+        <strong>T+20 看资金落地</strong>、<strong>T+60 看趋势是否成立</strong>。
+        横截面越长，样本越少（最近的托底日还没有 60 个交易日的后市数据），所以每格都标了 n。
+        <br />
+        <span style={{ color: colors.axis }}>
+          注意这是<strong>同一指数口径的事后统计</strong>，不是可交易策略回测：没扣成本、没算滑点、
+          没做样本外；连续托底日的持有期还会互相重叠，样本并不独立。
+          它的用途是校准预期，不能当收益承诺，更不该据此定仓位 —— 那件事归 NSI。
+        </span>
       </Note>
     </div>
   );

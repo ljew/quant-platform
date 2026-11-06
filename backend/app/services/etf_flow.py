@@ -696,7 +696,7 @@ def _read_nsi() -> dict:
 
 
 def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
-                   sup_n, as_of, is_live) -> dict:
+                   sup_n, as_of, is_live, tail_mult=None, tail_today=None) -> dict:
     """把四个维度（量能 / 资金方向 / 指数 / NSI 信号）压成一段人话结论。
 
     为什么规则驱动而不是接 LLM：这个判断每天只依赖五个数字，规则完全可解释、
@@ -725,10 +725,22 @@ def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
         vol = f"20 只 ETF 今日成交 {turnover:.0f} 亿，与 20 日均值基本持平（{mult:.2f} 倍）"
     if quantile:
         vol += f"；放在 {sup_n} 个历史托底日里排 {quantile:.0f} 分位"
+    # 尾盘量能是「当日净流入」公布前唯一可用的前置指标，必须进结论而不是只挂个图
+    if tail_mult is not None:
+        tail_word = ("收盘前明显集中放量" if tail_mult >= 1.3
+                     else "尾盘明显缩量" if tail_mult <= 0.8 else "尾盘量能正常")
+        vol += (f"；尾盘（14:31–15:00）占全天 {tail_today:.1f}%，"
+                f"为 20 日均值的 {tail_mult:.2f} 倍，{tail_word}" if tail_today is not None
+                else f"；尾盘量能为 20 日均值的 {tail_mult:.2f} 倍，{tail_word}")
 
     # —— 资金方向 ——
     if share_pending:
         dirn = "净流入待公布（份额由交易所 T 日盘后清算，通常次日盘前可见），当前只能用成交额做前置判断"
+        if tail_mult is not None:
+            if tail_mult >= 1.3:
+                dirn += "。不过尾盘放量集中在收盘前，形态上更像有资金介入"
+            elif tail_mult <= 0.8:
+                dirn += "。尾盘反而在缩量，护盘痕迹不明显"
     elif big_in:
         dirn = f"申赎口径净流入 {net_in:+.0f} 亿，已越过 {SUPPORT_THRESHOLD:.0f} 亿的托底门槛"
     elif net_in >= 0:
@@ -1027,6 +1039,35 @@ def build_dashboard(db: Session) -> dict:
         return [round(float(pd.Series([p["chg"][i] for p in group]).mean()), 2)
                 for i in range(16)]
 
+    # ── 尾盘集中度：国家队进场最典型的形态是尾盘一根放量柱 ──
+    # 份额要等 T+1，盘中唯一能当天就用的就是量能结构。把「最后 30 分钟占全天成交额
+    # 的比例」和过去 20 日均值比，倍数明显抬升 = 资金在收盘前集中进场。
+    def _tail_of(arr) -> float | None:
+        if not arr or len(arr) < 240:
+            return None
+        seg = arr[210:240]                      # 14:31–15:00
+        if any(v is None for v in seg):
+            return None                          # 采样没覆盖到尾盘就不算，别用残缺数据编比例
+        tot = sum(v for v in arr if v is not None)
+        if tot <= 0:
+            return None
+        return round(sum(seg) / tot * 100, 2)
+
+    tail_today = _tail_of(series)
+    tail_hist = [(d, _tail_of(day_amt(d))) for d in hist_before]
+    tail_hist = [(d, v) for d, v in tail_hist if v is not None]
+    tail_avg = (round(float(pd.Series([v for _, v in tail_hist]).mean()), 2)
+                if tail_hist else None)
+    tail = {
+        "window": "14:31–15:00",
+        "today": tail_today,
+        "avg20": tail_avg,
+        "mult": (round(tail_today / tail_avg, 2)
+                 if tail_today and tail_avg else None),
+        "series": [{"date": f"{d[:4]}-{d[4:6]}-{d[6:]}", "ratio": v}
+                   for d, v in tail_hist[-20:]],
+    }
+
     # ── 托底日 ──
     def excluded(d: str) -> bool:
         return any(a <= d <= b for a, b, _ in SUPPORT_EXCLUDED)
@@ -1041,6 +1082,60 @@ def build_dashboard(db: Session) -> dict:
         "index": round(float(r.index_close), 2) if pd.notna(r.index_close) else None,
         "index_chg": round(float(r.index_chg), 2) if pd.notna(r.index_chg) else 0.0,
     } for r in sup_rows.itertuples()]
+
+    # ── 托底之后：历史上托底日的后市表现 ──
+    # 看板原来只能回答「今天像不像托底」，回答不了「托底之后会怎样」。
+    # 用全部交易日的上证收盘算 T+n 前瞻收益，把「观察」升级成有胜率、有尾部的参照。
+    #
+    # ⚠️ 这是**同一指数口径的事后统计**，不是可交易策略回测：没扣成本、没算滑点、
+    # 没做样本外，样本还有重叠（连续托底日的持有期互相覆盖）。只用来校准预期，
+    # 不能当收益率承诺，更不能据此定仓位 —— 那件事归 NSI。
+    _pos = {d: i for i, d in enumerate(dates)}
+    _close = flow["index_close"].tolist() if len(flow) else []
+
+    def _fwd(d: str, n: int) -> float | None:
+        i = _pos.get(d)
+        if i is None or not _close or i + n >= len(_close):
+            return None
+        a, b = _close[i], _close[i + n]
+        if pd.isna(a) or pd.isna(b) or not a:
+            return None
+        return round((float(b) / float(a) - 1) * 100, 2)
+
+    FWD_HORIZONS = (5, 20, 60)
+    fwd_pts = []
+    for d in support_days:
+        row = {"date": d["date"], "net_inflow": d["net_inflow"],
+               "index_chg": d["index_chg"]}
+        key = d["date"].replace("-", "")
+        for n in FWD_HORIZONS:
+            row[f"t{n}"] = _fwd(key, n)
+        fwd_pts.append(row)
+
+    fwd_stats: dict[str, dict] = {}
+    fwd_corr: dict[str, float | None] = {}
+    for n in FWD_HORIZONS:
+        vals = [p[f"t{n}"] for p in fwd_pts if p[f"t{n}"] is not None]
+        if vals:
+            sr = pd.Series(vals)
+            fwd_stats[str(n)] = {
+                "n": len(vals),
+                "up": int((sr > 0).sum()),
+                "win": round(float((sr > 0).mean() * 100), 1),
+                "mean": round(float(sr.mean()), 2),
+                "median": round(float(sr.median()), 2),
+                "worst": round(float(sr.min()), 2),
+                "best": round(float(sr.max()), 2),
+            }
+            pairs = [(p["net_inflow"], p[f"t{n}"]) for p in fwd_pts
+                     if p[f"t{n}"] is not None]
+            fwd_corr[str(n)] = (round(float(pd.Series([a for a, _ in pairs])
+                                           .corr(pd.Series([b for _, b in pairs]))), 3)
+                                if len(pairs) >= 5 else None)
+        else:
+            fwd_stats[str(n)] = {"n": 0, "up": 0, "win": 0.0, "mean": 0.0,
+                                 "median": 0.0, "worst": 0.0, "best": 0.0}
+            fwd_corr[str(n)] = None
 
     # ── 分类矩阵 ──
     crows = db.execute(select(
@@ -1101,6 +1196,50 @@ def build_dashboard(db: Session) -> dict:
             })
         etf_detail.sort(key=lambda x: -x["amount"])
 
+    # ── 焦点切换：国家队「每天挑不同的 ETF 买」的可见痕迹 ──
+    # 单看总量看不出这件事，但把当日成交额 top3 与前一日 top3 一比就出来了：
+    # 重合度低 = 资金在换标的，重合度高 = 连续几天压在同一类上。
+    def _top3(d: str) -> list[dict]:
+        if not d:
+            return []
+        rows = db.execute(select(EtfDailyBar.symbol, EtfDailyBar.amount)
+                          .where(EtfDailyBar.trade_date == _to_date(d))).all()
+        if not rows:
+            return []
+        tot = sum(float(r.amount or 0) for r in rows) or 1.0
+        ranked = sorted(rows, key=lambda r: -(r.amount or 0))[:3]
+        return [{"symbol": r.symbol,
+                 "name": u.get(r.symbol, {}).get("name", r.symbol),
+                 "amount": round(float(r.amount or 0), 1),
+                 "share": round(float(r.amount or 0) / tot * 100, 1)}
+                for r in ranked]
+
+    def _hhi(d: str) -> float | None:
+        """成交额集中度（0–1，越大越集中在少数几只）。"""
+        if not d:
+            return None
+        rows = db.execute(select(EtfDailyBar.amount)
+                          .where(EtfDailyBar.trade_date == _to_date(d))).all()
+        vals = [float(r.amount or 0) for r in rows]
+        tot = sum(vals)
+        if tot <= 0:
+            return None
+        return round(sum((v / tot) ** 2 for v in vals), 4)
+
+    f_today, f_prev = _top3(active), _top3(cmp_prev)
+    focus = {
+        "today": f_today,
+        "prev": f_prev,
+        "prev_date": (f"{cmp_prev[:4]}-{cmp_prev[4:6]}-{cmp_prev[6:]}"
+                      if cmp_prev else ""),
+        "overlap": len({x["symbol"] for x in f_today} &
+                       {x["symbol"] for x in f_prev}),
+        "top1_changed": bool(f_today and f_prev and
+                             f_today[0]["symbol"] != f_prev[0]["symbol"]),
+        "hhi": _hhi(active),
+        "hhi_prev": _hhi(cmp_prev),
+    }
+
     # ── 顶部总结 ──
     nsi_data = _read_nsi()
     # 份额 T+1 才可见。当日若还没有份额，flow 里的 net_inflow 是表默认值 0，
@@ -1148,7 +1287,7 @@ def build_dashboard(db: Session) -> dict:
         t_turn, avg_turn20, q_t, t_net, t_chg, nsi_data,
         len(support_days),
         f"{active[:4]}-{active[4:6]}-{active[6:]}" if active else "",
-        live_now)
+        live_now, tail.get("mult"), tail.get("today"))
 
     return {
         "meta": {
@@ -1171,6 +1310,7 @@ def build_dashboard(db: Session) -> dict:
         "nsi": nsi_data,
         "summary": summary,
         "etf_detail": etf_detail,
+        "focus": focus,
         "minute": {
             "labels": LABELS,
             "count": cnt,
@@ -1183,6 +1323,7 @@ def build_dashboard(db: Session) -> dict:
             "avg20_cum": avg_cum,
             "last": idx_last,
             "prev_close": idx_prev,
+            "tail": tail,
         },
         "intraday_15m": {
             "labels": SLOT_LABELS,
@@ -1205,6 +1346,14 @@ def build_dashboard(db: Session) -> dict:
             "threshold": SUPPORT_THRESHOLD,
             "sample_count": len(support_days),
             "raw_count": raw_n,
+            # 托底日之后的表现：每个 horizon 的胜率／中位／尾部，以及流入规模与
+            # 后市涨幅的相关系数（没关系本身也是结论）
+            "forward": {
+                "horizons": list(FWD_HORIZONS),
+                "stats": fwd_stats,
+                "corr": fwd_corr,
+                "points": fwd_pts,
+            },
         },
         "daily": {
             "dates": [f"{d[:4]}-{d[4:6]}-{d[6:]}" for d in dates],
