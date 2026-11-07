@@ -1123,6 +1123,16 @@ def build_dashboard(db: Session) -> dict:
     except Exception as _e:  # noqa: BLE001
         logger.warning("补算最新净流入失败：%s", str(_e)[:120])
 
+    # 一档名单同时被三处用到：托底后收益基准、结论卡档位、盘中量能接线。
+    # 提前算一次，避免后面重复调用 build_elasticity（每次都要读 1.7 万行日线）。
+    from app.services import etf_elasticity
+    try:
+        elasticity = etf_elasticity.build_elasticity(db)
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("弹性分层计算失败：%s", str(_e)[:160])
+        elasticity = {"available": False}
+    tier1_syms: list[str] = list(elasticity.get("tier1") or [])
+
     # ── 日度基础 ──
     flow_rows = db.execute(select(
         EtfFlowDaily.trade_date, EtfFlowDaily.turnover,
@@ -1366,17 +1376,51 @@ def build_dashboard(db: Session) -> dict:
     } for r in sup_rows.itertuples()]
 
     # ── 托底之后：历史上托底日的后市表现 ──
-    # 看板原来只能回答「今天像不像托底」，回答不了「托底之后会怎样」。
-    # 用全部交易日的上证收盘算 T+n 前瞻收益，把「观察」升级成有胜率、有尾部的参照。
+    # 2026-11-07 复核修正：主基准从「上证综指」换成「一档等权净值」。
+    # 上证含大量小盘股，与国家队实际买入的大盘宽基 ETF 不是同一类资产；
+    # 实测 T+20 胜率口径差异可达 4–11pp（上证 67.3% / 一档等权 63.5% /
+    # 510300 55.8%）。三个基准全部输出并排展示，避免「挑一个好看的报」。
     #
-    # ⚠️ 这是**同一指数口径的事后统计**，不是可交易策略回测：没扣成本、没算滑点、
-    # 没做样本外，样本还有重叠（连续托底日的持有期互相覆盖）。只用来校准预期，
-    # 不能当收益率承诺，更不能据此定仓位 —— 那件事归 NSI。
+    # ⚠️ 仍是事后统计，不是可交易策略回测：没扣成本、没算滑点、没做样本外，
+    # 样本还重叠（连续托底日持有期互相覆盖）。只用来校准预期，不能据此定仓位。
     _pos = {d: i for i, d in enumerate(dates)}
     _close = flow["index_close"].tolist() if len(flow) else []
+    _fdates = (pd.to_datetime(flow["trade_date"], format="%Y%m%d")
+               if len(flow) else pd.Series(dtype="datetime64[ns]"))
 
-    def _fwd(d: str, n: int) -> float | None:
-        i = _pos.get(d)
+    _brows = db.execute(select(
+        EtfDailyBar.symbol, EtfDailyBar.trade_date, EtfDailyBar.pct_chg)).all()
+    _bdf = pd.DataFrame(_brows, columns=["sym", "d", "chg"])
+    if len(_bdf):
+        _bdf["d"] = pd.to_datetime(_bdf["d"])
+        _bdf["r"] = pd.to_numeric(_bdf["chg"], errors="coerce").fillna(0) / 100
+
+    def _nav(syms: list[str]) -> pd.Series:
+        """按日横截面等权收益累乘成净值。"""
+        if not syms or not len(_bdf):
+            return pd.Series(dtype=float)
+        sub = _bdf[_bdf["sym"].isin(syms)]
+        return ((1 + sub.groupby("d")["r"].mean()).cumprod()
+                if len(sub) else pd.Series(dtype=float))
+
+    nav_main = _nav(tier1_syms)
+    main_label = f"一档 {len(tier1_syms)} 只等权净值" if len(tier1_syms) else ""
+    if nav_main.empty:
+        # 一档算不出来时不能让整块收益统计变空，退回最核心的沪深300 ETF
+        nav_main = _nav(["510300.SH"])
+        main_label = "510300（一档不可用时的兜底）"
+    nav_core = _nav(["510300.SH"])
+
+    def _r_nav(nav: pd.Series, i: int | None, n: int) -> float | None:
+        if i is None or nav.empty or i + n >= len(_fdates):
+            return None
+        a = nav[nav.index <= _fdates.iloc[i]]
+        b = nav[nav.index <= _fdates.iloc[i + n]]
+        if not len(a) or not len(b) or a.iloc[-1] <= 0:
+            return None
+        return round((float(b.iloc[-1]) / float(a.iloc[-1]) - 1) * 100, 2)
+
+    def _r_ix(i: int | None, n: int) -> float | None:
         if i is None or not _close or i + n >= len(_close):
             return None
         a, b = _close[i], _close[i + n]
@@ -1389,44 +1433,63 @@ def build_dashboard(db: Session) -> dict:
     for d in support_days:
         row = {"date": d["date"], "net_inflow": d["net_inflow"],
                "index_chg": d["index_chg"]}
-        key = d["date"].replace("-", "")
+        i = _pos.get(d["date"].replace("-", ""))
         for n in FWD_HORIZONS:
-            row[f"t{n}"] = _fwd(key, n)
+            row[f"t{n}"] = _r_nav(nav_main, i, n)    # 主：一档等权
+            row[f"ix{n}"] = _r_ix(i, n)              # 对照：上证综指
+            row[f"hs{n}"] = _r_nav(nav_core, i, n)   # 对照：510300
         fwd_pts.append(row)
 
-    fwd_stats: dict[str, dict] = {}
+    def _stats_of(prefix: str) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        for n in FWD_HORIZONS:
+            vals = [p[f"{prefix}{n}"] for p in fwd_pts
+                    if p[f"{prefix}{n}"] is not None]
+            if vals:
+                sr = pd.Series(vals)
+                out[str(n)] = {
+                    "n": len(vals), "up": int((sr > 0).sum()),
+                    "win": round(float((sr > 0).mean() * 100), 1),
+                    "mean": round(float(sr.mean()), 2),
+                    "median": round(float(sr.median()), 2),
+                    "worst": round(float(sr.min()), 2),
+                    "best": round(float(sr.max()), 2),
+                }
+            else:
+                out[str(n)] = {"n": 0, "up": 0, "win": 0.0, "mean": 0.0,
+                               "median": 0.0, "worst": 0.0, "best": 0.0}
+        return out
+
+    fwd_stats = _stats_of("t")
+    index_stats = _stats_of("ix")
+    core_stats = _stats_of("hs")
+
     fwd_corr: dict[str, float | None] = {}
-    forward_block: dict = {}
     for n in FWD_HORIZONS:
-        vals = [p[f"t{n}"] for p in fwd_pts if p[f"t{n}"] is not None]
-        if vals:
-            sr = pd.Series(vals)
-            fwd_stats[str(n)] = {
-                "n": len(vals),
-                "up": int((sr > 0).sum()),
-                "win": round(float((sr > 0).mean() * 100), 1),
-                "mean": round(float(sr.mean()), 2),
-                "median": round(float(sr.median()), 2),
-                "worst": round(float(sr.min()), 2),
-                "best": round(float(sr.max()), 2),
-            }
-            pairs = [(p["net_inflow"], p[f"t{n}"]) for p in fwd_pts
-                     if p[f"t{n}"] is not None]
-            fwd_corr[str(n)] = (round(float(pd.Series([a for a, _ in pairs])
-                                           .corr(pd.Series([b for _, b in pairs]))), 3)
-                                if len(pairs) >= 5 else None)
-        else:
-            fwd_stats[str(n)] = {"n": 0, "up": 0, "win": 0.0, "mean": 0.0,
-                                 "median": 0.0, "worst": 0.0, "best": 0.0}
-            fwd_corr[str(n)] = None
+        pairs = [(p["net_inflow"], p[f"t{n}"]) for p in fwd_pts
+                 if p[f"t{n}"] is not None]
+        fwd_corr[str(n)] = (round(float(pd.Series([a for a, _ in pairs])
+                                       .corr(pd.Series([b for _, b in pairs]))), 3)
+                            if len(pairs) >= 5 else None)
 
     forward_block = {
         "horizons": list(FWD_HORIZONS),
         "stats": fwd_stats,
         "corr": fwd_corr,
         "points": fwd_pts,
+        "benchmark": {
+            "main": main_label,
+            "index": "上证综指（原口径）",
+            "core": "510300 沪深300ETF",
+            "tier1": [s.split(".")[0] for s in tier1_syms],
+            "note": ("主基准是实际被托底的宽基组合；上证与 510300 作对照。"
+                     "同一批托底日在不同基准下 T+20 胜率可差 4–11pp，"
+                     "结论对基准选择敏感，不能只报最好看的那个。"),
+        },
+        "index_stats": index_stats,
+        "core_stats": core_stats,
         # 按托底时的估值分位分组 —— 估值决定不了「会不会托底」，
-        # 但强烈决定「托底之后赚不赚」，这里把这件事量化出来
+        # 对「托底之后赚不赚」也只是方向提示（换基准 + 段去重后 p≈0.24，不显著）
         "by_valuation": [],
     }
 
@@ -1578,8 +1641,10 @@ def build_dashboard(db: Session) -> dict:
                 for y, v in sorted(_by_year.items())]
 
             # ── 按估值分位分组看托底后的表现 ──
-            # 这是整张看板里最能用的一条：估值不决定托底「会不会发生」（前面已证中位 62%），
-            # 但决定托底「值不值得跟」——低估值那组 T+60 胜率 86%，高估值那组只有 33%。
+            # 估值不决定托底「会不会发生」（前面已证中位 62%），对后市也只有方向提示。
+            # 旧口径（上证）低/高组 T+60 是 85.7% / 33.3%，换成一档等权净值后变成
+            # 81.0% / 42.9%；段去重后 72.7% / 46.2%，Fisher p≈0.24 —— 不显著。
+            # 这条不能再写成「最能用的一条」，页面上已明确标注为方向提示。
             _pct_of = {m["date"]: m["pct"] for m in marks}
 
             def _grp(vals: list[float]) -> dict | None:
@@ -1696,16 +1761,7 @@ def build_dashboard(db: Session) -> dict:
     if not live_now and t_turn > 0:
         est = round(t_turn, 1)
 
-    # 一档/二档分层与「成交额→申购」判据。
-    # **必须在 summary 之前算**：headline 的主线是「一档放量到什么档位」。
-    # 局部 import：etf_elasticity 反依赖本模块的 flow_panel，模块级导入会成环。
-    from app.services import etf_elasticity
-    try:
-        elasticity = etf_elasticity.build_elasticity(db)
-    except Exception as _e:  # noqa: BLE001
-        logger.warning("弹性分层计算失败：%s", str(_e)[:160])
-        elasticity = {"available": False}
-
+    # elasticity 已在函数开头算好（收益基准也要用一档名单），这里直接复用。
     # 只有当分层的最新日与页面展示日一致时才拿它做结论。
     # 不一致时（例如盘中回退到上一交易日）宁可不给档位，也不能把今天的判据
     # 套到昨天的数据上。

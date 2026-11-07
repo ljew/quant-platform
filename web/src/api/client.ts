@@ -61,6 +61,15 @@ export interface KlineBar {
   amount: number;
 }
 
+/** /market/quote/{symbol} 实时快照（个股与指数通用）。 */
+export interface SpotQuote {
+  symbol: string;
+  name: string;
+  price: number;
+  change_pct: number;
+  updated_at: string;
+}
+
 /** /market/stocks 返回的标的信息 */
 export interface StockItem {
   symbol: string;
@@ -102,8 +111,10 @@ export interface BacktestResult {
 // —— 业务 API ——
 export const api = {
   strategies: () => get<StrategyInfo[]>("/strategy/strategies"),
-  kline: (symbol: string, start: string, end: string) =>
-    get<KlineBar[]>(`/market/kline/${symbol}?start=${start}&end=${end}`),
+  // limit 显式传入：后端默认只返回 500 根，长区间会被静默截断成「最近 500 根」。
+  kline: (symbol: string, start: string, end: string, limit = 500) =>
+    get<KlineBar[]>(`/market/kline/${symbol}?start=${start}&end=${end}&limit=${limit}`),
+  quote: (symbol: string) => get<SpotQuote>(`/market/quote/${symbol}`),
   stocks: (keyword: string, limit = 10) =>
     get<StockItem[]>(`/market/stocks?keyword=${encodeURIComponent(keyword)}&limit=${limit}`),
   backtestSync: (payload: Record<string, unknown>) =>
@@ -1135,6 +1146,9 @@ export interface EtfFlowForwardPoint {
   t5: number | null;
   t20: number | null;
   t60: number | null;
+  /** 对照基准：上证综指 / 510300 的同窗口收益 */
+  ix5?: number | null; ix20?: number | null; ix60?: number | null;
+  hs5?: number | null; hs20?: number | null; hs60?: number | null;
 }
 
 export interface EtfFlowForwardGroup {
@@ -1147,7 +1161,14 @@ export interface EtfFlowForwardGroup {
 
 export interface EtfFlowForward {
   horizons: number[];
+  /** 主基准 = 一档等权净值（实际被托底的宽基组合） */
   stats: Record<string, EtfFlowForwardStat>;
+  /** 对照：上证综指（旧口径）与 510300，用来暴露结论对基准的敏感度 */
+  benchmark?: {
+    main: string; index: string; core: string; tier1: string[]; note: string;
+  };
+  index_stats?: Record<string, EtfFlowForwardStat>;
+  core_stats?: Record<string, EtfFlowForwardStat>;
   corr: Record<string, number | null>;
   points: EtfFlowForwardPoint[];
   /** 按托底时的估值分位分组后的后市表现 */

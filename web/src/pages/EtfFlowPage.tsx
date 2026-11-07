@@ -786,12 +786,14 @@ function ForwardCard({
 
   const hs = forward.horizons;
   const corr20 = forward.corr["20"] ?? forward.corr[20 as unknown as string];
+  const valLow = (forward.by_valuation ?? []).find((g) => g.label.startsWith("低"))?.t60;
+  const valHigh = (forward.by_valuation ?? []).find((g) => g.label.startsWith("高"))?.t60;
 
   return (
     <div style={cardStyle(colors)}>
       <CardHead
         title={`托底之后：${forward.points.length} 个托底日的后市`}
-        tag="同一指数口径的事后统计 · 非可交易回测"
+        tag="一档等权净值口径 · 非可交易回测 · 三基准对照"
         colors={colors}
       />
 
@@ -827,6 +829,64 @@ function ForwardCard({
           );
         })}
       </div>
+
+      {forward.benchmark && forward.index_stats && forward.core_stats && (
+        <div style={{
+          margin: "0 0 12px", padding: "9px 11px",
+          background: rgba(colors.accent, 0.04),
+          border: `1px solid ${colors.border}`, borderRadius: 8,
+        }}>
+          <div style={{ fontSize: 11.5, fontWeight: 600, color: colors.text, marginBottom: 5 }}>
+            收益基准对照 · 同一批托底日，换个基准结论就变
+          </div>
+          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11 }}>
+            <thead>
+              <tr style={{ color: colors.axis, fontSize: 10.5 }}>
+                <th style={{ textAlign: "left", padding: "2px 8px 4px 0", fontWeight: 500 }}>基准</th>
+                {hs.map((h) => (
+                  <th key={h} style={{ textAlign: "right", padding: "2px 8px 4px", fontWeight: 500 }}>
+                    T+{h} 胜率
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                { label: forward.benchmark.main, data: forward.stats, main: true },
+                { label: forward.benchmark.core, data: forward.core_stats, main: false },
+                { label: forward.benchmark.index, data: forward.index_stats, main: false },
+              ].map((r, i) => (
+                <tr key={i} style={{ borderTop: `1px solid ${colors.border}` }}>
+                  <td style={{
+                    padding: "4px 8px 4px 0",
+                    color: r.main ? colors.text : colors.muted,
+                    fontWeight: r.main ? 700 : 400,
+                  }}>
+                    {r.label}
+                    {r.main && <span style={{ color: colors.accent, fontSize: 10, marginLeft: 5 }}>主</span>}
+                  </td>
+                  {hs.map((h) => {
+                    const s = r.data[String(h)];
+                    const w = s?.win ?? 0;
+                    return (
+                      <td key={h} style={{
+                        textAlign: "right", padding: "4px 8px",
+                        color: w >= 55 ? colors.up : w <= 45 ? colors.down : colors.text,
+                        fontVariantNumeric: "tabular-nums",
+                      }}>
+                        {s && s.n ? `${w.toFixed(1)}%` : "—"}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{ fontSize: 10.5, color: colors.axis, marginTop: 6, lineHeight: 1.6 }}>
+            {forward.benchmark.note}
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 236px", gap: 16, alignItems: "center" }}>
         <EChart option={opt} height={252} />
@@ -865,7 +925,7 @@ function ForwardCard({
                 按托底时的估值分位分组 · 看 T+60
               </span>
               <span style={{ fontSize: 11, color: colors.muted }}>
-                同一个「托底」，估值位置不同，结果差一大截
+                方向有差，但换基准后差距收窄、未通过显著性检验
               </span>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
@@ -950,13 +1010,17 @@ function ForwardCard({
         横截面越长，样本越少（最近的托底日还没有 60 个交易日的后市数据），所以每格都标了 n。
         <br />
         <span style={{ color: colors.text }}>
-          要特别说明：上面 T+60 的 56.5% 是<strong>两拨方向相反的样本平均出来的</strong> ——
-          低估值组 86%、高估值组 33%，平均之后就成了一个「什么都说明不了」的数字。
-          这就是上面那张分组对比的意义。
+          要特别说明：上面 T+60 的 {forward.stats["60"]?.win?.toFixed(1) ?? "—"}% 是
+          <strong>两拨方向不同的样本平均出来的</strong>——
+          低估值组 {valLow?.win?.toFixed(0) ?? "—"}%、高估值组 {valHigh?.win?.toFixed(0) ?? "—"}%。
+          但换成一档等权净值口径后差距已明显收窄，段去重后 Fisher 精确检验 p≈0.24，
+          <strong>未通过显著性检验</strong>。这张分组只能当方向提示，不能当独立依据。
         </span>
         <br />
         <span style={{ color: colors.axis }}>
-          注意这是<strong>同一指数口径的事后统计</strong>，不是可交易策略回测：没扣成本、没算滑点、
+          主基准是<strong>一档等权净值</strong>（实际被托底的宽基组合），上证综指与 510300 见上方对照表；
+          同一批托底日换个基准，T+20 胜率能差 4–11pp，所以别只记住一个数字。
+          注意这是<strong>事后统计</strong>，不是可交易策略回测：没扣成本、没算滑点、
           没做样本外；连续托底日的持有期还会互相重叠，样本并不独立。
           它的用途是校准预期，不能当收益承诺，更不该据此定仓位 —— 那件事归 NSI。
         </span>
