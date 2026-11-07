@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { EChartsOption } from "echarts";
 import EChart from "../components/EChart";
+import DocDrawer from "../components/DocDrawer";
 import { useTheme } from "../theme";
+// 设计说明的真源在 docs/（与 NSI-SPEC.md 同级），构建时以原文打进包里，
+// 保证「页面上看到的」与「仓库里的文档」永远是同一份，不会各写一版。
+import specMarkdown from "../../../docs/ETF-FLOW-SPEC.md?raw";
 import {
   etfFlowApi,
   type EtfFlowDashboard,
@@ -57,6 +61,11 @@ export default function EtfFlowPage() {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState("");
   const [auto, setAuto] = useState(true);
+  // 支持 ?doc=1#etfflow 直接展开说明，便于把「设计说明」单独收藏成一个链接
+  const [docOpen, setDocOpen] = useState(
+    () => typeof window !== "undefined"
+      && new URLSearchParams(window.location.search).get("doc") === "1",
+  );
   const [updatedAt, setUpdatedAt] = useState("");
   const [note, setNote] = useState("");
 
@@ -142,6 +151,12 @@ export default function EtfFlowPage() {
               fontSize: 12, cursor: "pointer", whiteSpace: "nowrap",
             }}>{x.label}</button>
           ))}
+          {/* 分析逻辑随时可查：浮层打开，不打断看板的滚动位置与图表缩放 */}
+          <button onClick={() => setDocOpen(true)} title="每张卡怎么算、阈值怎么来的、不能用来做什么" style={{
+            background: "transparent", border: `1px solid ${colors.accent}`,
+            color: colors.accent, borderRadius: 6, padding: "5px 11px",
+            fontSize: 12, cursor: "pointer", whiteSpace: "nowrap", fontWeight: 600,
+          }}>设计说明</button>
         </div>
       </div>
 
@@ -304,6 +319,15 @@ export default function EtfFlowPage() {
           {status && ` · 库内 ${status.share_rows.toLocaleString()} 条份额 / ${status.minute_rows.toLocaleString()} 条分钟`}
         </div>
       </div>
+
+      {/* 分析逻辑说明（浮层，来源 docs/ETF-FLOW-SPEC.md） */}
+      <DocDrawer
+        open={docOpen}
+        onClose={() => setDocOpen(false)}
+        title="国家队 ETF 资金看板 · 设计说明"
+        subtitle="每张卡怎么算 · 阈值怎么来的 · 哪些事不能拿它做"
+        markdown={specMarkdown}
+      />
     </div>
   );
 }
