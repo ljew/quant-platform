@@ -802,12 +802,14 @@ def _nsi_window(nsi: dict) -> dict:
     score = nsi.get("score")
     weakened = score is not None and score < hi
 
+    # note 只回答「今天的信号是什么状态」，天数与到期日交给上面的进度行、
+    # 规则说明交给右侧那行 —— 三处各说一件事，避免同一句话出现两遍。
     if remaining <= 0:
-        note = "加仓窗口已到期，仓位应按规则回落"
+        note = "窗口已到期，仓位按规则回落"
     elif weakened:
-        note = f"信号已转弱（score {score:.1f} < 阈值 {hi:.1f}），但按规则仍在加仓窗口，{remaining} 个交易日后回落"
+        note = f"信号已转弱：score {score:.1f} 低于阈值 {hi:.1f}，但窗口未到期，仓位仍维持 {pos:.0%}"
     else:
-        note = f"score 仍在阈值之上，窗口每触发一次就重新计时；当前已持续 {used} 个交易日，余 {remaining} 日"
+        note = f"score {score:.1f} 高于阈值 {hi:.1f}，每触发一次重新计时"
 
     return {
         "active": True, "hold_days": HOLD_DAYS, "used": used,

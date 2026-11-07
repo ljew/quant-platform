@@ -1610,11 +1610,10 @@ function NsiCard({
               flexWrap: "wrap", marginBottom: 5,
             }}>
               <span style={{ fontSize: 11.5, fontWeight: 600, color: colors.text }}>加仓窗口</span>
-              <span style={{ fontSize: 11.5, color: colors.muted, fontVariantNumeric: "tabular-nums" }}>
-                {w.used} / {w.hold_days} 个交易日
-              </span>
+              {/* 已用天数由左侧 KPI「已加仓 15 个交易日」和进度条表达，
+                  这里只讲「还剩多少、哪天到期」，避免同一个数字连说两遍 */}
               <span style={{ fontSize: 12.5, fontWeight: 700, color: tone }}>
-                剩 {w.remaining} 日
+                剩 {w.remaining} 个交易日
               </span>
               {w.expire && (
                 <span style={{ fontSize: 11, color: colors.axis }}>· {w.expire} 到期</span>
