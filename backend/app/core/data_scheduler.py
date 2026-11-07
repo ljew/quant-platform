@@ -17,6 +17,7 @@ import time
 from datetime import datetime
 
 logger = logging.getLogger("data_scheduler")
+from app.core.netguard import TUSHARE, explain as net_explain, network_ready
 
 # 每个交易日 19:00 后执行一次数据管道（tushare 收盘数据就绪 + 因子计算）
 RUN_HOUR, RUN_MIN = 19, 0  # tushare 日线晚间就绪，19:00 保证当日数据可得
@@ -504,6 +505,13 @@ def _loop(enabled: bool) -> None:
                         if ok:
                             last_run_date = _today_str()
                             retry.update(etl_n=0, etl_ts=0.0)
+                        elif not network_ready(*TUSHARE):
+                            # 断网时**不消耗重试次数**：3 次 × 15 分钟的额度用来对付
+                            # 数据源本身的问题（限速、接口抖动），不该被「网还没醒」吃掉。
+                            # 2026-11-07 早上公众号采集就是这么把当天额度耗光的。
+                            retry["etl_ts"] = now.timestamp()
+                            logger.warning("数据日更未成功且网络未就绪（%s），不消耗重试次数",
+                                           net_explain(*TUSHARE))
                         else:
                             retry["etl_n"] += 1
                             retry["etl_ts"] = now.timestamp()

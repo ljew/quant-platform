@@ -20,10 +20,16 @@ from datetime import datetime
 from pathlib import Path
 
 from app.config import settings
+from app.core.netguard import WEREAD, explain as net_explain, network_ready
 
 logger = logging.getLogger("wechat_scheduler")
 
-SLOTS = [(8, 20), (20, 40)]     # 每天两次
+# 主采集放在 6:20：用户 7 点前都在家、网络稳定，跑完（约 9 分钟）也在 7 点前。
+# 原 8:20 那轮正好赶上出门/唤醒，2026-11-07 早上两次 DNS 未就绪就是这么来的。
+SLOTS = [(6, 20), (20, 40)]     # 每天两次
+# 工作日 9:00 补跑：上班时间一定有网。周末不补 —— 用户明确「不上班就不用补，
+# 等他自己打开网络再手动补」，免得白白消耗请求、还可能撞上限流。
+RETRY_SLOT = (9, 0)
 _CHECK_INTERVAL = 60            # 秒
 _TIMEOUT = 5400                 # 单次抓取上限。2026-11-02 实测：interval=6s 时
                                 # 111 个号基础 666s，再加每个命中冷却的号 60s 退避，
@@ -74,13 +80,14 @@ def _save_cooldown(until: float, reason: str) -> None:
 
 
 _cool_until = _load_cooldown()
-_MAX_ATTEMPTS = 3                # 同一 slot 每天最多试 3 次
+_MAX_ATTEMPTS = 2                # 同一 slot 每天最多试 2 次（6:20 + 6:41 仍在 7 点前）
 _RETRY_GAP = 600                 # 失败后至少隔 10 分钟再试（避开唤醒瞬间网络未就绪）
 # 限流专属退避：微信读书返回 HTTP 499 时，10 分钟一次的「立刻重打」只会加重风控。
 # 2026-11-06 实测：21:40 起 cover/content 全部 499，而调度仍按 10 分钟重试 3 次。
 _THROTTLE_GAP = 1800             # 疑似限流（退出码 3 / 499）时隔 30 分钟再试
 _THROTTLE_COOLDOWN = 3600        # 限流后的**全局**冷却（跨 slot、跨重启，落盘）
-_CATCHUP_HOURS = 12              # 错过 slot 后最多补 12 小时
+_CATCHUP_HOURS = 3               # 错过 slot 后最多补 3 小时（6:20 最晚 9:20 补，
+                                 # 正好接上工作日 9:00 的补跑窗口；不再拖到晚上）
 # 为什么需要 catch-up 窗口：原判定只有 `now < slot` 才跳过，于是晚上 22:49 仍会去补
 # 早上 08:20 的 slot，与 20:40 的 slot 叠加 → 限流期间一晚上打了 4 次。
 # 为什么需要全局冷却：冷却/重试记账原本只在内存，容器一重启就清零。2026-11-06 晚
@@ -156,13 +163,24 @@ def _run_crawl() -> tuple[bool, str]:
     return True, summary or "完成"
 
 
+def _slots_for(now: datetime) -> list[tuple[int, int]]:
+    """当天实际要处理的 slot：主采集 + （仅工作日）9:00 补跑。
+
+    周末不追加补跑位 —— 用户明确「不上班就不用补，等他自己打开网络再手动补」。
+    """
+    slots = list(SLOTS)
+    if now.weekday() < 5:            # 0=周一 … 4=周五
+        slots.append(RETRY_SLOT)
+    return slots
+
+
 def _loop(enabled: bool) -> None:
     global _cool_until          # 限流时会重设并落盘；global 必须在本函数任何读取之前
     while True:
         try:
             if enabled:
                 now = datetime.now()
-                for h, m in SLOTS:
+                for h, m in _slots_for(now):
                     slot_dt = now.replace(hour=h, minute=m, second=0, microsecond=0)
                     if now < slot_dt:
                         continue                      # 还没到点
@@ -173,6 +191,11 @@ def _loop(enabled: bool) -> None:
                     key = f"{_today()}#{h:02d}:{m:02d}"
                     if key in _done:
                         continue
+                    # 9:00 是「补跑位」：只有当天 6:20 那轮没成功才跑，成功就不重复采
+                    if (h, m) == RETRY_SLOT:
+                        main_key = f"{_today()}#{SLOTS[0][0]:02d}:{SLOTS[0][1]:02d}"
+                        if main_key in _done:
+                            continue
                     # 失败不再当天一票否决：2026-11-03 Mac 睡眠唤醒瞬间 DNS 未就绪，
                     # 08:20 那轮 5 个号就熔断退出，而 slot 已被记 done → 整个上午不再重试，
                     # 当天 0 篇。改成「成功才记 done，失败最多重试 3 次、间隔 10 分钟」。
@@ -182,6 +205,17 @@ def _loop(enabled: bool) -> None:
                     gap = st.get("gap") or _RETRY_GAP
                     if st["last_ts"] and now.timestamp() - st["last_ts"] < gap:
                         continue
+                    # ⚠️ 网络未就绪时**不消耗重试次数**，只把下次探测推后 2 分钟。
+                    # 2026-11-07 教训：08:24 / 08:53 两次 DNS 失败就把当天 3 次机会耗光，
+                    # 09:04 第三次又撞上 Cookie 过期 → 当天 0 篇。而 09:10 网络早就好了。
+                    # 失败的不是任务，是「探测时机」。真正断网时应等网络回来，不该记账。
+                    if not network_ready(*WEREAD):
+                        st["last_ts"] = now.timestamp() - gap + 120
+                        _retry[key] = st
+                        reason = net_explain(*WEREAD)
+                        _status["last_error"] = f"网络未就绪（{reason}），不消耗重试次数，等恢复"
+                        logger.info("网络未就绪，暂缓公众号采集：%s", reason)
+                        break
                     st["attempts"] += 1
                     _retry[key] = st
                     with _lock:
