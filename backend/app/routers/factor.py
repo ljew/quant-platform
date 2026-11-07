@@ -22,7 +22,7 @@ from app.database import get_db
 from app.models import FactorMineResult
 from app.services.factor_mining import (
     mine_factor, validate_expr, compute_complexity, resolve_range,
-    snapshot_dates,
+    snapshot_dates, news_event_test,
 )
 from app.services.factor_gp import gp_search, DIRECTION_TEMPLATES
 
@@ -391,3 +391,30 @@ def registry_toggle(rid: int, db: Session = Depends(get_db)):
         row.status = "candidate"
     db.commit()
     return {"ok": True, "id": rid, "status": row.status}
+
+# ───────── 非结构化（新闻情绪）─────────
+# 2026-09-18 随链路下线删除，2026-11-07 恢复市场级部分（数据已够）。
+class NewsTestPayload(BaseModel):
+    extreme_pct: float = Field(0.10, ge=0.02, le=0.3)
+    horizon: int = Field(5, ge=1, le=60)
+
+
+@router.get("/news/daily")
+def news_daily(db: Session = Depends(get_db), limit: int = 500):
+    """市场新闻情绪时序（倒序）。"""
+    from app.models import NewsMarketDaily
+
+    rows = db.execute(
+        select(NewsMarketDaily).order_by(NewsMarketDaily.date.desc()).limit(min(limit, 1500))
+    ).scalars().all()
+    return [
+        {"date": r.date.isoformat(), "n_articles": r.n_articles, "n_finance": r.n_finance,
+         "bull": r.bull_score, "bear": r.bear_score, "net_sentiment": r.net_sentiment}
+        for r in rows
+    ]
+
+
+@router.post("/news/event-test")
+def news_event(payload: NewsTestPayload, db: Session = Depends(get_db)):
+    """极端新闻情绪日 → 未来 N 日指数收益检验（择时有效性）。"""
+    return news_event_test(db, extreme_pct=payload.extreme_pct, horizon=payload.horizon)

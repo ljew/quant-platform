@@ -4,7 +4,7 @@ import LlmConfigModal from "../components/LlmConfigModal";
 import { Badge, Btn, Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
 import {
   api, AiExplainResult, AiGenerateResult, AiStatus,
-  FactorMineReport, FactorMineSummary, GpMineResult,
+  FactorMineReport, FactorMineSummary, GpMineResult, NewsEventReport,
 } from "../api/client";
 import { useTheme, ThemeColors } from "../theme";
 
@@ -29,6 +29,11 @@ export default function FactorMinePage() {
   const [report, setReport] = useState<FactorMineReport | null>(null);
   const [history, setHistory] = useState<FactorMineSummary[]>([]);
   const [error, setError] = useState("");
+  // 新闻情绪择时（市场级 · 非结构化数据）。个股 news_senti 仍因覆盖不足不参与截面挖掘。
+  const [newsSeries, setNewsSeries] = useState<{ date: string; n_finance: number; net_sentiment: number | null }[]>([]);
+  const [newsHorizon, setNewsHorizon] = useState(5);
+  const [newsTesting, setNewsTesting] = useState(false);
+  const [newsReport, setNewsReport] = useState<NewsEventReport | null>(null);
   // AI 自然语言生成（生成后需人工确认，不自动挖掘）
   const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
   const [aiText, setAiText] = useState("");
@@ -61,6 +66,7 @@ export default function FactorMinePage() {
   useEffect(() => {
     api.factorFunctions().then(setFns).catch(() => {});
     api.factorGpDirections().then(setGpDirs).catch(() => {});
+    api.factorNewsDaily(600).then(setNewsSeries).catch(() => {});
     loadAiStatus();
     loadHistory();
   }, [loadAiStatus, loadHistory]);
@@ -150,6 +156,17 @@ export default function FactorMinePage() {
     }
   };
 
+  const runNewsTest = async () => {
+    setNewsTesting(true);
+    try {
+      setNewsReport(await api.factorNewsTest(0.10, newsHorizon));
+    } catch (e) {
+      setError(`情绪检验失败: ${(e as Error).message}`);
+    } finally {
+      setNewsTesting(false);
+    }
+  };
+
   return (
     <div style={{ maxWidth: 1240, margin: "0 auto" }}>
       <PageHeader
@@ -157,6 +174,72 @@ export default function FactorMinePage() {
         desc="在这里造新因子（表达式 / GP 挖掘 / AI 生成）· 造好了去「研究卡」上岗：登记 → 候选 → 启用"
         actions={<Btn onClick={() => setShowFns(!showFns)} kind="ghost" small>函数参考</Btn>}
       />
+
+      {/* —— 新闻情绪择时（市场级 · 非结构化数据）—— */}
+      <div style={{ marginBottom: 16 }}>
+        <Card
+          title="新闻情绪择时（市场级 · 非结构化数据）"
+          colors={colors}
+          extra={<span style={{ fontSize: 11.5, color: colors.muted }}>词典法打分 · 每日新闻聚合</span>}
+        >
+          <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8 }}>
+            <span style={{ fontSize: 12.5 }}>净情绪 时序（正=多空词频偏多）</span>
+            <span style={{ flex: 1 }} />
+            <label style={{ fontSize: 12, color: colors.muted }}>未来收益窗口
+              <select value={newsHorizon} onChange={(e) => setNewsHorizon(Number(e.target.value))} style={{ ...inputStyle(colors), width: 76, marginLeft: 6 }}>
+                {[1, 5, 10, 20].map((h) => <option key={h} value={h}>{h} 日</option>)}
+              </select>
+            </label>
+            <Btn small onClick={runNewsTest} disabled={newsTesting}>{newsTesting ? "检验中…" : "事件检验"}</Btn>
+          </div>
+          {newsSeries.length > 0 && (
+            <EChart height={200} option={{
+              tooltip: { trigger: "axis" },
+              grid: { left: 50, right: 50, top: 24, bottom: 34 },
+              xAxis: { type: "category", data: [...newsSeries].reverse().map((p) => p.date.slice(2)), axisLabel: { fontSize: 9.5, interval: Math.ceil(newsSeries.length / 8) } },
+              yAxis: [
+                { type: "value", name: "净情绪", scale: true, splitLine: { lineStyle: { color: colors.border, opacity: 0.4 } } },
+                { type: "value", name: "文章数" },
+              ],
+              series: [
+                { name: "净情绪", type: "bar", data: [...newsSeries].reverse().map((p) => ({ value: p.net_sentiment, itemStyle: { color: (p.net_sentiment ?? 0) >= 0 ? colors.up : colors.down, opacity: 0.7 } })), barWidth: "60%" },
+                { name: "财经文章数", type: "line", yAxisIndex: 1, data: [...newsSeries].reverse().map((p) => p.n_finance), showSymbol: false, lineStyle: { color: colors.muted, width: 1 } },
+              ],
+            } as never} />
+          )}
+          {newsReport && newsReport.ok && (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginTop: 10 }}>
+                <KpiCard label="基线收益（全部交易日均值）" value={`${(newsReport.baseline_ret * 100).toFixed(2)}%`} sub={`${newsReport.n_days_all} 天样本`} tone="neutral" colors={colors} />
+                <KpiCard label="极端看多日做多" value={`${(newsReport.bull.avg_ret * 100).toFixed(2)}%`}
+                  sub={`${newsReport.bull.n_days} 天 · 胜率 ${(newsReport.bull.win_rate * 100).toFixed(0)}%`}
+                  tone={(newsReport.edge_long_vs_base || 0) > 0 ? "up" : "down"} colors={colors} />
+                <KpiCard label="极端看空日之后指数" value={`${(newsReport.bear.avg_ret * 100).toFixed(2)}%`}
+                  sub={`${newsReport.bear.n_days} 天 · 胜率 ${(newsReport.bear.win_rate * 100).toFixed(0)}%`}
+                  tone="neutral" colors={colors} />
+                <KpiCard label="多头边际优势" value={`${((newsReport.edge_long_vs_base || 0) * 100).toFixed(2)}%`}
+                  sub="vs 基线" tone={(newsReport.edge_long_vs_base || 0) > 0 ? "up" : "down"} colors={colors} />
+              </div>
+              {newsReport.verdict && (
+                <div style={{
+                  marginTop: 10, fontSize: 12.5, lineHeight: 1.6,
+                  color: (newsReport.edge_long_vs_base || 0) > 0 ? colors.down : colors.up,
+                }}>
+                  {newsReport.verdict}
+                </div>
+              )}
+            </>
+          )}
+          {newsReport && !newsReport.ok && (
+            <div style={{ marginTop: 8, fontSize: 12.5, color: colors.up }}>{newsReport.error}</div>
+          )}
+          <div style={{ marginTop: 8, fontSize: 11.5, color: colors.muted }}>
+            看多日 = 净情绪 ≥ 前 10% 分位；观察其后续 {newsHorizon} 日中证800 收益是否系统性跑赢基线。
+            该指标为市场级择时信号，与截面选股因子互补。
+            <b>个股新闻情绪（news_senti）因覆盖不足，暂不参与截面挖矿。</b>
+          </div>
+        </Card>
+      </div>
 
       {/* —— AI 自然语言生成（常驻；未配置大模型时给配置引导 + 本地规则试用）—— */}
       {aiStatus && (
