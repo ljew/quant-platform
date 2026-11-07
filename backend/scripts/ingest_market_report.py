@@ -13,6 +13,9 @@
 
 设计要点：
 - **幂等**：report_id = YYYYMMDD_时段；content_hash 未变则跳过，不产生重复行。
+- **自动归档**：入库成功后把 docs/market_brief/ 的变更 commit + push 到 dev，
+  无需人工提交。只在 dev 分支执行；commit 用 pathspec 限定路径，
+  不会带走工作区里别人的在制品；`--no-git` 可关闭。
 - **自包含**：MD 与 HTML 全文都进库，容器内 API 不依赖宿主机文件路径。
 - **单写者**：用 WAL + busy_timeout 排队，不碰 SQLAlchemy 模型，避免与容器内
   调度器抢锁；表由本脚本创建，后端 router 只读。
@@ -29,6 +32,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -274,6 +278,70 @@ q.addEventListener('input',f);s.addEventListener('change',f);f();
     return str(out)
 
 
+def git_sync_reports(repo: Path, rel_paths: list[str], message: str) -> dict:
+    """把报告目录的变更提交并推送到 dev（无人值守归档用）。
+
+    任何一步失败都只记录、不抛异常 —— 归档失败不能影响入库本身。
+
+    安全约束（都踩过或评估过）：
+    - **只在 dev 分支执行**：其他分支跳过，避免自动化直接往 main 写提交。
+    - **pathspec 限定**：先 `git add -- <路径>`，再 `git commit -m .. -- <路径>`。
+      用 pathspec 而不是直接 commit，是为了不把暂存区里别人的改动一起带走
+      （老刘的工作区常有别的在制品）。
+    - **无变更不产生空提交**：先看 `status --porcelain`。
+    - **push 失败不回滚**：本地提交保留，下次运行会把它一起推上去。
+    """
+    res: dict = {"attempted": False, "committed": False, "pushed": False,
+                 "branch": "", "reason": ""}
+
+    def run(*a: str, timeout: int = 120) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(repo), *a],
+                              capture_output=True, text=True, timeout=timeout)
+
+    if not (repo / ".git").exists():
+        res["reason"] = "非 git 仓库"
+        return res
+
+    try:
+        br = run("rev-parse", "--abbrev-ref", "HEAD")
+        res["branch"] = br.stdout.strip()
+        if br.returncode != 0:
+            res["reason"] = f"读取分支失败: {(br.stderr or '').strip()[:80]}"
+            return res
+        if res["branch"] != "dev":
+            res["reason"] = f"当前分支 {res['branch']}，仅在 dev 自动归档"
+            return res
+
+        st = run("status", "--porcelain", "--", *rel_paths)
+        if st.returncode != 0:
+            res["reason"] = f"status 失败: {(st.stderr or '').strip()[:80]}"
+            return res
+        if not st.stdout.strip():
+            res["reason"] = "无变更"
+            return res
+
+        res["attempted"] = True
+        add = run("add", "--", *rel_paths)
+        if add.returncode != 0:
+            res["reason"] = f"add 失败: {(add.stderr or '').strip()[:80]}"
+            return res
+
+        cm = run("commit", "-m", message, "--", *rel_paths)
+        if cm.returncode != 0:
+            res["reason"] = f"commit 失败: {(cm.stderr or cm.stdout).strip()[:100]}"
+            return res
+        res["committed"] = True
+
+        ps = run("push", "origin", "dev", timeout=180)
+        if ps.returncode == 0:
+            res["pushed"] = True
+        else:
+            res["reason"] = f"已提交未推送: {(ps.stderr or '').strip()[:100]}"
+    except Exception as e:  # noqa: BLE001
+        res["reason"] = f"{type(e).__name__}: {e}"[:120]
+    return res
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="市场资讯报告入库")
     ap.add_argument("--file", type=Path, help="单份 Markdown 报告")
@@ -282,6 +350,9 @@ def main() -> int:
     ap.add_argument("--rebuild-index", action="store_true", help="只重建静态索引")
     ap.add_argument("--force", action="store_true",
                     help="正文未变也重算字段（解析逻辑改进后回填用）")
+    ap.add_argument("--no-git", action="store_true",
+                    help="只入库，不自动提交归档（默认入库后会把 docs/market_brief "
+                         "的变更 commit + push 到 dev）")
     args = ap.parse_args()
 
     db = resolve_db()
@@ -333,11 +404,25 @@ def main() -> int:
     total = conn.execute("SELECT COUNT(*) FROM market_reports").fetchone()[0]
     conn.close()
 
+    # —— 自动归档：入库成功后把 docs/market_brief 的变更 commit + push 到 dev ——
+    # 只在 dev 分支执行，pathspec 限定路径，失败不影响入库结果（见 git_sync_reports）
+    if args.no_git:
+        git_res = {"attempted": False, "committed": False, "pushed": False,
+                   "reason": "已用 --no-git 跳过"}
+    else:
+        if touched:
+            ids = "、".join(touched[:3]) + (f" 等 {len(touched)} 份" if len(touched) > 3 else "")
+            msg = f"chore(reports): 自动归档 {ids}"
+        else:
+            msg = f"chore(reports): 自动归档报告目录 {datetime.now():%Y-%m-%d %H:%M}"
+        git_res = git_sync_reports(ROOT, ["docs/market_brief"], msg)
+
     out = {"ok": stat["failed"] == 0, "db": str(db), "scanned": len(files),
            **stat, "total_in_db": total, "report_ids": touched,
            "index_path": idx,
            "index_url": "http://127.0.0.1:8000/api/v1/reports/index",
-           "api": "http://127.0.0.1:8000/api/v1/reports"}
+           "api": "http://127.0.0.1:8000/api/v1/reports",
+           "git": git_res}
     print(json.dumps(out, ensure_ascii=False))
     return 0 if stat["failed"] == 0 else 1
 
