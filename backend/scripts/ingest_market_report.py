@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """市场资讯报告入库器（WorkBuddy -> quant-platform）。
 
-报告由 WorkBuddy 自动化生成到 market_brief/，本脚本把它落进平台 SQLite，
-并在 data/reports/ 留一份文件备份与本地索引；对外索引页由 API 动态生成。
+报告由 WorkBuddy 自动化生成到 **docs/market_brief/**（仓库内，随 git 版本化），
+本脚本把它落进平台 SQLite，并在 data/reports/ 留一份文件备份与本地索引；
+对外索引页由 API 动态生成。
 
-    python ingest_market_report.py --file /path/市场资讯报告_20261107_早间版.md
-    python ingest_market_report.py --dir  /path/market_brief     # 批量补录
+    python ingest_market_report.py --file docs/market_brief/市场资讯报告_20261107_早间版.md
+    python ingest_market_report.py --dir  docs/market_brief        # 批量补录（默认即此目录）
+    python ingest_market_report.py --dir  docs/market_brief --force  # 正文未变也重算字段
     python ingest_market_report.py --list
     python ingest_market_report.py --rebuild-index
 
@@ -32,7 +34,7 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]          # .../quant-platform
-DEFAULT_SRC_DIR = Path("/Users/happyljew/WorkBuddy/2026-10-30-13-18-31/market_brief")
+DEFAULT_SRC_DIR = ROOT / "docs" / "market_brief"   # 报告与模板都在仓库内，随 git 版本化
 SLOTS = ("早间版", "午间版", "收盘版", "晚间版")
 SLOT_ORDER = {"早间版": 1, "午间版": 2, "收盘版": 3, "晚间版": 4}
 
