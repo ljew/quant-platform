@@ -42,7 +42,11 @@ def _run_once() -> tuple[bool, str]:
     finally:
         db.close()
     if r.get("ok"):
-        return True, f"输入 {r.get('n_input')} 条 → 保留 {r.get('n_items')} 条"
+        if not r.get("n_items"):
+            return True, f"输入 {r.get('n_input')} 条 → 本轮无实质新增"
+        return True, (f"输入 {r.get('n_input')} 条"
+                      f"（快讯 {r.get('n_flash')} + 搜索 {r.get('n_search')}）"
+                      f" → 保留 {r.get('n_items')} 条")
     return False, str(r.get("error") or "未知错误")
 
 

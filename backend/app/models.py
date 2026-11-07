@@ -542,10 +542,14 @@ class NewsMarketDaily(Base):
 class HotBrief(Base):
     """每小时热点简报（非结构化资讯 → LLM 筛选解读）。
 
-    输入不是「让模型上网搜」，而是平台自己采的一手快讯（财联社电报时效最强），
-    再让模型按「对 A 股有没有实质影响」筛选判断。理由：
-    DeepSeek API 的 tools 只支持 function（2026-11-07 实测，传 web_search 报 422），
-    没有联网能力；而且模型搜到的是二手转载，比财联社一手快讯慢且不可追溯。
+    输入是两条腿：① 平台自采一手快讯（财联社电报，时效最强）；
+    ② DeepSeek 网页搜索 `/v1/tools/search`（覆盖快讯发不到的地方：
+    部委原文、行业数据、券商观点、隔夜外盘）。
+    模型只负责按「对 A 股有没有实质影响」筛选判断。
+
+    ⚠️ 2026-11-07 我曾误判「DeepSeek API 无联网能力」——当时只试了
+    `tools:[{type:"web_search"}]`（422）和几个错误路径（404），没查文档。
+    实际联网做成了独立端点 `/v1/tools/search` + `/v1/tools/fetch`，见 ds_search.py。
 
     `items_json` 存结构化条目（theme/direction/sectors/tickers/horizon/why/strength），
     原文快照留在 bronze，需要回溯时按 window 时间取。
@@ -557,7 +561,9 @@ class HotBrief(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
     window_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     window_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    n_input: Mapped[int] = mapped_column(Integer, default=0)      # 输入资讯条数
+    n_input: Mapped[int] = mapped_column(Integer, default=0)      # 输入资讯条数（快讯+搜索）
+    n_flash: Mapped[int] = mapped_column(Integer, default=0)      # 其中：财联社一手快讯
+    n_search: Mapped[int] = mapped_column(Integer, default=0)     # 其中：DeepSeek 网页搜索
     n_items: Mapped[int] = mapped_column(Integer, default=0)      # 模型保留条数
     items_json: Mapped[str] = mapped_column(Text, default="[]")
     mainline: Mapped[str] = mapped_column(Text, default="")       # 模型给的主线判断

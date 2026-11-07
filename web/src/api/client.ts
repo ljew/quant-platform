@@ -393,6 +393,8 @@ export interface HotBrief {
   window_start?: string;
   window_end?: string;
   n_input?: number;
+  n_flash?: number;
+  n_search?: number;
   n_items?: number;
   items?: HotBriefItem[];
   mainline?: string;

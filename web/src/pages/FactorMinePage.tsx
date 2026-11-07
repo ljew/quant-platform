@@ -199,7 +199,10 @@ export default function FactorMinePage() {
             title="热点简报（每小时自动更新）"
             colors={colors}
             extra={<span style={{ fontSize: 11.5, color: colors.muted }}>
-              {hotBrief.created_at?.slice(5, 16).replace("T", " ")} · 输入 {hotBrief.n_input} 条 → 保留 {hotBrief.n_items} 条
+              {hotBrief.created_at?.slice(5, 16).replace("T", " ")}
+              {" · "}输入 {hotBrief.n_input} 条
+              {hotBrief.n_search ? `（快讯 ${hotBrief.n_flash ?? 0} + 搜索 ${hotBrief.n_search}）` : ""}
+              {" → "}保留 {hotBrief.n_items} 条
             </span>}
           >
             {hotBrief.mainline && (
@@ -235,7 +238,8 @@ export default function FactorMinePage() {
               })}
             </div>
             <div style={{ marginTop: 8, fontSize: 11, color: colors.muted }}>
-              输入为平台自采一手快讯（财联社），模型只做筛选与判断；DeepSeek API 无联网能力。
+              输入 = 财联社一手快讯（时效）+ DeepSeek 网页搜索（覆盖广度），模型只做筛选与判断；
+              已与上一条简报做过跨轮去重，本轮只报新增变化。
             </div>
           </Card>
         </div>

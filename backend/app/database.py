@@ -109,6 +109,8 @@ def _migrate_sqlite() -> None:
     factor_mine_expected = {"params_json": "TEXT DEFAULT ''"}
     # research_runs 表：人工闸门倒计时（2026-09-30 P2）
     research_runs_expected = {"gate_deadline": "TIMESTAMP"}
+    # hot_brief 表：输入来源拆分（2026-11-07 接入 DeepSeek 搜索后区分快讯/搜索）
+    hot_brief_expected = {"n_flash": "INTEGER DEFAULT 0", "n_search": "INTEGER DEFAULT 0"}
     try:
         with engine.connect() as conn:
             for table, expected in (
@@ -117,6 +119,7 @@ def _migrate_sqlite() -> None:
                 ("paper_tasks", paper_tasks_expected),
                 ("factor_mine_results", factor_mine_expected),
                 ("research_runs", research_runs_expected),
+                ("hot_brief", hot_brief_expected),
             ):
                 cols = {
                     r[1]
