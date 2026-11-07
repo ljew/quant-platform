@@ -239,7 +239,7 @@ def sync_fast(db: Session) -> dict:
 
 
 def sync_slow(db: Session) -> dict:
-    """慢源：公众号 / tushare / 股吧（后两者靠 ETL 落的 parquet）。"""
+    """慢源：公众号 / tushare（公众号每天采两轮，tushare 靠 ETL 每日落 parquet）。"""
     out: dict[str, int] = {}
     try:
         out["wechat"] = _insert(db, _rows("wechat", _fetch_wechat()))
@@ -251,12 +251,42 @@ def sync_slow(db: Session) -> dict:
     except Exception as e:  # noqa: BLE001
         logger.warning("同步 tushare 失败：%s", e)
         out["tushare"] = -1
-    try:
-        out["guba"] = _insert(db, _rows("guba", _fetch_parquet("guba_hot", "guba")))
-    except Exception as e:  # noqa: BLE001
-        logger.warning("同步股吧失败：%s", e)
-        out["guba"] = -1
     return out
+
+
+def sync_guba(db: Session) -> int:
+    """股吧：独立节奏（比慢源频繁），失败时由调度器指数退避。
+
+    ⚠️ 2026-11-07 实测：东财对 `guba.eastmoney.com/list,<code>.html` 上了滑块风控，
+    容器 IP 拿到的是「身份核实」空壳页（2826 字节、无 `var article_list`），
+    旧的内嵌 JSON 抓法失效；`gbapi` 的 Articlelist 也变成 `re: []`。
+    所以**抓不到是常态而非异常**：这里失败只返回 0，不抛错、不刷 warning 日志，
+    由调度器拉长间隔，等风控解除后自然恢复。
+    """
+    rows = []
+    try:
+        from app.datahub.extractors.guba_hot import GubaHotExtractor
+
+        df = GubaHotExtractor().fetch(top_n=10, max_posts=40)
+        if df is not None and not df.empty:
+            rows = [{"key": r.get("key"), "title": r.get("key"),
+                     "published_at": r.get("date"),
+                     "symbols": str(r.get("code") or ""),
+                     "extra": {"heat": r.get("heat"), "kind": "股吧"}}
+                    for _, r in df.iterrows()]
+    except Exception as e:  # noqa: BLE001
+        logger.info("股吧实时抓取异常（多为风控）：%s", str(e)[:80])
+    if not rows:
+        # 回退到 ETL 落的 parquet：至少让当日数据进统一流，别整段空着
+        try:
+            rows = _fetch_parquet("guba_hot", "guba")
+        except Exception:  # noqa: BLE001
+            rows = []
+    try:
+        return _insert(db, _rows("guba", rows))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("写入股吧失败：%s", e)
+        return -1
 
 
 def prune(db: Session, days: int = RETENTION_DAYS) -> int:
@@ -268,10 +298,12 @@ def prune(db: Session, days: int = RETENTION_DAYS) -> int:
     return int(res or 0)
 
 
-def sync(db: Session, with_slow: bool = False) -> dict:
+def sync(db: Session, with_slow: bool = False, with_guba: bool = False) -> dict:
     res = sync_fast(db)
     if with_slow:
         res.update(sync_slow(db))
+    if with_guba:
+        res["guba"] = sync_guba(db)
     prune(db)
     total = sum(v for v in res.values() if v > 0)
     if total:

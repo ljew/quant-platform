@@ -138,8 +138,16 @@ def feed_sources(hours: int = Query(72, ge=0, le=24 * 120), db=Depends(get_db)):
 
 
 @router.post("/sync")
-def feed_sync(with_slow: bool = True, db=Depends(get_db)):
-    """手动触发一次同步（调度器每 10 分钟自动跑快源）。"""
+def feed_sync(with_slow: bool = True, with_guba: bool = True, db=Depends(get_db)):
+    """手动触发一次同步（调度器自动跑：快源 10 分钟 / 慢源每小时 / 股吧 20 分钟）。"""
     from app.services import news_feed
 
-    return news_feed.sync(db, with_slow=with_slow)
+    return news_feed.sync(db, with_slow=with_slow, with_guba=with_guba)
+
+
+@router.get("/sync-status")
+def feed_sync_status():
+    """同步调度器状态（含股吧退避轮次，便于判断是不是被风控）。"""
+    from app.core.news_feed_scheduler import get_status
+
+    return get_status()
