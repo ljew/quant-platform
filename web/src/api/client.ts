@@ -778,10 +778,43 @@ export interface StockNews {
   ok: boolean; error?: string; symbol?: string; items: NewsItem[]; cached?: boolean;
 }
 
+/** 统一资讯流条目（各来源原文归一后的形态） */
+export interface NewsFeedItem {
+  id: number;
+  source: string;          // cls / eastmoney / sina / tushare / wechat / guba
+  source_label: string;    // 财联社 / 东财 / …
+  title: string;
+  summary: string;
+  url: string;
+  published_at: string | null;
+  symbols: string;
+}
+
+export interface NewsSourceStat {
+  key: string;
+  label: string;
+  count: number;
+  latest: string | null;
+}
+
 export const newsApi = {
   feed: (refresh = false) => get<NewsFeed>(`/news/feed${refresh ? "?refresh=true" : ""}`),
   stock: (symbol: string) =>
     get<StockNews>(`/news/stock?symbol=${encodeURIComponent(symbol)}`),
+  /** 统一资讯流（分页）。sources 传逗号串，空=全部 */
+  feedItems: (p: { sources?: string; q?: string; hours?: number; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (p.sources) qs.set("sources", p.sources);
+    if (p.q) qs.set("q", p.q);
+    if (p.hours !== undefined) qs.set("hours", String(p.hours));
+    qs.set("limit", String(p.limit ?? 60));
+    qs.set("offset", String(p.offset ?? 0));
+    return get<{ items: NewsFeedItem[]; total: number; has_more: boolean }>(`/news/items?${qs}`);
+  },
+  /** 各来源条数与最新时间 */
+  feedSources: (hours = 0) => get<NewsSourceStat[]>(`/news/sources?hours=${hours}`),
+  /** 手动触发一次同步 */
+  feedSync: () => post<Record<string, number>>("/news/sync", {}),
 };
 
 // —— 自动研究闭环（/auto/*）——

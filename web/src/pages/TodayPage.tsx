@@ -56,9 +56,11 @@ export default function TodayPage() {
   const [date, setDate] = useState("");
   const [dates, setDates] = useState<{ date: string; symbols: number }[]>([]);
   const [actions, setActions] = useState<ActionItem[]>([]);
-  const [feed, setFeed] = useState<NewsFeed | null>(null);
   const [agent, setAgent] = useState<AgentState | null>(null);
   const [fwHealth, setFwHealth] = useState<FrameworkHealth | null>(null);
+  // 注意：这个 feed 仍要拉 —— 右栏「指数概览」用的是它的 global_quotes。
+  // 首页已不再展示原始快讯列表（2026-11-07 挪到「全部资讯」页）。
+  const [feed, setFeed] = useState<NewsFeed | null>(null);
   const [filter, setFilter] = useState<string>("buy");
   const [idxQuotes, setIdxQuotes] = useState<{ name: string; price: number; pct: number }[]>([]);
   // K 线抽屉
@@ -67,11 +69,11 @@ export default function TodayPage() {
   const [drawerLoading, setDrawerLoading] = useState(false);
 
   useEffect(() => {
+    newsApi.feed(false).then(setFeed).catch(() => {});
     get<{ date: string; symbols: number }[]>("/signal/dates").then((d) => {
       setDates(d);
       if (d[0]) setDate(d[0].date);
     }).catch(() => {});
-    newsApi.feed(false).then(setFeed).catch(() => {});
     agentApi.state().then(setAgent).catch(() => {});
   }, []);
 
@@ -89,14 +91,22 @@ export default function TodayPage() {
       .then((d) => setActions(d.items)).catch(() => setActions([]));
   }, [date]);
 
-  // 指数概览：优先实时快照（批量接口），失败回退资讯里的全球行情
+  // 指数概览：优先实时快照（批量接口），失败或不完整回退资讯里的全球行情
   useEffect(() => {
     (async () => {
       try {
         const qs = await get<{ symbol: string; name: string; price: number; change_pct: number }[]>(
           `/market/quote?symbols=${INDICES.map((i) => i.symbol).join(",")}`);
-        if (qs.length) {
-          setIdxQuotes(qs.map((q) => ({ name: q.name, price: q.price, pct: q.change_pct })));
+        // 双保险：四个指数必须按代码全部命中才采用，名称一律取本地 INDICES。
+        // 后端若只回 1 条、或把 sh000001 串成个股 sz000001，这里会拒绝展示并回退，
+        // 避免 2×2 网格冒出「平安银行」这种错卡（2026-11-07）。
+        const bySym = new Map(qs.map((q) => [q.symbol?.toLowerCase(), q]));
+        const matched = INDICES.map((i) => {
+          const q = bySym.get(i.symbol);
+          return q ? { name: i.name, price: q.price, pct: q.change_pct } : null;
+        });
+        if (matched.every((x) => x !== null)) {
+          setIdxQuotes(matched as { name: string; price: number; pct: number }[]);
           return;
         }
       } catch { /* 回退到资讯快照 */ }
@@ -321,7 +331,7 @@ export default function TodayPage() {
           )}
         </Card>
 
-        {/* —— 右侧：指数 + 资讯 —— */}
+        {/* —— 右侧：指数概览 —— */}
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <Card colors={colors} title="指数概览" pad={10}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -342,29 +352,6 @@ export default function TodayPage() {
             </div>
           </Card>
 
-          <Card colors={colors} title={
-            <span>资讯快讯
-              {feed && <span style={{ color: colors.muted, fontSize: 11.5, fontWeight: 400, marginLeft: 8 }}>
-                {feed.cached ? `缓存 ${Math.round(feed.age_sec)}s` : "刚刚更新"}{feed.stale ? " · 上游暂不可达" : ""}
-              </span>}
-            </span>
-          } pad={8}>
-            {[...(feed?.headlines || []).slice(0, 5), ...(feed?.sina_roll || []).slice(0, 4)].map((n, i) => (
-              <a key={i} href={n.url} target="_blank" rel="noreferrer" style={{
-                display: "block", padding: "8px 10px", borderBottom: `1px solid ${colors.border}`,
-                color: colors.text, textDecoration: "none", fontSize: 12.5, lineHeight: 1.55,
-              }}>
-                {n.title}
-                <div style={{ color: colors.muted, fontSize: 11, marginTop: 2 }}>{n.source} · {n.time}</div>
-              </a>
-            ))}
-            {!feed && <div style={{ color: colors.muted, fontSize: 12.5, padding: 10 }}>加载中…</div>}
-            {feed?.xueqiu_hot?.length ? (
-              <div style={{ padding: "8px 10px", fontSize: 12, color: colors.muted }}>
-                雪球热榜：{feed.xueqiu_hot.slice(0, 5).map((h) => h.name).join("、")}
-              </div>
-            ) : null}
-          </Card>
         </div>
       </div>
     </div>

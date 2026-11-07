@@ -78,7 +78,8 @@ def on_startup():
         "%(asctime)s %(levelname)s %(name)s: %(message)s"))
     for _name in ("data_scheduler", "wechat_scheduler",
                   "app.services.auto_research", "app.core.nsi_scheduler",
-                  "etf_flow_scheduler", "hot_brief_scheduler"):
+                  "etf_flow_scheduler", "hot_brief_scheduler",
+                  "news_feed_scheduler", "news_feed"):
         _lg = logging.getLogger(_name)
         if not _lg.handlers:
             _lg.addHandler(_h)
@@ -113,6 +114,14 @@ def on_startup():
     except Exception as _e:  # noqa: BLE001
         # 公众号是附加模块，起不来不能拖垮主服务
         logging.getLogger(__name__).warning("公众号调度器启动失败：%s", _e)
+
+    # 统一资讯流：各来源原文归一入库（news_feed），供「全部资讯」页浏览。
+    # 快源 10 分钟同步，慢源每小时顺带（公众号/tushare/股吧）。
+    try:
+        from app.core.news_feed_scheduler import start_news_feed_scheduler
+        start_news_feed_scheduler()
+    except Exception as _e:  # noqa: BLE001
+        logging.getLogger(__name__).warning("资讯同步调度器启动失败：%s", _e)
 
     # 每小时热点简报：一手快讯（财联社）→ LLM 筛选解读 → hot_brief 表。
     # DeepSeek API 无联网能力（tools 只支持 function，2026-11-07 实测 422），

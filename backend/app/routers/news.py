@@ -14,8 +14,9 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from app.database import get_db
 from app.services import news_agg
 
 router = APIRouter(prefix="/news", tags=["news"])
@@ -106,3 +107,39 @@ def stock(symbol: str = Query(..., description="平台符号 sh600519 / 纯 6 �
     if items:
         _put_cached(key, payload)
     return payload
+
+# ───────────────────── 统一资讯流（全部来源归一）─────────────────────
+# 老刘要求：各来源原始信息要能在「一个界面」里看，首页只留简报。
+# 数据在 news_feed 表（services/news_feed.py 负责同步与查询）。
+
+@router.get("/items")
+def feed_items(
+    sources: str = Query("", description="逗号分隔的来源 key，空=全部"),
+    q: str = Query("", description="标题/摘要关键词"),
+    hours: int = Query(0, ge=0, le=24 * 120, description="只看最近 N 小时，0=不限"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db=Depends(get_db),
+):
+    """统一资讯流分页查询（按发布时间倒序）。"""
+    from app.services import news_feed
+
+    srcs = [x.strip() for x in sources.split(",") if x.strip()]
+    return news_feed.query(db, sources=srcs or None, q=q, hours=hours,
+                           limit=limit, offset=offset)
+
+
+@router.get("/sources")
+def feed_sources(hours: int = Query(72, ge=0, le=24 * 120), db=Depends(get_db)):
+    """各来源条数与最新时间（页面顶部标签）。"""
+    from app.services import news_feed
+
+    return news_feed.source_stats(db, hours=hours)
+
+
+@router.post("/sync")
+def feed_sync(with_slow: bool = True, db=Depends(get_db)):
+    """手动触发一次同步（调度器每 10 分钟自动跑快源）。"""
+    from app.services import news_feed
+
+    return news_feed.sync(db, with_slow=with_slow)

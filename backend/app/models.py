@@ -539,6 +539,37 @@ class NewsMarketDaily(Base):
         return f"<NewsMarketDaily {self.date} senti={self.net_sentiment}>"
 
 
+class NewsFeedItem(Base):
+    """统一资讯流：各来源的原文条目归一存放，供「全部资讯」页浏览与检索。
+
+    为什么不复用旧的 `doc_document`（6.4 万行）：那张表是已下线的 kb 模块留下的，
+    最后写入停在 2026-10-24，且无任何代码引用；它的 `content_hash / dup_group_id /
+    is_canonical` 三件套是给去重合并设计的，本场景不需要这么重。
+
+    设计要点：
+    - `uid` = sha1(source + 自然主键)，靠唯一约束做幂等，重复同步不会长胖
+    - `summary` 截断存（长文只留前 600 字），全文在各来源自己的库/页面
+    - 各源时间口径不同（unix 秒 / ISO 字符串），入库前统一成 datetime
+    """
+
+    __tablename__ = "news_feed"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    uid: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    source: Mapped[str] = mapped_column(String(24), index=True)      # cls/eastmoney/...
+    source_label: Mapped[str] = mapped_column(String(32), default="")
+    title: Mapped[str] = mapped_column(String(400), default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    url: Mapped[str] = mapped_column(String(600), default="")
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, index=True, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    symbols: Mapped[str] = mapped_column(String(200), default="")
+    extra_json: Mapped[str] = mapped_column(Text, default="{}")
+
+    def __repr__(self):
+        return f"<NewsFeedItem {self.source} {self.title[:16]}>"
+
+
 class HotBrief(Base):
     """每小时热点简报（非结构化资讯 → LLM 筛选解读）。
 

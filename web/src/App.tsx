@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import TodayPage from "./pages/TodayPage";
+import NewsFeedPage from "./pages/NewsFeedPage";
 import MarketPage from "./pages/MarketPage";
 import BacktestOptimizePage from "./pages/BacktestOptimizePage";
 import PaperPage from "./pages/PaperPage";
@@ -26,6 +27,8 @@ type HubKey = "today" | "research" | "track" | "data";
 const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; label: string }[] }[] = [
   { key: "today", label: "今日观点", icon: "☀", tabs: [
     { key: "today", label: "今日观点" },
+    // 全部资讯：各来源原文归一（原始信息）。首页只放简报（判断），原文来这看。
+    { key: "news", label: "全部资讯" },
     { key: "market", label: "行情看板" },
     // 资金流：20 只宽基 ETF 的日度/分钟资金观察（观察口径，非信号；信号见 NSI）
     { key: "etfflow", label: "资金流" },
@@ -49,7 +52,6 @@ const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; lab
 
 /** 旧 tab 名 → 新二级 tab（兼容各处 dispatch 的 quant-nav 跳转）。 */
 const LEGACY_TAB_MAP: Record<string, string> = {
-  news: "today",          // 资讯中心 → 今日观点（已收编为快讯栏）
   backtest: "btopt",      // v2.1 合并
   optimize: "btopt",
   factor: "factorlab",    // 因子检验 → 因子实验室
@@ -77,6 +79,7 @@ function initialNav(): { hub: HubKey; sub: string } {
 function HubContent({ sub }: { sub: string }) {
   switch (sub) {
     case "today": return <TodayPage />;
+    case "news": return <NewsFeedPage />;
     case "market": return <MarketPage />;
     case "etfflow": return <EtfFlowPage />;
     case "wechat": return <WechatPage />;

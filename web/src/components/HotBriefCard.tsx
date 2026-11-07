@@ -263,6 +263,13 @@ export default function HotBriefCard({
             {" "}来源标签：灰色「财联社电报」= 一手快讯，蓝色「DeepSeek · 站点」= 网页搜索（可点开原文）。
           </>
         )}
+        {" "}
+        <a
+          href="#news"
+          style={{ color: colors.accent, textDecoration: "none", whiteSpace: "nowrap" }}
+        >
+          全部原始资讯 →
+        </a>
       </div>
     </Card>
   );
