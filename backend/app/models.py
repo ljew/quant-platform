@@ -539,6 +539,32 @@ class NewsMarketDaily(Base):
         return f"<NewsMarketDaily {self.date} senti={self.net_sentiment}>"
 
 
+class SocialHeatDaily(Base):
+    """社交关注度日频（雪球 A 股热股 / 微博热搜）。
+
+    与 `news_market_daily` 的区别：那边是「多空情绪」（有正文可打分），这边是
+    「关注度」（只有热度值、没有正文）。两者互补：一个答「偏多还是偏空」，
+    一个答「大家在聊什么、聊得有多热」。
+
+    `source` 区分平台（雪球/微博），`n_finance` 是命中财经关键词的条数，
+    `heat_total` 量纲随平台不同（雪球热度 vs 微博搜索量），跨平台不可直接相加。
+    """
+
+    __tablename__ = "social_heat_daily"
+    __table_args__ = (UniqueConstraint("date", "source", name="uq_social_heat"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    date: Mapped[date] = mapped_column(Date, index=True)
+    source: Mapped[str] = mapped_column(String(12))
+    n_items: Mapped[int] = mapped_column(Integer, default=0)
+    n_finance: Mapped[int] = mapped_column(Integer, default=0)
+    heat_total: Mapped[float] = mapped_column(Float, default=0.0)
+    heat_top10: Mapped[float] = mapped_column(Float, default=0.0)
+
+    def __repr__(self):
+        return f"<SocialHeatDaily {self.date} {self.source} n={self.n_items}>"
+
+
 class MpSentimentDaily(Base):
     """公众号文章情绪日频聚合（非结构化 · 公众号语料）。
 

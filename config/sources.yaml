@@ -57,6 +57,30 @@ sources:
       db_path: ""
       body_chars: 4000
 
+  tushare_news:
+    type: tushare_news
+    step: extract_tushare_news
+    layer: bronze
+    produces: text/tushare_news
+    enabled: true
+    description: tushare 资讯（major_news 深度新闻 + cctv_news 新闻联播）
+    params:
+      # pro.news(src=...) 各源实测 0 行（权限不够），只接这两个能用的接口。
+      # major_news 只有标题、没有正文，打分时只跑标题；cctv_news 有正文。
+      days: 3
+      major_rows: 500
+
+  social_heat:
+    type: social_heat
+    step: extract_social_heat
+    layer: bronze
+    produces: text/social_heat
+    enabled: true
+    description: 雪球 A 股热股 + 微博热搜（关注度，不含多空情绪）
+    params:
+      xq_size: 50          # 雪球 A 股热股榜条数（type=12）
+      weibo_size: 60       # 微博热搜条数（免登录接口约 52 条）
+
   eastmoney_news:
     type: eastmoney_news
     step: extract_eastmoney_news
