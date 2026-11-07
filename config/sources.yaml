@@ -57,6 +57,18 @@ sources:
       db_path: ""
       body_chars: 4000
 
+  cls_telegraph:
+    type: cls_telegraph
+    step: extract_cls_telegraph
+    layer: bronze
+    produces: text/cls_telegraph
+    enabled: true
+    description: 财联社电报（有正文 + 相关个股 + 板块 + 重要等级，时效最强）
+    params:
+      rn: 50             # 每页条数（接口上限 50，传 100 会返回空）
+      pages: 3           # 拉几页（用 last_time 翻页）→ 约 150 条
+      min_level: ""      # 只保留重要等级 <= 该值（A 最高）；空=全要
+
   tushare_news:
     type: tushare_news
     step: extract_tushare_news
@@ -80,6 +92,17 @@ sources:
     params:
       xq_size: 50          # 雪球 A 股热股榜条数（type=12）
       weibo_size: 60       # 微博热搜条数（免登录接口约 52 条）
+
+  guba_hot:
+    type: guba_hot
+    step: extract_guba_heat
+    layer: bronze
+    produces: text/guba_hot
+    enabled: true
+    description: 东财股吧热门股讨论热度（只有阅读/评论数，不做多空打分）
+    params:
+      top_n: 10          # 取雪球 A 股热股前 N 只的股吧
+      max_posts: 40      # 每只股吧取多少条帖子
 
   eastmoney_news:
     type: eastmoney_news
