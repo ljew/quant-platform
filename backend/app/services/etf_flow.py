@@ -738,8 +738,20 @@ def _cum(arr: list[float | None]) -> list[float | None]:
     return out
 
 
-def _read_nsi() -> dict:
-    """读 NSI 当日读数与最近 250 日历史（复用既有信号，不重算）。"""
+def _read_nsi(trade_dates: list[str] | None = None) -> dict:
+    """读 NSI 当日读数与最近 250 日历史（复用既有信号，不重算）。
+
+    ⚠️ `nsi_signal.csv` 由 `scripts/research/nsi_daily.py` 以 `index=False` 写出，
+    文件里**没有日期列**，只有 `NSI/score/pos_pen/p750/position/...` 数值列。
+    旧代码直接取 `r.date`，抛 AttributeError 后被 except 吞掉，`history` 永远
+    是 None —— 前端 NSI 曲线区就只剩几条 Y 轴刻度，看起来像空图。
+
+    日期来源优先级：
+      1. CSV 自带 `date` / `trade_date` 列（生成脚本修好后自动生效）
+      2. 调用方传入的日度交易日历，按**尾部对齐**（signal 每行对应一个交易日，
+         并用 nsi_latest.json 的 as_of 截断，保证最后一行日期准确）
+      3. 都没有 → 不给 history，由前端显示空态，不要静默画一张空图
+    """
     base = DATA_DIR / "research"
     latest_p, hist_p = base / "nsi_latest.json", base / "nsi_signal.csv"
     out: dict = {"available": False}
@@ -750,15 +762,37 @@ def _read_nsi() -> dict:
     except Exception as e:  # noqa: BLE001
         logger.warning("读取 nsi_latest.json 失败：%s", e)
     try:
-        if hist_p.exists():
-            h = pd.read_csv(hist_p)
-            h = h.dropna(subset=["score"]).tail(250)
-            out["history"] = [{
-                "date": str(r.date)[:10],
-                "score": round(float(r.score), 2),
-                "nsi": round(float(r.NSI), 2) if pd.notna(r.NSI) else None,
-                "position": float(r.position) if pd.notna(r.position) else None,
-            } for r in h.itertuples()]
+        if not hist_p.exists():
+            return out
+        h = pd.read_csv(hist_p)
+        date_col = next((c for c in ("date", "trade_date") if c in h.columns), None)
+        v = h.dropna(subset=["score"]).tail(250)
+        if not len(v):
+            return out
+        idxs = list(v.index)
+        if date_col:
+            dates_out = [str(h[date_col].iloc[i])[:10] for i in idxs]
+        elif trade_dates:
+            cal = [f"{str(d)[:4]}-{str(d)[4:6]}-{str(d)[6:8]}"
+                   if len(str(d)) == 8 and "-" not in str(d) else str(d)[:10]
+                   for d in trade_dates]
+            as_of = str(out.get("as_of") or "")[:10]
+            if as_of and as_of in cal:
+                cal = cal[:cal.index(as_of) + 1]   # 日历可能比 NSI 新，截到 as_of
+            if len(cal) < len(v):
+                logger.warning("NSI 历史 %d 行但交易日历只有 %d 天，日期可能错位",
+                               len(v), len(cal))
+                cal = ["—"] * (len(v) - len(cal)) + cal
+            dates_out = cal[-len(v):]
+        else:
+            logger.warning("nsi_signal.csv 无日期列且未提供交易日历，NSI 历史跳过")
+            return out
+        out["history"] = [{
+            "date": dates_out[k],
+            "score": round(float(r.score), 2),
+            "nsi": round(float(r.NSI), 2) if pd.notna(getattr(r, "NSI", None)) else None,
+            "position": float(r.position) if pd.notna(getattr(r, "position", None)) else None,
+        } for k, r in enumerate(v.itertuples())]
     except Exception as e:  # noqa: BLE001
         logger.warning("读取 nsi_signal.csv 失败：%s", e)
     return out
@@ -1638,9 +1672,12 @@ def build_dashboard(db: Session) -> dict:
         for r in brows:
             info = u.get(r.symbol, {})
             amt = float(r.amount or 0)
-            series = hmap.get(r.symbol, [])
-            prev = series[-2][1] if len(series) >= 2 else None
-            pool = [a for _, a in series[:-1]][-20:]
+            # ⚠️ 这里不能叫 series —— 上面那个同名变量装的是「当日 240 分钟成交额」，
+            # 返回字典的 minute.today_amount 直接引用它。曾因在这里复用名字，
+            # 把日度 [日期, 值] 列表覆盖进去，分钟柱图整片空白（只剩坐标轴）。
+            sym_hist = hmap.get(r.symbol, [])
+            prev = sym_hist[-2][1] if len(sym_hist) >= 2 else None
+            pool = [a for _, a in sym_hist[:-1]][-20:]
             base20 = float(pd.Series(pool).median()) if pool else None
             mult20 = round(amt / base20, 2) if base20 else None
             mult_prev = round(amt / prev, 2) if prev else None
@@ -1856,7 +1893,7 @@ def build_dashboard(db: Session) -> dict:
     }
 
     # ── 顶部总结 ──
-    nsi_data = _read_nsi()
+    nsi_data = _read_nsi(dates)
     # 份额 T+1 才可见。当日若还没有份额，flow 里的 net_inflow 是表默认值 0，
     # 必须当成「待公布」而不是「流入 0 亿」——两者对结论的指向完全相反
     # （前者是「还不知道」，后者是「钱没进来」）。

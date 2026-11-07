@@ -1873,7 +1873,14 @@ function NsiCard({
         );
       })()}
 
-      <EChart option={opt} height={272} />
+      {(nsi.history?.length ?? 0) > 0 ? (
+        <EChart option={opt} height={272} />
+      ) : (
+        <Empty colors={colors}>
+          NSI 历史序列暂不可用 —— 请检查 data/research/nsi_signal.csv 是否已生成且可读
+          （历史文件缺日期列时按交易日历尾部对齐）。
+        </Empty>
+      )}
       <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 6, lineHeight: 1.7 }}>
         上：score 与触发阈值（{f2(hi)}）；下：建议仓位。NSI 只做加法——score 低不会触发减仓，
         加仓窗口在最后一次触发后自然滚动 20 个交易日。{nsi.note}
@@ -1894,8 +1901,19 @@ function MinuteCard({
   const opt = useMemo<EChartsOption>(() => {
     const n = minute.count || 0;
     const labels = minute.labels.slice(0, n);
-    const hot = minute.today_amount.map((v, i) =>
-      v != null && minute.avg20_amount[i] > 0 && v / minute.avg20_amount[i] > 2.6);
+    const amt = minute.today_amount.slice(0, n);
+    // 09:31 含集合竞价，单根常是其余分钟的几倍到十几倍。让它去撑 Y 轴，
+    // 另外 239 根会被压成贴地的一条线 —— 图上有柱子，但等于看不见。
+    // 按「除首分钟外的最大值」定上界，首柱截断显示并在柱顶标真实值，
+    // tooltip 始终给原始数值，不伪造数据。
+    const rest = amt.slice(1).filter((v): v is number => v != null && v > 0);
+    const restMax = rest.length ? Math.max(...rest) : 20;
+    const yMax = Math.max(20, Math.ceil(restMax * 1.25 / 5) * 5);
+    // 脉冲判定加绝对量门槛：均量接近 0 时，0.1 亿也能算出「10 倍放量」，
+    // 那是噪声不是资金进场。
+    const hot = amt.map((v, i) =>
+      v != null && v >= 5 && minute.avg20_amount[i] > 0.5
+      && v / minute.avg20_amount[i] > 2.6);
     return {
       grid: [
         { left: 54, right: 56, top: 30, height: 150 },
@@ -1939,7 +1957,7 @@ function MinuteCard({
           splitLine: { lineStyle: { color: colors.border } },
         },
         {
-          gridIndex: 1,
+          gridIndex: 1, min: 0, max: yMax,
           axisLabel: { color: colors.axis, fontSize: 10 },
           splitLine: { lineStyle: { color: colors.border } },
         },
@@ -1968,9 +1986,13 @@ function MinuteCard({
         {
           name: "分钟成交额", type: "bar", xAxisIndex: 1, yAxisIndex: 1,
           barWidth: "72%",
-          data: minute.today_amount.map((v, i) => ({
-            value: v,
+          data: amt.map((v, i) => ({
+            value: v == null ? null : Math.min(v, yMax),
             itemStyle: { color: hot[i] ? colors.up : `${rgba(colors.up,0.30)}`, borderRadius: [1, 1, 0, 0] },
+            ...(v != null && v > yMax ? {
+              label: { show: true, position: "top", formatter: `${f1(v)}↑`,
+                       color: colors.up, fontSize: 10, fontWeight: 600 },
+            } : {}),
           })),
         },
         {
@@ -1986,6 +2008,9 @@ function MinuteCard({
     ? `采样自 ${minute.labels[meta.partial_from]}，此前无数据`
     : meta.count ? `${minute.labels[0]} – ${minute.labels[meta.count - 1]}`
       : (meta.is_today ? "今日暂无分钟数据" : "等待盘中数据");
+  // 柱子序列必须与分钟轴等长。后端曾把日度序列覆盖进这个字段，
+  // 结果 ECharts 收不到合法数值，整片柱子静默消失、只剩坐标轴。
+  const barsOk = minute.today_amount.length >= (minute.count || 0) && minute.count > 0;
 
   return (
     <div style={cardStyle(colors)}>
@@ -1995,11 +2020,18 @@ function MinuteCard({
           暂无分钟数据 —— 交易时段内服务会自动逐分钟采集；
           已收盘的话点状态栏「拉官方分钟线」立即补
         </Empty>
+      ) : !barsOk ? (
+        <Empty colors={colors}>
+          分钟成交额序列长度异常（{minute.today_amount.length} 条 / 应有 {minute.count} 条），
+          柱状图已停用以免画出空图。
+        </Empty>
       ) : <EChart option={opt} height={372} />}
       <Note colors={colors}>
-        一天里 20 只重点 ETF 每一分钟在二级市场的真实成交，加总成一根根柱子；折线是上证综指同步点位，虚线是昨收。
-        它回答的是「今天资金有没有在动」——柱子突然拔高、又伴随指数向上，往往是资金进场；柱子放量但指数不动或下跌，
-        则更像托底或对倒。深红色标记的是该分钟成交额超过 20 日同期均量 2.6 倍的时刻，是全天最值得留意的脉冲。
+        下半图每一根柱子 = 20 只重点 ETF 该分钟在二级市场的真实成交额之和，灰线是过去 20 天同一分钟的均量；
+        上半图蓝线是上证综指同步点位，虚线是昨收。它回答的是「今天资金有没有在动」——柱子突然拔高、又伴随指数向上，
+        往往是资金进场；柱子放量但指数不动或下跌，则更像托底或对倒。
+        深红色标记的是成交额 ≥ 5 亿且超过 20 日同期均量 2.6 倍的时刻（加绝对量门槛是为了避免均量趋近 0 时把噪声算成脉冲）。
+        09:31 含集合竞价，量级常是其余分钟的十几倍，图上按轴上界截断并在柱顶标出真实值；悬停任意柱子可看原始数值。
       </Note>
     </div>
   );
