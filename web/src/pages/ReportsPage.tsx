@@ -51,11 +51,13 @@ const SLOT_COLOR: Record<string, string> = {
   晚间版: "#6d28d9",
 };
 
-/** 库里的时间戳是 UTC（脚本用 datetime.utcnow），展示时转本地。 */
+/** 库里的时间戳是**本地时间且无时区标记**（ingest 脚本按宿主本地时间写入）。
+ *  必须按本地解析：`new Date("YYYY-MM-DDTHH:MM:SS")` 是本地语义，
+ *  若错误地补 "Z" 当成 UTC，在 +08:00 浏览器上会多出 8 小时。 */
 function fmtTime(raw: string | null): string {
   if (!raw) return "—";
   const s = raw.includes("T") ? raw : raw.replace(" ", "T");
-  const d = new Date(s.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(s) ? s : `${s}Z`);
+  const d = new Date(s);
   if (Number.isNaN(d.getTime())) return raw;
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
@@ -104,10 +106,17 @@ export default function ReportsPage() {
     return () => clearTimeout(t);
   }, [load]);
 
-  const maxMissing = useMemo(
-    () => rows.reduce((m, r) => Math.max(m, r.missing_count ?? 0), 0),
-    [rows],
-  );
+  // KPI 用当前筛选结果累加（默认无筛选=全库前 300 份，覆盖日常使用）
+  const { newsTotal, conflictTotal, missingTotal } = useMemo(() => {
+    return rows.reduce(
+      (a, r) => ({
+        newsTotal: a.newsTotal + (r.news_count ?? 0),
+        conflictTotal: a.conflictTotal + (r.conflict_count ?? 0),
+        missingTotal: a.missingTotal + (r.missing_count ?? 0),
+      }),
+      { newsTotal: 0, conflictTotal: 0, missingTotal: 0 },
+    );
+  }, [rows]);
 
   const open = (r: ReportRow) => {
     setActive(r);
@@ -133,8 +142,8 @@ export default function ReportsPage() {
       />
 
       {/* —— 入库状态：让「报告到底进没进库」一眼可见 —— */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(158px,1fr))", gap: 10, marginBottom: 12 }}>
-        <KpiCard label="库中报告" value={String(stats?.total ?? 0)} sub="market_reports" colors={colors} />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", gap: 10, marginBottom: 12 }}>
+        <KpiCard label="库中报告" value={String(stats?.total ?? 0)} sub="表 market_reports" colors={colors} />
         <KpiCard
           label="最新一份"
           value={latest ? `${latest.report_date.slice(5)} ${latest.slot}` : "—"}
@@ -145,13 +154,13 @@ export default function ReportsPage() {
         <KpiCard
           label="覆盖交易日"
           value={String(stats?.by_date?.length ?? 0)}
-          sub={`按日统计 ${stats?.by_date?.[0]?.report_date ?? "—"} 起`}
+          sub={`最早 ${stats?.by_date?.[stats.by_date.length - 1]?.report_date ?? "—"}`}
           colors={colors}
         />
         <KpiCard
-          label="当前筛选"
-          value={`${total} 份`}
-          sub={maxMissing > 0 ? `最高待补 ${maxMissing} 项` : "无待补标记"}
+          label="资讯累计"
+          value={String(newsTotal)}
+          sub={`源冲突 ${conflictTotal} · 待补 ${missingTotal}`}
           colors={colors}
         />
       </div>
@@ -222,7 +231,7 @@ export default function ReportsPage() {
                       cursor: "pointer",
                     }}
                   >
-                    <td style={{ padding: "7px 10px", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{r.report_date}</td>
+                    <td title={`report_id=${r.report_id}`} style={{ padding: "7px 10px", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{r.report_date}</td>
                     <td style={{ padding: "7px 10px", whiteSpace: "nowrap" }}>
                       <Badge text={r.slot} color={SLOT_COLOR[r.slot] ?? colors.accent} soft />
                     </td>
