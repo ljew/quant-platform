@@ -136,11 +136,47 @@ function fmtInputTime(x: HotBriefInput): string {
     : `${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
 }
 
-/** 可展开的「本轮原始输入」。● 表示被模型采用，○ 表示看过但丢弃。 */
+/** 正文是 Markdown（DeepSeek 的 summary / fetch 的 content 都带 `##`、`**`），
+ *  原样铺出来满屏符号。只剥标题井号和加粗星号，段落结构保留。 */
+function cleanBody(s: string): string {
+  return (s || "")
+    .replace(/^\s*#{1,6}\s*/gm, "")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
+ * 可展开的「本轮原始输入」。
+ *
+ * ● = 被模型引用（进了某条主题的 src），○ = 看过但丢弃。
+ * 点任意一行展开正文快照 —— 老刘 2026-11-07 的要求是「原始抓下来的文章也要能看」，
+ * 之前只给标题 + 外链，想看内容得跳走，等于没给。
+ * 「抓全文」才走 `/v1/tools/fetch` 实时抓整页（联网 + 按次计费），不预取。
+ */
 function InputsPanel({ inputs, cited }: { inputs: HotBriefInput[]; cited: Set<string> }) {
   const { colors } = useTheme();
   const [open, setOpen] = useState(false);
+  const [openRef, setOpenRef] = useState<string | null>(null);
+  const [fulls, setFulls] = useState<
+    Record<string, { loading?: boolean; content?: string; error?: string }>
+  >({});
   const used = inputs.filter((x) => cited.has(x.ref)).length;
+
+  const grabFull = (x: HotBriefInput) => {
+    setFulls((m) => ({ ...m, [x.ref]: { loading: true } }));
+    api
+      .hotBriefInput(x.ref, { full: true })
+      .then((d) =>
+        setFulls((m) => ({
+          ...m,
+          [x.ref]: { content: d.content || "", error: d.error },
+        })),
+      )
+      .catch((e) =>
+        setFulls((m) => ({ ...m, [x.ref]: { error: String(e?.message || e) } })),
+      );
+  };
 
   return (
     <div style={{ marginTop: 10, borderTop: `1px solid ${colors.border}`, paddingTop: 8 }}>
@@ -151,35 +187,103 @@ function InputsPanel({ inputs, cited }: { inputs: HotBriefInput[]; cited: Set<st
           fontSize: 11.5, padding: 0,
         }}
       >
-        {open ? "▾" : "▸"} 本轮原始输入 {inputs.length} 条（已采用 {used} 条，其余被丢弃）
+        {open ? "▾" : "▸"} 本轮原始输入 {inputs.length} 条（已采用 {used} 条，其余被丢弃；点标题看正文）
       </button>
       {open && (
-        <div style={{ marginTop: 6, maxHeight: 260, overflowY: "auto" }}>
+        <div style={{ marginTop: 6, maxHeight: 420, overflowY: "auto" }}>
           {inputs.map((x) => {
             const on = cited.has(x.ref);
-            const row = (
-              <div style={{ display: "flex", gap: 8, alignItems: "baseline",
-                            padding: "3px 0", fontSize: 11.5, opacity: on ? 1 : 0.55 }}>
-                <span style={{ color: on ? colors.accent : colors.muted, width: 8 }}>
-                  {on ? "●" : "○"}
-                </span>
-                <span style={{ color: colors.muted, width: 26, flexShrink: 0 }}>{x.ref}</span>
-                <span style={{ color: colors.muted, width: 40, flexShrink: 0 }}>
-                  {fmtInputTime(x)}
-                </span>
-                <span style={{ flex: 1, minWidth: 0, color: colors.text }}>
-                  {x.title}{x.url ? " ↗" : ""}
-                </span>
-                <span style={{ color: colors.muted, flexShrink: 0 }}>{x.site}</span>
+            const isOpen = openRef === x.ref;
+            const f = fulls[x.ref];
+            return (
+              <div key={x.ref} style={{ borderBottom: `1px solid ${colors.border}` }}>
+                <div
+                  onClick={() => setOpenRef(isOpen ? null : x.ref)}
+                  style={{
+                    display: "flex", gap: 8, alignItems: "baseline", cursor: "pointer",
+                    padding: "4px 0", fontSize: 11.5, opacity: on ? 1 : 0.55,
+                  }}
+                  title={x.title}
+                >
+                  <span style={{ color: on ? colors.accent : colors.muted, width: 8 }}>
+                    {on ? "●" : "○"}
+                  </span>
+                  <span style={{ color: colors.muted, width: 26, flexShrink: 0 }}>{x.ref}</span>
+                  <span style={{ color: colors.muted, width: 40, flexShrink: 0 }}>
+                    {fmtInputTime(x)}
+                  </span>
+                  <span style={{ flex: 1, minWidth: 0, color: colors.text }}>{x.title}</span>
+                  <span style={{ color: colors.muted, flexShrink: 0 }}>{x.site}</span>
+                  <span style={{ color: colors.accent, flexShrink: 0 }}>{isOpen ? "▴" : "▾"}</span>
+                </div>
+
+                {isOpen && (
+                  <div style={{ padding: "2px 0 10px 42px" }}>
+                    <div style={{ fontSize: 10.5, color: colors.muted, marginBottom: 4 }}>
+                      {x.kind} · {x.site}
+                      {x.body ? ` · 正文 ${x.body.length} 字` : " · 无正文快照"}
+                    </div>
+
+                    {x.body ? (
+                      <div style={{
+                        fontSize: 11.5, lineHeight: 1.75, color: colors.text,
+                        whiteSpace: "pre-wrap", maxHeight: 240, overflowY: "auto",
+                        background: colors.bg, border: `1px solid ${colors.border}`,
+                        borderRadius: 6, padding: "7px 9px",
+                      }}>
+                        {cleanBody(x.body)}
+                      </div>
+                    ) : (
+                      <div style={{
+                        fontSize: 11.5, color: colors.muted, padding: "6px 9px",
+                        border: `1px dashed ${colors.border}`, borderRadius: 6,
+                      }}>
+                        这一轮没存正文快照（加正文之前生成的旧记录）。
+                      </div>
+                    )}
+
+                    <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 6 }}>
+                      {x.url ? (
+                        <button
+                          onClick={() => grabFull(x)}
+                          disabled={!!f?.loading}
+                          style={{
+                            border: `1px solid ${colors.border}`, background: colors.card,
+                            color: colors.muted, borderRadius: 4, padding: "1px 7px",
+                            fontSize: 11, cursor: f?.loading ? "default" : "pointer",
+                          }}
+                        >
+                          {f?.loading ? "抓取中…" : "抓整页正文"}
+                        </button>
+                      ) : null}
+                      {x.url ? (
+                        <a href={x.url} target="_blank" rel="noreferrer"
+                           style={{ fontSize: 11, color: colors.accent, textDecoration: "none" }}>
+                          打开原文 ↗
+                        </a>
+                      ) : null}
+                    </div>
+
+                    {f?.error && (
+                      <div style={{ fontSize: 11, color: colors.down, marginTop: 5 }}>
+                        抓取失败：{f.error}
+                      </div>
+                    )}
+                    {f?.content && (
+                      <div style={{
+                        marginTop: 6, fontSize: 11.5, lineHeight: 1.75, color: colors.text,
+                        whiteSpace: "pre-wrap", maxHeight: 320, overflowY: "auto",
+                        border: `1px solid ${colors.border}`, borderRadius: 6, padding: "7px 9px",
+                      }}>
+                        <div style={{ fontSize: 10.5, color: colors.muted, marginBottom: 4 }}>
+                          整页正文 · {f.content.length} 字（DeepSeek fetch 实时抓取）
+                        </div>
+                        {cleanBody(f.content)}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-            );
-            return x.url ? (
-              <a key={x.ref} href={x.url} target="_blank" rel="noreferrer"
-                 style={{ textDecoration: "none", display: "block" }} title={x.title}>
-                {row}
-              </a>
-            ) : (
-              <div key={x.ref} title={x.title}>{row}</div>
             );
           })}
         </div>
@@ -363,6 +467,26 @@ export default function HotBriefCard({
             </button>
           )}
         </>
+      )}
+
+      {!!brief && (brief.summary || latest.length > 0) && (
+        <details style={{ marginTop: 10, borderTop: `1px solid ${colors.border}`, paddingTop: 8 }}>
+          <summary style={{ cursor: "pointer", fontSize: 11.5, color: colors.accent }}>
+            本轮模型原始输出（JSON）— 主线 / 综述 / 条目全部字段
+          </summary>
+          <pre style={{
+            marginTop: 6, maxHeight: 340, overflow: "auto", fontSize: 10.5,
+            lineHeight: 1.55, background: colors.bg, border: `1px solid ${colors.border}`,
+            borderRadius: 6, padding: 8, whiteSpace: "pre-wrap", wordBreak: "break-all",
+            color: colors.text,
+          }}>
+            {JSON.stringify(
+              { model: brief.model || "", mainline: brief.mainline || "", summary: brief.summary || "", items: latest },
+              null,
+              2,
+            )}
+          </pre>
+        </details>
       )}
 
       {!!brief?.inputs?.length && (

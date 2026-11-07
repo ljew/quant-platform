@@ -465,6 +465,20 @@ def hot_brief_list(limit: int = 24, db: Session = Depends(get_db)):
     return list_briefs(db, limit)
 
 
+@router.get("/hot-brief/input")
+def hot_brief_input(ref: str = "", run_id: int | None = None, full: bool = False,
+                    db: Session = Depends(get_db)):
+    """单条输入的原文内容。
+
+    默认返回生成简报时存下的正文快照（快讯=财联社电报正文，
+    搜索=DeepSeek 返回的 600~800 字摘要）。
+    `full=true` 才实时抓整页正文，按次计费，只在用户点「抓全文」时用。
+    """
+    from app.services.hot_brief import input_detail
+
+    return input_detail(db, ref, run_id=run_id, full=full)
+
+
 @router.post("/hot-brief/run")
 def hot_brief_run(minutes: int = 60, db: Session = Depends(get_db)):
     """手动触发一次（调试用；调度器每小时 :02 自动跑）。"""

@@ -9,6 +9,10 @@ WORKDIR /web
 COPY web/package.json web/package-lock.json* ./
 RUN npm install --no-audit --no-fund --registry=https://registry.npmmirror.com
 COPY web/ ./
+# docs/ 也要进来：前端有页面用 `?raw` 直接 import 仓库根的规格文档
+# （web/src/pages/EtfFlowPage.tsx → ../../../docs/ETF-FLOW-SPEC.md）。
+# 只 COPY web/ 的话宿主机 build 能过、镜像 build 报 Could not resolve。
+COPY docs/ /docs/
 RUN npm run build
 
 # —— 阶段2：后端（托管 React 构建产物）——

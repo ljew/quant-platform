@@ -159,7 +159,9 @@ def collect_flash(minutes: int = 60, limit: int = 60) -> list[dict]:
         if _noise_filter(title + body):
             continue
         rows.append({"src": "快讯", "ts": ts, "title": title,
-                     "body": body[:300], "url": "", "site": ""})
+                     # 存全文（截 1500 防脏数据）：简报正文和「原始输入」面板
+                     # 都要用它，喂模型时在 _build_prompt 里另截 300。
+                     "body": body[:1500], "url": "", "site": ""})
     rows.sort(key=lambda x: x["ts"])
     return rows[-limit:]
 
@@ -244,21 +246,105 @@ def _too_similar(a: str, b: str, thresh: float = 0.32) -> bool:
 
 
 def _inputs_snapshot(flash: list[dict], search: list[dict]) -> list[dict]:
-    """本轮输入的定位信息（编号/类型/时间/标题/站点/链接）。
+    """本轮输入的定位信息 + 正文快照。
 
-    不存正文 —— 目的是「能找回原文」，存标题 + 链接 + 时间即可。
-    56 条约 5KB，一天 24 轮 ≈ 120KB，可接受。
+    2026-11-07 老刘要求「把原始 fetch 下来的文章也显示出来」——之前只存
+    标题和链接，想看内容得点出去跳走，等于没存。现在多存一列 `body`：
+
+    - 快讯：财联社电报正文（已截 1500）
+    - 搜索：DeepSeek `/v1/tools/search` 返回的 `summary`（600~800 字，
+      是那一篇的正文摘要，不是全网总结）
+
+    体积：约 20KB/轮 × 24 轮/天 ≈ 480KB/天，由 `_prune_old_inputs` 在
+    3 天后剥掉 body 只留定位信息，稳态几 MB。
     """
     out: list[dict] = []
     for i, x in enumerate(flash, 1):
         out.append({"ref": f"F{i}", "kind": "快讯", "ts": int(x.get("ts") or 0),
                     "title": str(x.get("title") or "")[:140],
-                    "site": "财联社电报", "url": ""})
+                    "site": "财联社电报", "url": "",
+                    "body": str(x.get("body") or "")[:1500]})
     for i, x in enumerate(search, 1):
         out.append({"ref": f"S{i}", "kind": "搜索", "ts": int(x.get("ts") or 0),
                     "title": str(x.get("title") or "")[:140],
                     "site": str(x.get("site") or "网页"),
-                    "url": str(x.get("url") or "")})
+                    "url": str(x.get("url") or ""),
+                    "body": str(x.get("body") or "")[:1500]})
+    return out
+
+
+def _prune_old_inputs(db: Session, days: int = 3) -> int:
+    """剥掉 N 天前正文快照里的 body，只留定位信息。
+
+    不整条清空：`inputs_json` 的原始用途是「这条结论是从哪看到的」，
+    标题 + 链接 + 时间必须长期留着。正文才是有时效的（说的是当时的版本）。
+    """
+    cutoff = datetime.now() - timedelta(days=days)
+    try:
+        rows = db.query(HotBrief).filter(
+            HotBrief.created_at < cutoff,
+            HotBrief.inputs_json.like("%body%"),
+        ).all()
+    except Exception as e:  # noqa: BLE001
+        logger.info("查询待清理快照失败：%s", str(e)[:60])
+        return 0
+    n = 0
+    for r in rows:
+        try:
+            items = json.loads(r.inputs_json or "[]")
+        except Exception:  # noqa: BLE001
+            continue
+        if not any("body" in x for x in items):
+            continue
+        for x in items:
+            x.pop("body", None)
+        r.inputs_json = json.dumps(items, ensure_ascii=False)
+        n += 1
+    if n:
+        db.commit()
+    return n
+
+
+def input_detail(db: Session, ref: str, run_id: int | None = None,
+                 full: bool = False) -> dict:
+    """单条输入的正文详情。
+
+    `full=True` 才实时调 `/v1/tools/fetch` 抓整页 Markdown —— 这一步要联网、
+    按次计费（0.005 元），所以只在用户点「抓全文」时走，不在页面加载时预取。
+    """
+    ref = (ref or "").strip().upper()
+    if not ref:
+        return {"error": "缺少 ref"}
+    q = select(HotBrief)
+    if run_id:
+        q = q.where(HotBrief.id == run_id)
+    else:
+        q = q.order_by(HotBrief.id.desc()).limit(1)
+    row = db.execute(q).scalar_one_or_none()
+    if row is None:
+        return {"error": "没有找到简报记录"}
+    try:
+        items = json.loads(row.inputs_json or "[]")
+    except Exception:  # noqa: BLE001
+        items = []
+    hit = next((x for x in items if str(x.get("ref", "")).upper() == ref), None)
+    if hit is None:
+        return {"error": f"这一轮输入里没有 {ref}", "run_id": row.id}
+    out = dict(hit)
+    out["run_id"] = row.id
+    if full:
+        url = str(hit.get("url") or "")
+        if not url.startswith("http"):
+            out["error"] = "这一条没有原文链接（财联社快讯只有正文快照）"
+        else:
+            from app.services import ds_search
+
+            got = ds_search.fetch(url)
+            if got.get("error"):
+                out["error"] = got["error"]
+            else:
+                out["content"] = got.get("content") or ""
+                out["content_title"] = got.get("title") or ""
     return out
 
 
@@ -421,12 +507,12 @@ def _build_prompt(flash: list[dict], search: list[dict], minutes: int,
                   recent: list[str] | None = None,
                   n_prev: int = 0) -> str:
     flash_corpus = "\n".join(
-        f"[F{i}] {x['title']}｜{x['body']}" for i, x in enumerate(flash, 1)
+        f"[F{i}] {x['title']}｜{x['body'][:300]}" for i, x in enumerate(flash, 1)
     ) or "（本轮无新快讯）"
     if search:
         search_corpus = "\n".join(
             f"[S{i}] {x['title']}（{x['site'] or '-'} {x['ts'] and datetime.fromtimestamp(x['ts']).strftime('%m-%d') or '-'}）"
-            f"｜{x['body']}"
+            f"｜{x['body'][:600]}"
             for i, x in enumerate(search, 1)
         )
         search_block = SEARCH_BLOCK.format(n_search=len(search), corpus=search_corpus)
@@ -561,6 +647,14 @@ def run_brief(db: Session, minutes: int = 60,
     except Exception as e:  # noqa: BLE001
         logger.info("清理旧轮次 today_items_json 失败：%s", str(e)[:60])
 
+    # 3 天前的正文快照剥掉 body（保留 ref/标题/链接用于回溯）
+    try:
+        pruned = _prune_old_inputs(db)
+        if pruned:
+            logger.info("清理 %d 轮历史输入正文快照", pruned)
+    except Exception as e:  # noqa: BLE001
+        logger.info("清理历史正文快照失败：%s", str(e)[:60])
+
     # ok 的语义是「这次运行成功」，不是「有产出」。本轮无实质新增是正常结论 ——
     # 若把空结果当失败，调度器会在 :02/:05 反复重试同一小时、还天天告警。
     # 真正的失败只有两种：模型没吐出可解析 JSON（mainline 为空），或调用抛异常。
@@ -677,10 +771,10 @@ def list_briefs(db: Session, limit: int = 24) -> list[dict]:
     rows = db.execute(
         select(HotBrief).order_by(HotBrief.id.desc()).limit(min(max(limit, 1), 200))
     ).scalars().all()
-    return [_to_dict(r) for r in rows]
+    return [_to_dict(r, with_body=False) for r in rows]
 
 
-def _to_dict(r: HotBrief) -> dict:
+def _to_dict(r: HotBrief, with_body: bool = True) -> dict:
     try:
         items = json.loads(r.items_json or "[]")
     except Exception:  # noqa: BLE001
@@ -689,6 +783,10 @@ def _to_dict(r: HotBrief) -> dict:
         inputs = json.loads(r.inputs_json or "[]")
     except Exception:  # noqa: BLE001
         inputs = []
+    if not with_body:
+        # 历史列表只给定位信息：正文快照 20KB/轮，24 轮就 500KB，
+        # 而列表页根本不用展开阅读。
+        inputs = [{k: v for k, v in x.items() if k != "body"} for x in inputs]
     return {
         "id": r.id,
         "created_at": r.created_at.isoformat(timespec="seconds") if r.created_at else None,

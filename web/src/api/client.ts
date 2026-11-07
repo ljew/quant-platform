@@ -174,6 +174,13 @@ export const api = {
   /** 今日累计：各轮条目合并去重 + 最新综述（首页用这个） */
   hotBriefToday: () => get<HotBrief>("/factor/hot-brief/today"),
   hotBriefList: (limit = 24) => get<HotBrief[]>("/factor/hot-brief/list?limit=" + limit),
+  /** 单条输入的原文内容；full=true 时实时抓整页正文（联网、按次计费） */
+  hotBriefInput: (ref: string, opts?: { runId?: number; full?: boolean }) => {
+    const q = new URLSearchParams({ ref });
+    if (opts?.runId) q.set("run_id", String(opts.runId));
+    if (opts?.full) q.set("full", "1");
+    return get<HotBriefInputDetail>(`/factor/hot-brief/input?${q.toString()}`);
+  },
   /** 社交关注度（雪球 A 股热股 / 微博热搜）；只有热度、无正文，不做多空打分 */
   factorSocialHeat: (days = 30) =>
     get<{ date: string; source: string; n_items: number; n_finance: number; heat_total: number; heat_top10: number }[]>(`/factor/social/heat?days=${days}`),
@@ -425,6 +432,17 @@ export interface HotBriefInput {
   title: string;
   site: string;
   url: string;
+  /** 正文快照：快讯=财联社电报正文，搜索=DeepSeek 返回的 600~800 字摘要。
+   *  3 天前的快照会被后端剥掉，只剩定位信息。 */
+  body?: string;
+}
+
+/** 单条输入的详情（`full=1` 时多一个 content：实时抓到的整页正文） */
+export interface HotBriefInputDetail extends HotBriefInput {
+  run_id?: number;
+  content?: string;
+  content_title?: string;
+  error?: string;
 }
 
 export interface HotBrief {
