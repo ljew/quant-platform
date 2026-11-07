@@ -821,7 +821,7 @@ def _nsi_window(nsi: dict) -> dict:
 
 def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
                    sup_n, as_of, is_live, tail_mult=None, tail_today=None,
-                   tier=None) -> dict:
+                   tier=None, avail=None) -> dict:
     """把四个维度（量能 / 资金方向 / 指数 / NSI 信号）压成一段人话结论。
 
     为什么规则驱动而不是接 LLM：这个判断每天只依赖五个数字，规则完全可解释、
@@ -842,12 +842,20 @@ def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
     """
     mult = (turnover / avg_turn) if avg_turn else 0.0
     t = tier or {}
+    _av = avail or {}
+    _state = _av.get("state") or "ok"
+    disabled = _state == "disabled"
+    degraded = _state == "degraded"
     t_mult = t.get("mult")
-    t_verdict = t.get("verdict")
-    t_prob = t.get("prob")
+    t_verdict = None if disabled else t.get("verdict")
+    t_prob = None if disabled else t.get("prob")
     t_count = t.get("count")
-    # 一档口径存在时，用它的档位判定「放没放量」；否则退回 20 只的阈值
-    if t_verdict:
+    # 一档口径存在时，用它的档位判定「放没放量」；否则退回 20 只的阈值。
+    # 判据停用时两者都不给：退回 20 只会让已被证伪的口径（与净申购 r=-0.05）
+    # 冒充结论，比不给结论更糟。
+    if disabled:
+        heavy, light = False, False
+    elif t_verdict:
         heavy = t_verdict in ("高度疑似", "疑似入场")
         light = t_verdict in ("未入场", "无异动")
     else:
@@ -862,10 +870,14 @@ def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
                  "有异动": "略有异动", "无异动": "接近常态"}.get(t_verdict or "", "缩量")
     if t_mult is not None:
         vol = (f"一档 {t_count} 只（主力通道）成交 {t.get('amount', 0):.0f} 亿，"
-               f"为 20 日中位 {t.get('base', 0):.0f} 亿的 {t_mult:.2f} 倍，{band_word}")
-        if t_prob is not None:
-            vol += (f"；历史同档仅 {t_prob:.1f}% 出现国家队级净申购"
-                    f"（基准 {t.get('base_rate') or 0:.1f}%）")
+               f"为 20 日中位 {t.get('base', 0):.0f} 亿的 {t_mult:.2f} 倍")
+        if disabled:
+            vol += "（判据停用，不给档位）"
+        else:
+            vol += f"，{band_word}"
+            if t_prob is not None:
+                vol += (f"；历史同档仅 {t_prob:.1f}% 出现国家队级净申购"
+                        f"（基准 {t.get('base_rate') or 0:.1f}%）")
         vol += f"。全池 20 只 {turnover:.0f} 亿（{mult:.2f}×）"
     else:
         if heavy:
@@ -945,6 +957,12 @@ def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
     else:
         head, tone = "量能与资金均无异常，维持常态", "calm"
 
+    # 判据停用时 t_verdict 已清空，上面的分支会落到 20 只兜底口径。
+    # 统一覆盖成观察态，别让那条已被证伪的兜底冒充一档结论。
+    if disabled:
+        head = "本日一档判据不可用：仅展示量能与资金原始数据，不给档位结论"
+        tone = "calm"
+
     # —— NSI 交叉验证 ——
     pts = [{"tag": "量能", "text": vol}, {"tag": "方向", "text": dirn}]
     if nsi.get("available"):
@@ -1000,6 +1018,15 @@ def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
          "tone": "up" if (nsi.get("available") and (nsi.get("position") or 0) > (nsi.get("base_position") or 0.7)) else "plain"},
     ]
 
+    caveat = ("观察口径，不构成交易信号，仓位依据以顶部 NSI 为准。"
+              "盘中量能预测不了买卖方向（IC 方向翻转），但能预测「今天是不是国家队级动作」"
+              "——放量档出现国家队级净申购的概率远高于缩量档，具体数字见下方一档判据。"
+              "判断归判断，不进入仓位。")
+    if disabled:
+        caveat = "⚠️ " + str(_av.get("note") or "判据停用。") + " " + caveat
+    elif degraded:
+        caveat = "⚠️ 判据降级，历史概率仅供参考，不作独立依据。" + caveat
+
     return {
         "as_of": as_of,
         "live": is_live,
@@ -1007,10 +1034,8 @@ def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
         "tone": tone,
         "metrics": metrics,
         "points": pts,
-        "caveat": ("观察口径，不构成交易信号，仓位依据以顶部 NSI 为准。"
-                   "盘中量能预测不了买卖方向（IC 方向翻转），但能预测「今天是不是国家队级动作」"
-                   "——放量档出现国家队级净申购的概率远高于缩量档，具体数字见下方一档判据。"
-                   "判断归判断，不进入仓位。"),
+        "caveat": caveat,
+        "availability": _state,
     }
 
 
@@ -1699,7 +1724,8 @@ def build_dashboard(db: Session) -> dict:
         t_turn, avg_turn20, q_t, t_net, t_chg, nsi_data,
         len(support_days),
         _active_iso or "",
-        live_now, tail.get("mult"), tail.get("today"), tier_ctx)
+        live_now, tail.get("mult"), tail.get("today"), tier_ctx,
+        elasticity.get("availability"))
 
     # 信号 vs 观察：同屏两块口径可能打架，把结论写在一处
     if nsi_data.get("available"):

@@ -1136,6 +1136,11 @@ function ElasticityCard({
   const members = e?.members ?? [];
   const j = e?.judge;
   const sf = e?.sign_flag;
+  const av = e?.availability;
+  const avState = av?.state ?? "ok";
+  const avDisabled = avState === "disabled";
+  const avDegraded = avState === "degraded";
+  const curBand = (e?.bands ?? []).find((b) => b.label === j?.band);
 
   const opt = useMemo<EChartsOption>(() => {
     const pts = e?.recent ?? [];
@@ -1264,6 +1269,21 @@ function ElasticityCard({
         colors={colors}
       />
 
+      {av && avState !== "ok" && (
+        <div style={{
+          display: "flex", alignItems: "baseline", gap: 8,
+          background: avDisabled ? rgba(colors.down, 0.07) : "rgba(185,119,14,0.07)",
+          borderLeft: `3px solid ${avDisabled ? colors.down : "#b9770e"}`,
+          borderRadius: 6, padding: "7px 10px", margin: "2px 0 10px",
+          fontSize: 11.5, lineHeight: 1.65, color: colors.text,
+        }}>
+          <b style={{ color: avDisabled ? colors.down : "#b9770e", flexShrink: 0 }}>
+            {avDisabled ? "判据停用" : "判据降级"}
+          </b>
+          <span style={{ color: colors.muted }}>{av.note}</span>
+        </div>
+      )}
+
       <div style={{ display: "grid", gridTemplateColumns: "250px 1fr", gap: 18,
                     alignItems: "center", margin: "2px 0 4px" }}>
         <div>
@@ -1288,14 +1308,25 @@ function ElasticityCard({
             </b> 亿
             <br />
             历史同档「国家队级」概率{" "}
-            <b style={{ color: colors.text }}>{j.prob == null ? "—" : `${j.prob.toFixed(1)}%`}</b>
+            <b style={{ color: colors.text }}>
+              {j.prob == null ? "—"
+                : curBand?.hits === 0 && curBand.ci_hi != null
+                  ? `<${curBand.ci_hi.toFixed(1)}%`
+                  : `${j.prob.toFixed(1)}%`}
+            </b>
             <span style={{ color: colors.axis }}>（基准 {j.base_rate ?? "—"}%）</span>
+            {curBand?.ci_lo != null && curBand.ci_hi != null && (
+              <span style={{ color: colors.axis }}>
+                <br />95% 区间 {curBand.ci_lo.toFixed(1)}–{curBand.ci_hi.toFixed(1)}%
+              </span>
+            )}
           </div>
         </div>
         <EChart option={opt} height={186} />
       </div>
 
-      <div style={{ overflowX: "auto", marginTop: 6 }}>
+      <div style={{ overflowX: "auto", marginTop: 6,
+                    opacity: avDisabled ? 0.42 : avDegraded ? 0.85 : 1 }}>
         <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11.5 }}>
           <thead>
             <tr style={{ color: colors.axis, fontSize: 10.5 }}>
@@ -1304,6 +1335,7 @@ function ElasticityCard({
               <th style={{ textAlign: "right", padding: "0 8px 6px", fontWeight: 500, width: 92 }}>净申购中位</th>
               <th style={{ textAlign: "right", padding: "0 8px 6px", fontWeight: 500, width: 72 }}>为正</th>
               <th style={{ textAlign: "right", padding: "0 8px 6px", fontWeight: 500, width: 96 }}>国家队级</th>
+              <th style={{ textAlign: "right", padding: "0 8px 6px", fontWeight: 500, width: 104 }}>95% 区间</th>
               <th style={{ textAlign: "right", padding: "0 8px 6px", fontWeight: 500, width: 64 }}>提升</th>
               <th style={{ textAlign: "left", padding: "0 2px 6px 10px", fontWeight: 500 }}>判定</th>
             </tr>
@@ -1335,7 +1367,15 @@ function ElasticityCard({
                   <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 600,
                                color: (b.big ?? 0) >= 20 ? colors.up : colors.text,
                                fontVariantNumeric: "tabular-nums" }}>
-                    {b.big == null ? "—" : `${b.big.toFixed(1)}%`}
+                    {b.big == null ? "—"
+                      : b.hits === 0 && b.ci_hi != null
+                        ? `<${b.ci_hi.toFixed(1)}%`
+                        : `${b.big.toFixed(1)}%`}
+                  </td>
+                  <td style={{ padding: "5px 8px", textAlign: "right", color: colors.axis,
+                               fontSize: 10.5, fontVariantNumeric: "tabular-nums" }}>
+                    {b.ci_lo == null || b.ci_hi == null
+                      ? "—" : `${b.ci_lo.toFixed(1)}–${b.ci_hi.toFixed(1)}`}
                   </td>
                   <td style={{ padding: "5px 8px", textAlign: "right", color: colors.muted,
                                fontVariantNumeric: "tabular-nums" }}>
@@ -1349,6 +1389,13 @@ function ElasticityCard({
             })}
           </tbody>
         </table>
+      </div>
+
+      <div style={{ fontSize: 10.5, color: colors.axis, marginTop: 6, lineHeight: 1.65 }}>
+        95% 区间为 Wilson 区间；0 次命中的档位写成「&lt;上界」而不是 0%。
+        分档概率是<b style={{ color: colors.muted }}>样本内统计</b>——用当前一档名单回溯全部历史，
+        含选择偏差，只作相对排序，不可当实时命中率。
+        {avDisabled && <b style={{ color: colors.down }}> 判据已停用，本表不参与今日结论。</b>}
       </div>
 
       {sf && (

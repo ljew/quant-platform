@@ -47,6 +47,7 @@ R² = 0.908，与原文的 `-114.2 + 0.872×`、R² = 0.908 落在 ±0.01 内；
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date
 
 import numpy as np
@@ -150,8 +151,73 @@ def _classify(df: pd.DataFrame) -> pd.DataFrame:
     return t.sort_values(["hits", f"b{TIER_WINDOWS[0]}"], ascending=False)
 
 
+def _wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """二项比例的 Wilson 95% 区间（返回百分数）。
+
+    为什么不用正态近似：高档位只有几十个样本、低档位还会出现 0 次命中，
+    Wald 区间在 k=0 时会退化成 [0,0]，把一个「没观测到」说成「绝无可能」。
+    Wilson 在 k=0 时给出的是 (0, 上界)，正好表达「≤ 上界」。
+    """
+    if n <= 0:
+        return (0.0, 0.0)
+    p = k / n
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return (round(max(0.0, c - h) * 100, 1), round(min(1.0, c + h) * 100, 1))
+
+
+def _availability(t1: list[str], tiers: pd.DataFrame, b_now: float,
+                  regime: str) -> dict:
+    """判据可用性三态：ok / degraded / disabled。
+
+    这套护栏针对的是「模型悄悄失效」：一档名单会被行情挑走、弹性 b 会翻负号，
+    但只要页面还照常输出 42.9%，使用者就没有任何理由去怀疑它。所以把「什么时候
+    不该信」写成显式状态，而不是留给读者自己从 trend 图里看出来。
+
+    硬条件不过 = 停用（结论卡不给档位）；软条件不过 = 降级（概率标为参考）。
+    """
+    marginal_n = int(tiers["marginal"].sum()) if "marginal" in tiers else 0
+    n1 = len(t1)
+    checks = {
+        "tier1_count": n1,
+        "b_now": None if pd.isna(b_now) else round(float(b_now), 2),
+        "regime": regime,
+        "marginal": marginal_n,
+    }
+    hard, soft = [], []
+
+    if n1 < 4:
+        hard.append(f"一档仅 {n1} 只（<4），不足以代表主力通道")
+    if regime == "aligned_sell":
+        hard.append("近 60 日弹性为负，放量意味着赎回放量，判据方向反转")
+    elif pd.isna(b_now) or b_now < 0.3:
+        hard.append("近 60 日弹性过低或不可测，成交额无法反推申购")
+
+    if n1 == 4:
+        soft.append("一档恰好 4 只，名单再少一只就要停用")
+    if pd.notna(b_now) and 0.3 <= b_now < 0.5:
+        soft.append(f"近 60 日 b={float(b_now):.2f} 处于 0.3–0.5 的模糊带")
+    if marginal_n >= 2:
+        soft.append(f"{marginal_n} 只贴着阈值，名单可能随一天数据翻档")
+
+    state = "disabled" if hard else ("degraded" if soft else "ok")
+    reasons = hard or soft
+    notes = {
+        "ok": f"判据可用：一档 {n1} 只、近 60 日弹性 b={checks['b_now']}、名单稳定。",
+        "degraded": "判据降级：" + "；".join(soft) + "。历史概率仅供参考，不作独立依据。",
+        "disabled": "判据停用：" + "；".join(hard) + "。本日不给档位结论，仅展示原始数据。",
+    }
+    return {"state": state, "reasons": reasons, "note": notes[state],
+            "checks": checks}
+
+
 def _bands(day: pd.DataFrame) -> list[dict]:
-    """按放量倍数分档，统计各档的净申购分布与「国家队级」概率。"""
+    """按放量倍数分档，统计各档的净申购分布与「国家队级」概率。
+
+    每档附带 Wilson 95% 区间：0/229 命中不该写成「0.0%」，
+    那是「尚未观测到」，真实含义是「≤ 1.6%」。
+    """
     d = day.dropna(subset=["mult"])
     if not len(d):
         return []
@@ -162,15 +228,19 @@ def _bands(day: pd.DataFrame) -> list[dict]:
         if not len(g):
             out.append({"label": label, "verdict": verdict, "n": 0,
                         "median": None, "positive": None, "big": None,
-                        "lift": None})
+                        "lift": None, "hits": 0, "ci_lo": None, "ci_hi": None})
             continue
-        prob = float((g["net"] > BIG_NET).mean() * 100)
+        k = int((g["net"] > BIG_NET).sum())
+        n = int(len(g))
+        prob = k / n * 100
+        lo95, hi95 = _wilson(k, n)
         out.append({
-            "label": label, "verdict": verdict, "n": int(len(g)),
+            "label": label, "verdict": verdict, "n": n,
             "median": round(float(g["net"].median()), 1),
             "positive": round(float((g["net"] > 0).mean() * 100), 0),
             "big": round(prob, 1),
             "lift": round(prob / base_rate, 1) if base_rate > 0 else None,
+            "hits": k, "ci_lo": lo95, "ci_hi": hi95,
         })
     return out
 
@@ -207,12 +277,21 @@ def build_elasticity(db: Session) -> dict:
     t1 = tiers[tiers["tier1"]]["symbol"].tolist()
     if not t1:
         return {"available": False, "members": members,
-                "reason": "当前没有标的满足一档条件"}
+                "reason": "当前没有标的满足一档条件",
+                "availability": {"state": "disabled",
+                                 "reasons": ["当前没有标的满足一档条件"],
+                                 "note": "判据停用：没有一档标的，仅展示原始数据。",
+                                 "checks": {"tier1_count": 0, "b_now": None,
+                                            "regime": "unclear", "marginal": 0}}}
 
     # ── 一档合计的日度序列 ──
     sub = df[df["symbol"].isin(t1)]
     day = sub.groupby("d").agg(amt=("amt", "sum"), net=("net", "sum")).sort_index()
-    day["base"] = day["amt"].rolling(BASE_WIN, min_periods=max(5, BASE_WIN // 2)).median()
+    # 分母不含当日：pandas rolling 默认把当前行算进去，自己跟自己比会把倍数
+    # 往 1 拉。虽然 20 点中位数对单点不敏感（实测两种口径相关 0.99），
+    # 但概念上必须是「今天 ÷ 过去 20 日中位」，否则文档口径对不上。
+    day["base"] = (day["amt"].shift(1)
+                   .rolling(BASE_WIN, min_periods=max(5, BASE_WIN // 2)).median())
     day["mult"] = day["amt"] / day["base"]
     day_ok = day.dropna(subset=["mult"])
 
@@ -269,6 +348,10 @@ def build_elasticity(db: Session) -> dict:
         "note": note,
     }
 
+    # ── 判据可用性护栏 ──
+    # 放在 sign_flag 之后：需要 b_now 与 regime 两个结果。
+    availability = _availability(t1, tiers, b_now, regime)
+
     # ── 滚动 60 日弹性轨迹 ──
     # b 什么时候从正翻负、什么时候回到 0.8 以上，是判据「有效/失效」的唯一可视信号。
     # 只画一档合计的 b（逐只画会糊成一片）。
@@ -322,4 +405,5 @@ def build_elasticity(db: Session) -> dict:
         "recent": recent,
         "trend": trend,
         "sign_flag": sign_flag,
+        "availability": availability,
     }

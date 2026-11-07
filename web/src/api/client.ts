@@ -1198,6 +1198,10 @@ export interface EtfElasticityBand {
   positive: number | null;
   big: number | null;    // 「国家队级净申购」概率 %
   lift: number | null;   // 相对全体基准的倍数
+  hits: number;          // 该档实际命中次数
+  /** Wilson 95% 区间（百分数）。k=0 时 ci_hi 是「尚未观测到」的上界，不能写成 0% */
+  ci_lo: number | null;
+  ci_hi: number | null;
 }
 
 export interface EtfElasticityDay {
@@ -1229,6 +1233,16 @@ export interface EtfElasticity {
   recent?: EtfElasticityDay[];
   /** 近 250 日「一档合计」的滚动 60 日弹性轨迹 */
   trend?: { date: string; b: number }[];
+  /** 判据可用性护栏：名单被挑走 / 弹性翻负时，概率表要降级或停用 */
+  availability?: {
+    state: "ok" | "degraded" | "disabled";
+    reasons: string[];
+    note: string;
+    checks: {
+      tier1_count: number; b_now: number | null;
+      regime: string; marginal: number;
+    };
+  };
   sign_flag?: {
     year: number;
     b_ytd: number | null; r2_ytd: number | null;
@@ -1308,6 +1322,8 @@ export interface EtfFlowSummary {
   metrics: EtfFlowSummaryMetric[];
   points: EtfFlowSummaryPoint[];
   caveat: string;
+  /** 与 elasticity.availability 同步，结论卡据此显示护栏徽标 */
+  availability?: "ok" | "degraded" | "disabled";
 }
 
 export interface EtfFlowDetailItem {
