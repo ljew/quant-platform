@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Card, PageHeader } from "../components/ui";
 import EChart from "../components/EChart";
+import HotBriefCard from "../components/HotBriefCard";
 import { agentApi, api, get, newsApi, AgentState, FrameworkHealth, KlineBar, NewsFeed } from "../api/client";
 import { useTheme } from "../theme";
 
@@ -227,6 +228,11 @@ export default function TodayPage() {
       }}>
         {verdict}
       </div>
+
+      {/* —— 每小时热点简报（非结构化资讯 → LLM 判断）——
+          放在「一句话观点」下面：两个都是判断，先读完观点再看可执行清单。
+          两列排布是为了不把「信号明细」挤出首屏。 */}
+      <HotBriefCard columns={2} dense />
 
       {/* —— 动作汇总卡 —— */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>

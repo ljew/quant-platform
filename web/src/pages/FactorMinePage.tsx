@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import EChart from "../components/EChart";
+import HotBriefCard from "../components/HotBriefCard";
 import LlmConfigModal from "../components/LlmConfigModal";
 import { Badge, Btn, Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
 import {
   api, AiExplainResult, AiGenerateResult, AiStatus,
-  FactorMineReport, FactorMineSummary, GpMineResult, HotBrief, NewsEventReport,
+  FactorMineReport, FactorMineSummary, GpMineResult, NewsEventReport,
 } from "../api/client";
 import { useTheme, ThemeColors } from "../theme";
 
@@ -37,7 +38,6 @@ export default function FactorMinePage() {
   // 数据源：both=合并（默认，样本最多）/ news=东财新闻 / mp=公众号语料
   const [newsSource, setNewsSource] = useState<"news" | "mp" | "both">("both");
   // 社交关注度（雪球/微博）：只有热度、没正文，所以只展示不参与打分
-  const [hotBrief, setHotBrief] = useState<HotBrief | null>(null);
   const [socialHeat, setSocialHeat] = useState<
     { date: string; source: string; n_items: number; n_finance: number; heat_total: number; heat_top10: number }[]
   >([]);
@@ -170,7 +170,6 @@ export default function FactorMinePage() {
 
   useEffect(() => {
     api.factorSocialHeat(7).then(setSocialHeat).catch(() => {});
-    api.hotBriefLatest().then((d) => setHotBrief(d && d.items && d.items.length ? d : null)).catch(() => {});
   }, []);
 
   const runNewsTest = async () => {
@@ -192,83 +191,10 @@ export default function FactorMinePage() {
         actions={<Btn onClick={() => setShowFns(!showFns)} kind="ghost" small>函数参考</Btn>}
       />
 
-      {/* —— 每小时热点简报（一手快讯 → LLM 筛选）—— */}
-      {hotBrief && (
-        <div style={{ marginBottom: 16 }}>
-          <Card
-            title="热点简报（每小时自动更新）"
-            colors={colors}
-            extra={<span style={{ fontSize: 11.5, color: colors.muted }}>
-              {hotBrief.created_at?.slice(5, 16).replace("T", " ")}
-              {" · "}输入 {hotBrief.n_input} 条
-              {hotBrief.n_search ? `（快讯 ${hotBrief.n_flash ?? 0} + 搜索 ${hotBrief.n_search}）` : ""}
-              {" → "}保留 {hotBrief.n_items} 条
-            </span>}
-          >
-            {hotBrief.mainline && (
-              <div style={{
-                fontSize: 12.5, lineHeight: 1.7, padding: "8px 10px", borderRadius: 6,
-                background: colors.bg, border: `1px solid ${colors.border}`, marginBottom: 10,
-              }}>
-                <span style={{ fontWeight: 600, marginRight: 6 }}>主线</span>
-                {hotBrief.mainline}
-              </div>
-            )}
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {(hotBrief.items || []).map((it, i) => {
-                const up = it.direction === "bullish";
-                const tone = up ? colors.up : it.direction === "bearish" ? colors.down : colors.muted;
-                return (
-                  <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-                    <Badge text={`${up ? "多" : it.direction === "bearish" ? "空" : "中"} ${it.strength}/5`}
-                           color={tone} soft />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12.5, fontWeight: 600, display: "flex",
-                                    alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                        <span>{it.theme}</span>
-                        {it.source_label && (() => {
-                          const isSearch = (it.source_kind || "").includes("搜索");
-                          const pill: React.CSSProperties = {
-                            fontSize: 10.5, fontWeight: 400, lineHeight: "16px",
-                            padding: "0 5px", borderRadius: 3,
-                            border: `1px solid ${colors.border}`,
-                            color: isSearch ? colors.accent : colors.muted,
-                            textDecoration: "none", whiteSpace: "nowrap",
-                          };
-                          const all = it.source_all?.length ? it.source_all : [it.source_label];
-                          const tip = `来源：${all.join(" / ")}`
-                            + (it.source_refs?.length ? `\n输入编号：${it.source_refs.join(", ")}` : "");
-                          return it.source_url ? (
-                            <a href={it.source_url} target="_blank" rel="noreferrer"
-                               title={`${tip} — 点击打开原文`} style={pill}>
-                              {it.source_label} ↗
-                            </a>
-                          ) : (
-                            <span title={tip} style={pill}>{it.source_label}</span>
-                          );
-                        })()}
-                      </div>
-                      <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 2 }}>
-                        {it.sectors.length > 0 && <>板块 {it.sectors.join("/")}　</>}
-                        {it.tickers.length > 0 && <>个股 {it.tickers.join("/")}　</>}
-                        {it.horizon}
-                      </div>
-                      <div style={{ fontSize: 11.5, color: colors.text, opacity: 0.85, marginTop: 2 }}>
-                        {it.why}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <div style={{ marginTop: 8, fontSize: 11, color: colors.muted }}>
-              输入 = 财联社一手快讯（时效）+ DeepSeek 网页搜索（覆盖广度），模型只做筛选与判断；
-              已与上一条简报做过跨轮去重，本轮只报新增变化。
-              每条主题右侧标注来源：灰色「财联社电报」= 一手快讯，蓝色「DeepSeek · 站点」= 网页搜索（可点开原文）。
-            </div>
-          </Card>
-        </div>
-      )}
+      {/* —— 每小时热点简报（一手快讯 + DeepSeek 搜索 → LLM 筛选）—— */}
+      <div style={{ marginBottom: 16 }}>
+        <HotBriefCard columns={1} />
+      </div>
 
       {/* —— 新闻情绪择时（市场级 · 非结构化数据）—— */}
       <div style={{ marginBottom: 16 }}>
