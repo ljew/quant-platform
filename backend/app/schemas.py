@@ -3,10 +3,17 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 # ===== 行情 =====
+# A 股展示口径（2026-11-07 统一，只在 API 出口层取整，不改库内原始数据，
+# 也不影响回测/因子的计算精度）：
+#   价格 / 指数点位：2 位小数（交易所最小报价单位 0.01）
+#   涨跌幅：2 位小数（百分数）
+#   成交量：手，整数     成交额：千元，2 位小数（tushare 原单位）
+# 前复权价是「原始价 × 复权因子」算出来的，会产生 23.0826705940108 这类
+# 浮点尾巴；同花顺等行情终端一律显示 2 位，这里在出口层收敛。
 class KlinePoint(BaseModel):
     date: str
     open: float
@@ -16,6 +23,16 @@ class KlinePoint(BaseModel):
     volume: int
     amount: float
 
+    @field_validator("open", "high", "low", "close", "amount")
+    @classmethod
+    def _r2(cls, v: float) -> float:
+        return round(float(v), 2)
+
+    @field_validator("volume")
+    @classmethod
+    def _int(cls, v: int) -> int:
+        return int(v)
+
 
 class Quote(BaseModel):
     symbol: str
@@ -23,6 +40,11 @@ class Quote(BaseModel):
     price: float | None = None
     change_pct: float | None = None
     updated_at: datetime | None = None
+
+    @field_validator("price", "change_pct")
+    @classmethod
+    def _r2(cls, v: float | None) -> float | None:
+        return None if v is None else round(float(v), 2)
 
 
 class StockItem(BaseModel):

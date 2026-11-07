@@ -1,10 +1,40 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import EChart from "../components/EChart";
-import { api, KlineBar, StockItem } from "../api/client";
+import { api, KlineBar, SpotQuote, StockItem } from "../api/client";
+import { localDate } from "../utils/date";
+import { formatPrice2, klineTooltip } from "../utils/klineTooltip";
 import { useTheme } from "../theme";
 import { Card, PageHeader } from "../components/ui";
 
 const SYMBOLS = ["sh600519", "sz000858", "sh000906", "sz300750", "sh688166"];
+
+/** K 线窗口（自然日）。end 恒为本地「今天」，绝不写死结束日期——
+ *  原实现把 end 写死成 2025-06-30，导致 688166 等标的的图永远停在
+ *  一年多前（53.71），与同花顺 11-06 收盘 30.65 完全对不上（2026-11-07 修）。 */
+const RANGES = [
+  { label: "近1年", days: 365 },
+  { label: "近2年", days: 730 },
+  { label: "近5年", days: 1825 },
+];
+
+/** 主图均线周期与配色。均线只画在主图上，不进浮框。 */
+const MA_LINES = [
+  { name: "MA5", period: 5, color: "#e8901a" },
+  { name: "MA20", period: 20, color: "#8e5cf0" },
+  { name: "MA60", period: 60, color: "#2f86d6" },
+];
+
+/** 简单移动平均：不足窗口返回 null；结果收敛到 2 位，消除浮点长尾。 */
+function sma(vals: number[], period: number): (number | null)[] {
+  const out: (number | null)[] = [];
+  let sum = 0;
+  for (let i = 0; i < vals.length; i++) {
+    sum += vals[i];
+    if (i >= period) sum -= vals[i - period];
+    out.push(i >= period - 1 ? Math.round((sum / period) * 100) / 100 : null);
+  }
+  return out;
+}
 
 function ema(vals: number[], period: number): (number | null)[] {
   const out: (number | null)[] = [];
@@ -35,6 +65,8 @@ export default function MarketPage() {
   const [bars, setBars] = useState<KlineBar[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [quote, setQuote] = useState<SpotQuote | null>(null);
+  const [rangeDays, setRangeDays] = useState(730);
   const { colors } = useTheme();
 
   // —— 股票搜索（代码 / 简称 / 名称，防抖 250ms）——
@@ -75,12 +107,19 @@ export default function MarketPage() {
     return () => document.removeEventListener("mousedown", onDoc);
   }, []);
 
-  const load = useCallback(async (sym: string) => {
+  const load = useCallback(async (sym: string, days: number) => {
     setLoading(true);
     setError("");
+    setQuote(null);
     try {
-      const data = await api.kline(sym, "2023-01-01", "2025-06-30");
+      // 实时快照与 K 线并行取；快照失败不影响画图。
+      // limit 显式放宽到 2000：后端默认 500 根，近5年区间会被静默截断。
+      const [data, snap] = await Promise.all([
+        api.kline(sym, localDate(days), localDate(), 2000),
+        api.quote(sym).catch(() => null),
+      ]);
       setBars(data);
+      setQuote(snap);
     } catch (e) {
       setError((e as Error).message);
       setBars([]);
@@ -90,24 +129,18 @@ export default function MarketPage() {
   }, []);
 
   useEffect(() => {
-    load(symbol);
-  }, [symbol, load]);
+    load(symbol, rangeDays);
+  }, [symbol, rangeDays, load]);
 
   const option = useMemo(() => {
     const dates = bars.map((b) => b.date);
     const closes = bars.map((b) => b.close);
     const { dif, dea, hist } = macd(closes);
-    const ma10 = closes.map((_, i) =>
-      i < 9 ? null : closes.slice(i - 9, i + 1).reduce((a, b) => a + b, 0) / 10
-    );
-    const ma30 = closes.map((_, i) =>
-      i < 29 ? null : closes.slice(i - 29, i + 1).reduce((a, b) => a + b, 0) / 30
-    );
     const up = colors.up;
     const down = colors.down;
     return {
-      tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
-      legend: { data: ["K线", "MA10", "MA30", "成交量", "MACD"], top: 0 },
+      tooltip: klineTooltip(bars, colors),
+      legend: { data: ["K线", ...MA_LINES.map((m) => m.name), "成交量", "MACD"], top: 0 },
       axisPointer: { link: [{ xAxisIndex: "all" }] },
       grid: [
         { left: 64, right: 20, top: 36, height: "46%" },
@@ -120,7 +153,7 @@ export default function MarketPage() {
         { type: "category", data: dates, gridIndex: 2, boundaryGap: false },
       ],
       yAxis: [
-        { gridIndex: 0, scale: true },
+        { gridIndex: 0, scale: true, axisLabel: { formatter: formatPrice2 } },
         { gridIndex: 1, scale: true, axisLabel: { show: false } },
         { gridIndex: 2, scale: true, axisLabel: { show: false } },
       ],
@@ -134,8 +167,11 @@ export default function MarketPage() {
           data: bars.map((b) => [b.open, b.close, b.low, b.high]),
           itemStyle: { color: up, color0: down, borderColor: up, borderColor0: down },
         },
-        { name: "MA10", type: "line", xAxisIndex: 0, yAxisIndex: 0, data: ma10, smooth: true, showSymbol: false, lineStyle: { width: 1, color: "#f0a020" } },
-        { name: "MA30", type: "line", xAxisIndex: 0, yAxisIndex: 0, data: ma30, smooth: true, showSymbol: false, lineStyle: { width: 1, color: "#8e5cf0" } },
+        ...MA_LINES.map((m) => ({
+          name: m.name, type: "line", xAxisIndex: 0, yAxisIndex: 0,
+          data: sma(closes, m.period), smooth: true, showSymbol: false,
+          itemStyle: { color: m.color }, lineStyle: { width: 1.2, color: m.color },
+        })),
         {
           name: "成交量", type: "bar", xAxisIndex: 1, yAxisIndex: 1,
           data: bars.map((b, i) => ({
@@ -155,7 +191,7 @@ export default function MarketPage() {
 
   return (
     <div style={{ maxWidth: 1280, margin: "0 auto" }}>
-      <PageHeader title="行情看板" desc="K线 + 成交量 + MACD 三图联动 · 缩放与十字光标跨图同步"
+      <PageHeader title="行情看板" desc="K线 + MA5/20/60 主图 · 成交量 / MACD 副图联动 · 默认前复权（同花顺口径）· 数据截至最近交易日"
         actions={
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             {/* 股票搜索：代码 / 简称 / 名称 */}
@@ -232,9 +268,51 @@ export default function MarketPage() {
       {error && <div style={{ color: colors.up, marginBottom: 8 }}>{error}</div>}
       {loading && <div style={{ color: colors.muted, marginBottom: 8 }}>加载中…</div>}
       {bars.length > 0 && (
-        <Card title={`${symbol} 日线`} colors={colors} pad={6}>
+        <Card
+          colors={colors}
+          pad={6}
+          title={
+            <span style={{ display: "inline-flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+              <span>{quote ? `${quote.name} · ${symbol}` : `${symbol} 日线`}</span>
+              {quote && (
+                <span className="num" style={{ color: quote.change_pct >= 0 ? colors.up : colors.down }}>
+                  {quote.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  <span style={{ marginLeft: 6 }}>
+                    {quote.change_pct >= 0 ? "+" : ""}{quote.change_pct.toFixed(2)}%
+                  </span>
+                </span>
+              )}
+              <span style={{ fontSize: 12, fontWeight: 400, color: colors.muted }}>
+                {/^(sh000|sz399)/.test(symbol) ? "不复权" : "前复权"}
+                {" · K线截至 "}{bars[bars.length - 1].date}{" · "}{bars.length}{" 根"}
+              </span>
+            </span>
+          }
+          extra={
+            <div style={{ display: "flex", gap: 4 }}>
+              {RANGES.map((r) => (
+                <button
+                  key={r.days}
+                  onClick={() => setRangeDays(r.days)}
+                  className="num"
+                  style={{
+                    padding: "4px 12px", borderRadius: 999, fontSize: 12, cursor: "pointer",
+                    border: `1px solid ${colors.border}`,
+                    background: r.days === rangeDays ? colors.accent : "transparent",
+                    color: r.days === rangeDays ? "#fff" : colors.muted,
+                  }}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          }
+        >
           <EChart option={option as never} height={560} />
         </Card>
+      )}
+      {!loading && !error && bars.length === 0 && (
+        <div style={{ color: colors.muted, fontSize: 13 }}>该标的在所选区间内无 K 线数据。</div>
       )}
     </div>
   );

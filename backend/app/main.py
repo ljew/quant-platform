@@ -79,7 +79,8 @@ def on_startup():
     for _name in ("data_scheduler", "wechat_scheduler",
                   "app.services.auto_research", "app.core.nsi_scheduler",
                   "etf_flow_scheduler", "hot_brief_scheduler",
-                  "news_feed_scheduler", "news_feed"):
+                  "news_feed_scheduler", "news_feed",
+                  "quote_scheduler", "quote_snapshot"):
         _lg = logging.getLogger(_name)
         if not _lg.handlers:
             _lg.addHandler(_h)
@@ -148,6 +149,14 @@ def on_startup():
         start_nsi_scheduler()
     except Exception as _e:  # noqa: BLE001
         logging.getLogger(__name__).warning("NSI 调度器启动失败：%s", _e)
+
+    # 收盘行情快照：每交易日 18:30 后从 tushare 拉一次全市场截面落库，
+    # /market/quote 只读本地（毫秒级），请求链路不再访问外部数据源。
+    try:
+        from app.core.quote_scheduler import start_quote_scheduler
+        start_quote_scheduler()
+    except Exception as _e:  # noqa: BLE001
+        logging.getLogger(__name__).warning("行情快照调度器启动失败：%s", _e)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["meta"])

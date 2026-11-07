@@ -8,12 +8,14 @@ import { Badge, Card, PageHeader } from "../components/ui";
 import EChart from "../components/EChart";
 import HotBriefCard from "../components/HotBriefCard";
 import { agentApi, api, get, newsApi, AgentState, FrameworkHealth, KlineBar, NewsFeed } from "../api/client";
+import { localDate } from "../utils/date";
+import { formatPrice2, klineTooltip } from "../utils/klineTooltip";
 import { useTheme } from "../theme";
 
 interface ActionItem {
   symbol: string; name: string | null; action: string; streak: number;
   resonance: number; strategies: string; quality_tier: string;
-  close: number | null; reason: string;
+  close: number | null; last_price: number | null; reason: string;
 }
 
 const ACTION_META: Record<string, { cn: string; color: string }> = {
@@ -45,11 +47,6 @@ const INDICES = [
   { symbol: "sz399006", name: "创业板指" },
   { symbol: "sh000300", name: "沪深300" },
 ];
-
-function daysAgo(n: number): string {
-  const d = new Date(Date.now() - n * 86400000);
-  return d.toISOString().slice(0, 10);
-}
 
 export default function TodayPage() {
   const { colors } = useTheme();
@@ -111,10 +108,20 @@ export default function TodayPage() {
         }
       } catch { /* 回退到资讯快照 */ }
       if (feed) {
-        // 优先 A 股指数，其次全球指数
-        const a = feed.global_quotes.filter((q) => /^(sh|sz)/.test(q.code));
-        const rest = feed.global_quotes.filter((q) => !/^(sh|sz)/.test(q.code));
-        setIdxQuotes([...a, ...rest].slice(0, 4).map((q) => ({ name: q.name, price: q.price, pct: q.change_pct })));
+        // 按 INDICES 的代码与顺序对齐，不依赖后端列表顺序（原实现 slice(0,4)
+        // 会在缺创业板指时把第 3 张卡换成中证800）。缺项才用其它行情补位。
+        const byCode = new Map(feed.global_quotes.map((q) => [q.code.toLowerCase(), q]));
+        const aligned: { name: string; price: number; pct: number }[] = [];
+        for (const i of INDICES) {
+          const q = byCode.get(i.symbol);
+          if (q) aligned.push({ name: i.name, price: q.price, pct: q.change_pct });
+        }
+        for (const q of feed.global_quotes) {
+          if (aligned.length >= INDICES.length) break;
+          if (INDICES.some((i) => i.symbol === q.code.toLowerCase())) continue;
+          aligned.push({ name: q.name, price: q.price, pct: q.change_pct });
+        }
+        setIdxQuotes(aligned.slice(0, INDICES.length));
       }
     })();
   }, [feed]);
@@ -122,7 +129,7 @@ export default function TodayPage() {
   const openDrawer = useCallback((it: ActionItem) => {
     setDrawer({ symbol: it.symbol, name: it.name || it.symbol });
     setDrawerLoading(true);
-    api.kline(it.symbol, daysAgo(400), daysAgo(0))
+    api.kline(it.symbol, localDate(400), localDate(), 500)
       .then(setBars).catch(() => setBars([]))
       .finally(() => setDrawerLoading(false));
   }, []);
@@ -164,10 +171,10 @@ export default function TodayPage() {
 
   const shown = counts[filter] || [];
   const klineOption = useMemo(() => ({
-    tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
+    tooltip: klineTooltip(bars, colors),
     grid: { left: 64, right: 16, top: 16, bottom: 44 },
     xAxis: { type: "category", data: bars.map((b) => b.date), boundaryGap: true, axisLabel: { fontSize: 10 } },
-    yAxis: { scale: true, axisLabel: { fontSize: 10 } },
+    yAxis: { scale: true, axisLabel: { fontSize: 10, formatter: formatPrice2 } },
     dataZoom: [
       { type: "inside", start: 55, end: 100 },
       { type: "slider", height: 16, bottom: 6, start: 55, end: 100 },
@@ -291,7 +298,14 @@ export default function TodayPage() {
                     <td style={{ padding: "8px 10px", borderBottom: `1px solid ${colors.border}` }}>
                       <Badge text={meta.cn} color={meta.color} soft />
                     </td>
-                    <td style={{ padding: "8px 10px", borderBottom: `1px solid ${colors.border}` }}>{it.close ?? "—"}</td>
+                    <td style={{ padding: "8px 10px", borderBottom: `1px solid ${colors.border}` }}>
+                      {(() => {
+                        // 优先展示信号日的未复权实际收盘价（与同花顺口径一致）；
+                        // 库里无原始 K 线时才退回策略用的复权价。
+                        const p = it.last_price ?? it.close;
+                        return p == null ? "—" : p.toFixed(2);
+                      })()}
+                    </td>
                     <td style={{ padding: "8px 10px", borderBottom: `1px solid ${colors.border}` }}>
                       {it.streak > 0 ? <span style={{ color: meta.color, fontWeight: 600 }}>{it.streak} 日</span> : "—"}
                     </td>

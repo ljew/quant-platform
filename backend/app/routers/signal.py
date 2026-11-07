@@ -14,7 +14,7 @@ import json
 import threading
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -201,18 +201,40 @@ def dates(db: Session = Depends(get_db)):
     return [{"date": d.isoformat(), "symbols": n} for d, n in rows]
 
 
+def _r2(v):
+    """展示口径：价格 / 均线一律 2 位小数（见 schemas.py 的 A 股展示口径）。"""
+    return None if v is None else round(float(v), 2)
+
+
 @router.get("/actions")
-def actions(date_str: str = "", db: Session = Depends(get_db)):
-    """某日买卖动作雷达。缺省取最新有动作的一天。"""
+def actions(trade_date: str = Query("", alias="date"), db: Session = Depends(get_db)):
+    """某日买卖动作雷达。缺省取最新有动作的一天。
+
+    2026-11-07 修：原参数名是 `date_str`，前端一直传 `?date=`，FastAPI 收不到
+    → 每次都查**全表所有日期**（约 1.2 秒），且首页切换日期回看永远停在最新一天。
+    用 alias="date" 对齐前端；局部变量避开 datetime.date 类名冲突。
+    """
     q = select(SignalAction)
-    if date_str:
-        q = q.where(SignalAction.date == date.fromisoformat(date_str))
+    if trade_date:
+        q = q.where(SignalAction.date == date.fromisoformat(trade_date))
     rows = db.scalars(q.order_by(SignalAction.date.desc(), SignalAction.streak.desc())).all()
     if not rows:
         return {"date": None, "items": []}
     d = rows[0].date
     items = [r for r in rows if r.date == d]
     items.sort(key=lambda r: (_ACTION_ORDER.get(r.action, 9), -r.streak))
+
+    # 首页表格列标题是「现价」，但 SignalAction.close 存的是**复权价**（策略口径），
+    # 例如 sz002832 是 172.76，同花顺当日实际收盘 28.73 —— 直接显示会误导。
+    # 这里补一份该信号日的未复权原始收盘价供展示，close/ma10/ma20 仍保留策略语义。
+    # 一次 IN 查询，纯本地，不增加请求链路的外部依赖。
+    from app.models import KlineDaily
+    raw_prices = dict(db.execute(
+        select(KlineDaily.symbol, KlineDaily.close).where(
+            KlineDaily.trade_date == d,
+            KlineDaily.adj == "none",
+            KlineDaily.symbol.in_([r.symbol for r in items]),
+        )).all())
     return {
         "date": d.isoformat(),
         "items": [
@@ -220,18 +242,20 @@ def actions(date_str: str = "", db: Session = Depends(get_db)):
                 "symbol": r.symbol, "name": r.name, "action": r.action,
                 "streak": r.streak, "resonance": r.resonance,
                 "strategies": r.strategies, "quality_tier": r.quality_tier,
-                "close": r.close, "ma10": r.ma10, "ma20": r.ma20, "reason": r.reason,
+                "close": _r2(r.close), "ma10": _r2(r.ma10),
+                "ma20": _r2(r.ma20), "reason": r.reason,
+                "last_price": _r2(raw_prices.get(r.symbol)),
             } for r in items
         ],
     }
 
 
 @router.get("/picks")
-def picks(date_str: str = "", db: Session = Depends(get_db)):
-    """某日各策略命中明细。"""
+def picks(trade_date: str = Query("", alias="date"), db: Session = Depends(get_db)):
+    """某日各策略命中明细（与 /actions 同样用 alias="date" 对齐前端）。"""
     q = select(SignalDaily)
-    if date_str:
-        q = q.where(SignalDaily.date == date.fromisoformat(date_str))
+    if trade_date:
+        q = q.where(SignalDaily.date == date.fromisoformat(trade_date))
     rows = db.scalars(q.order_by(SignalDaily.date.desc())).all()
     if not rows:
         return {"date": None, "groups": []}

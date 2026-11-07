@@ -1329,3 +1329,27 @@ class EtfDailyBar(Base):
     close: Mapped[float] = mapped_column(Float, default=0.0)
     amount: Mapped[float] = mapped_column(Float, default=0.0)     # 成交额（亿元）
     pct_chg: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class QuoteSnapshot(Base):
+    """收盘行情快照：每交易日由定时任务从 tushare 拉回后落库，供 /market/quote 只读。
+
+    为什么单独一张表：原先 /market/quote 每次请求都实时查 akshare 全市场截面
+    （stock_zh_a_spot_em 分页拉 59 页，约 11 秒），首页四个指数 + 行情看板标题
+    一起打开就把服务拖到看门狗重启。行情展示属于「一天一更就够」的数据，
+    不该在请求链路里访问外部数据源（2026-11-07）。
+
+    口径：price 为当日收盘价（2 位小数），change_pct 用 tushare pct_chg
+    （已按 pre_close 处理除权，比「相邻两根 close 相除」准确），保留 2 位。
+    """
+
+    __tablename__ = "quote_snapshot"
+    __table_args__ = (Index("ix_quote_snapshot_date", "trade_date"),)
+
+    symbol: Mapped[str] = mapped_column(String(16), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    price: Mapped[float] = mapped_column(Float, nullable=False)
+    change_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(16), default="tushare")  # tushare / kline_fallback
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)

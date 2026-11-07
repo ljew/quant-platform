@@ -82,7 +82,10 @@ def global_quotes(defs: list[tuple[str, str]] | None = None) -> list[dict]:
     defs = defs or [
         ("usDJI", "道琼斯"), ("usIXIC", "纳斯达克"), ("usINX", "标普500"),
         ("hkHSI", "恒生指数"), ("whUSDCNH", "离岸人民币"),
-        ("sh000001", "上证指数"), ("sz399001", "深证成指"), ("sh000300", "沪深300"),
+        # A 股指数顺序与首页「指数概览」的 INDICES 保持一致，
+        # 补上创业板指（原先缺失，走回退时第 3 张卡会错成中证800）。
+        ("sh000001", "上证指数"), ("sz399001", "深证成指"),
+        ("sz399006", "创业板指"), ("sh000300", "沪深300"),
         ("sh000906", "中证800"), ("sh000016", "上证50"),
     ]
     text = _get("https://qt.gtimg.cn/q=" + ",".join(d[0] for d in defs),
