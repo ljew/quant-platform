@@ -441,7 +441,7 @@ def social_heat(db: Session = Depends(get_db), days: int = 30):
         for r in rows
     ]
 
-# ───────── 每小时热点简报（非结构化资讯 → LLM 解读）─────────
+# ───────── 热点简报（按交易时段；非结构化资讯 → LLM 解读）─────────
 @router.get("/hot-brief/latest")
 def hot_brief_latest(db: Session = Depends(get_db)):
     """最新一份简报（只返回有内容的）。"""

@@ -1,4 +1,7 @@
-"""每小时热点简报：双来源资讯 → LLM 筛选 → 结构化「对 A 股有没有实质影响」。
+"""热点简报（按交易时段）：双来源资讯 → LLM 筛选 → 结构化「对 A 股有没有实质影响」。
+
+触发时刻表见 `core/hot_brief_scheduler.py`：交易日 07/09/10/11/13/14/16/21 点，
+非交易日 09/16 点。每轮的取数窗口 = 距上一个时段的实际分钟数（隔夜那轮约 10 小时）。
 
 ## 两条腿取数
 
@@ -138,12 +141,20 @@ def _noise_filter(text: str) -> bool:
     return any(k in t for k in junk)
 
 
-def collect_flash(minutes: int = 60, limit: int = 60) -> list[dict]:
-    """拉最近 minutes 分钟的财联社电报（一手快讯，时效最强）。"""
+def collect_flash(minutes: int = 60, limit: int | None = None,
+                  pages: int | None = None) -> list[dict]:
+    """拉最近 minutes 分钟的财联社电报（一手快讯，时效最强）。
+
+    ⚠️ 翻页数必须跟窗口走：调度改成时段制后，21:00 → 次日 07:00 隔了 10 小时，
+    固定 `pages=2`（100 条）只够两三个小时的量，隔夜消息会漏掉一大半。
+    `rn` 上限仍是 50 —— 实测 `rn=100` 会返回空 `roll_data`。
+    """
     from app.datahub.extractors.cls_telegraph import ClsTelegraphExtractor
 
+    pages = pages or (2 if minutes <= 180 else 4)
+    limit = limit or min(120, max(60, minutes // 2))
     try:
-        df = ClsTelegraphExtractor().fetch(rn=50, pages=2)
+        df = ClsTelegraphExtractor().fetch(rn=50, pages=pages)
     except Exception:  # noqa: BLE001
         return []
     if df is None or df.empty:
@@ -204,9 +215,12 @@ def collect_search(queries: tuple[str, ...] | list[str] | None = None,
     return out
 
 
-def collect_inputs(minutes: int = 60, limit: int = 60,
+def collect_inputs(minutes: int = 60, limit: int | None = None,
                    use_search: bool | None = None) -> dict:
-    """两条腿取数。返回 {"flash": [...], "search": [...]}。"""
+    """两条腿取数。返回 {"flash": [...], "search": [...]}。
+
+    `limit=None` 交给 collect_flash 按窗口自动定（60 分钟 60 条，隔夜 120 条）。
+    """
     if use_search is None:
         use_search = os.getenv("QUANT_HOT_BRIEF_SEARCH", "1") != "0"
     flash = collect_flash(minutes=minutes, limit=limit)

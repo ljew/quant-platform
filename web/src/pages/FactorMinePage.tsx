@@ -191,7 +191,7 @@ export default function FactorMinePage() {
         actions={<Btn onClick={() => setShowFns(!showFns)} kind="ghost" small>函数参考</Btn>}
       />
 
-      {/* —— 每小时热点简报（一手快讯 + DeepSeek 搜索 → LLM 筛选）—— */}
+      {/* —— 热点简报（一手快讯 + DeepSeek 搜索 → LLM 筛选）—— */}
       <div style={{ marginBottom: 16 }}>
         <HotBriefCard columns={1} />
       </div>
