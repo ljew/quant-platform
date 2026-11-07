@@ -85,8 +85,14 @@ def health_report(db=None) -> dict:
 
         # 研究流水线（Orchestrator）最近一次运行（P4 监控整合）
         try:
+            # 排除 CANCELLED：容器重复启动会让同一时点被触发多次，多余的那些
+            # 是人工取消的，不代表流水线故障。framework_health 早就这么做了，
+            # 这里漏了 → 两个体检模块口径不一致，一个说健康、一个报 error，
+            # 半夜还会按这个发告警（2026-11-07 实际踩到）。
             res_run = db.execute(
-                select(ResearchRun).order_by(ResearchRun.id.desc()).limit(1)
+                select(ResearchRun)
+                .where(ResearchRun.status != "CANCELLED")
+                .order_by(ResearchRun.id.desc()).limit(1)
             ).scalars().first()
         except Exception:  # noqa: BLE001
             res_run = None
@@ -141,10 +147,14 @@ def health_report(db=None) -> dict:
             process_checks.append(_mk("Silver 质检报告", None, "不可用", "存在"))
 
         # 最近管道失败率
+        # 允许偶发失败：数据源抖动（tushare 限速 / 盘中接口空返回）是常态，
+        # 调度器本身有「失败即降级 etl_daily 重试」的兜底，下一次基本就成功了
+        # （例：#2396 FAILED → 41 秒后 #2397 SUCCESS）。原来的「必须 0 失败」
+        # 会让一次抖动在最近 10 次窗口里持续报 error、半夜发邮件。
         runs = db.execute(select(PipelineRun).order_by(PipelineRun.id.desc()).limit(10)).scalars().all()
         fails = sum(1 for r in runs if r.status == "FAILED")
-        process_checks.append(_mk("管道近期失败率", fails == 0,
-                                  f"最近{len(runs)}次 {fails} 次失败", "0 次"))
+        process_checks.append(_mk("管道近期失败率", fails <= 2,
+                                  f"最近{len(runs)}次 {fails} 次失败", "≤2 次"))
 
         # ========== 应用层 ==========
         apply_checks: list[dict] = []

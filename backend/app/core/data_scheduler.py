@@ -159,6 +159,7 @@ def _run_update() -> bool:
             _status["last_error"] = f"pipeline fallback: {str(err)[:200]}"
     # 子进程整体失败/无记录 → 降级 etl_daily 兜底
     script = os.path.join(backend, "scripts", "etl_daily.py")
+    fb_started = datetime.utcnow()
     try:
         proc = run_with_timeout(
             [sys.executable, script],
@@ -169,14 +170,45 @@ def _run_update() -> bool:
         if proc.returncode == 0:
             logger.info("ETL 日更成功:\n%s", proc.stdout[-1200:])
             _status["last_success"] = datetime.now().isoformat(timespec="seconds")
+            _record_fallback_run(True, "", fb_started)
             return True
         logger.error("ETL 日更失败 rc=%s:\n%s", proc.returncode, proc.stderr[-1200:])
         _status["last_error"] = f"rc={proc.returncode}: {proc.stderr[-300:]}"
+        _record_fallback_run(False, _status["last_error"], fb_started)
         return False
     except Exception as e:  # noqa: BLE001
         logger.error("ETL 日更异常: %s", e)
         _status["last_error"] = str(e)[:300]
+        _record_fallback_run(False, _status["last_error"], fb_started)
         return False
+
+
+def _record_fallback_run(ok: bool, message: str, started: datetime) -> None:
+    """降级跑 etl_daily.py 时补一条 pipeline_runs 记录。
+
+    datahub 管道会自己写 pipeline_runs，降级路径只是跑脚本、原本不写 —— 结果
+    数据明明更新了，监控却报「管道 N 小时没跑」，健康分被扣、半夜发告警。
+    2026-11-06 就是这种情况：pipeline_runs 停在 10:40，而 11-06 的日线数据
+    其实是 19:00 那次降级跑出来的（已用腾讯行情核对收盘价，数据是对的）。
+
+    ⚠️ started_at 必须用 UTC：PipelineRun 的模型默认值是 datetime.utcnow，
+    data_health 计算「N 分钟前」也用 utcnow 相减。写成 now() 会凭空多 8 小时。
+    """
+    try:
+        from app.database import SessionLocal
+        from app.models import PipelineRun
+
+        with SessionLocal() as db:
+            db.add(PipelineRun(
+                trigger="fallback",
+                status="SUCCESS" if ok else "FAILED",
+                started_at=started,
+                finished_at=datetime.utcnow(),
+                error=None if ok else ((message or "降级 etl_daily 失败")[:500]),
+            ))
+            db.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("补写降级 pipeline_runs 失败：%s", str(e)[:100])
 
 
 def _mark_zombie_runs_failed() -> None:
