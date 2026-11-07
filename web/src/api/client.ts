@@ -1126,6 +1126,8 @@ export interface EtfElasticity {
   };
   bands?: EtfElasticityBand[];
   recent?: EtfElasticityDay[];
+  /** 近 250 日「一档合计」的滚动 60 日弹性轨迹 */
+  trend?: { date: string; b: number }[];
   sign_flag?: {
     year: number;
     b_ytd: number | null; r2_ytd: number | null;
@@ -1215,6 +1217,12 @@ export interface EtfFlowDetailItem {
   share: number;       // 占 20 只合计的百分比
   pct_chg: number | null;
   rel: number;         // 相对成交额最大者的比例（0–1，用作条形长度）
+  /** 今日成交额 ÷ 前 20 日中位数 */
+  mult20: number | null;
+  /** 今日 ÷ 前一交易日 */
+  mult_prev: number | null;
+  /** 绝对量是否够国家队量级（≥50 亿）——倍数达标但量级不足就是噪声 */
+  enough: boolean;
 }
 
 export interface EtfFlowDashboard {

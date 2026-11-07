@@ -467,30 +467,55 @@ def update_category(db: Session, force: bool = False) -> int:
 # ══════════════════════════════════════════════════════════════════════
 # 净流入重算（含份额折算检测）
 # ══════════════════════════════════════════════════════════════════════
-def rebuild_flow(db: Session) -> int:
-    """重算 20 只 ETF 的日度成交额与净流入汇总，写 etf_flow_daily。
+def flow_panel(db: Session) -> pd.DataFrame:
+    """份额/净值长表 + 逐只日度净申购（亿元）。
 
-    净流入 = Σ(当日份额 − 前日份额) × 单位净值。
-    份额折算日必须先剔除，否则一次 1:2 合并会被算成几百亿的假赎回。
+    **份额折算是这里唯一的陷阱**：分母是「前一日份额」，一旦发生 1:2 合并
+    （510310 在 2024-09-20 做过），Δ份额 × 净值会算出几百亿的假赎回。
+    判据：份额与净值同时大幅反向变动、且两者乘积 ≈ 1。
+
+    折算日的 net 记为 NaN 而不是 0 —— 聚合时该只被跳过，不贡献也不抵消。
+    这与早期 `(d_share.mask(split, 0.0) * nv).sum(axis=1)` 等价。
+
+    返回列：trade_date(YYYYMMDD 字符串) / symbol / fd_share / unit_nav / net
     """
     rows = db.execute(select(
         EtfShareDaily.symbol, EtfShareDaily.trade_date,
         EtfShareDaily.fd_share, EtfShareDaily.unit_nav)).all()
     if not rows:
-        return 0
+        return pd.DataFrame(columns=["trade_date", "symbol", "fd_share", "unit_nav", "net"])
+
     df = pd.DataFrame(rows, columns=["symbol", "trade_date", "fd_share", "unit_nav"])
     df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.strftime("%Y%m%d")
+    df = df.sort_values(["symbol", "trade_date"])
 
     px = df.pivot_table(index="trade_date", columns="symbol", values="fd_share").sort_index()
     nv = df.pivot_table(index="trade_date", columns="symbol", values="unit_nav").sort_index()
 
-    # 份额折算：份额与净值同时大幅反向变动、且两者乘积 ≈ 1
     ratio_s = px / px.shift(1)
     ratio_n = nv / nv.shift(1)
     split = ((ratio_s - 1).abs() > 0.25) & ((ratio_n - 1).abs() > 0.25) & \
             ((ratio_s * ratio_n - 1).abs() < 0.12)
-    d_share = px.diff().mask(split, 0.0)
-    inflow = (d_share * 1e4 * nv).sum(axis=1, min_count=1) / 1e8
+
+    # 明细净申购（亿元），折算日置 NaN
+    per = (px.diff() * 1e4 * nv / 1e8).mask(split)
+    # 用 melt 而不是 stack：pandas 2.x 对 stack 的 dropna 语义有变更告警
+    long = per.reset_index().melt(id_vars="trade_date", var_name="symbol",
+                                  value_name="net")
+
+    out = df.merge(long, on=["trade_date", "symbol"], how="left")
+    return out[["trade_date", "symbol", "fd_share", "unit_nav", "net"]]
+
+
+def rebuild_flow(db: Session) -> int:
+    """重算 20 只 ETF 的日度成交额与净流入汇总，写 etf_flow_daily。
+
+    净流入 = Σ(当日份额 − 前日份额) × 单位净值，口径见 `flow_panel()`。
+    """
+    panel = flow_panel(db)
+    if not len(panel):
+        return 0
+    inflow = panel.groupby("trade_date")["net"].sum(min_count=1)
 
     # 成交额取最近 30 个交易日的 fund_daily 汇总（只在需要时补）
     turnover = _turnover_series(db)
@@ -519,6 +544,46 @@ def rebuild_flow(db: Session) -> int:
     db.commit()
     logger.info("ETF 资金流已重算：%d 个交易日", n)
     return n
+
+
+def heal_latest_flow(db: Session) -> int:
+    """补算「份额已到但汇总没重算」的最近一天。
+
+    为什么会发生：成交额 T 日盘后就到，份额要 T+1 才到，而 `rebuild_flow` 是
+    在某个时点整段重算的。如果它跑的时候份额还没落地，那一行的 net_inflow 会
+    停在默认值 0 —— 看板上读成「净流入 +0 亿」，比「待公布」更容易误导：
+    结论卡会据此判成「量能与资金均无异常」。
+
+    2026-11-06 实测踩到：份额齐全、真实净申购 +40.6 亿，库里是 0.0。
+
+    这里只在「最新一天份额已存在、而 net_inflow 恰好为 0」时补算，代价是
+    1 次标量查询；正常日子直接返回，不加载整张明细。
+    """
+    last = db.scalar(select(func.max(EtfFlowDaily.trade_date)))
+    if last is None:
+        return 0
+    has_share = db.scalar(
+        select(func.count()).select_from(EtfShareDaily)
+        .where(EtfShareDaily.trade_date == last)) or 0
+    if not has_share:
+        return 0
+    row = db.scalar(select(EtfFlowDaily).where(EtfFlowDaily.trade_date == last))
+    if row is not None and abs(float(row.net_inflow or 0.0)) > 1e-9:
+        return 0                      # 已有非零值，视为正常
+
+    panel = flow_panel(db)
+    key = last.strftime("%Y%m%d")
+    sub = panel[(panel["trade_date"] == key)].dropna(subset=["net"])
+    if not len(sub):
+        return 0
+    val = round(float(sub["net"].sum()), 2)
+    if row is None:
+        row = EtfFlowDaily(trade_date=last)
+        db.add(row)
+    row.net_inflow = val
+    db.commit()
+    logger.info("补算 %s 净流入：%.2f 亿（份额晚到导致原值为 0）", key, val)
+    return 1
 
 
 def update_bars(db: Session, codes: list[str], force: bool = False) -> int:
@@ -697,7 +762,8 @@ def _read_nsi() -> dict:
 
 
 def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
-                   sup_n, as_of, is_live, tail_mult=None, tail_today=None) -> dict:
+                   sup_n, as_of, is_live, tail_mult=None, tail_today=None,
+                   tier=None) -> dict:
     """把四个维度（量能 / 资金方向 / 指数 / NSI 信号）压成一段人话结论。
 
     为什么规则驱动而不是接 LLM：这个判断每天只依赖五个数字，规则完全可解释、
@@ -709,30 +775,56 @@ def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
       - 放量 + 净流出             → 换手热闹但钱在撤
       - 缩量 + 大额净申购         → 低吸（比放量更值得留意）
     再叠加 NSI 是否触发做交叉验证，两者同向才算「互相印证」。
+
+    **量能的主角是「一档」（国家队主力通道），不是 20 只合计。**
+    20 只里有大量高换手主题 ETF（科创50、创业板），它们的成交额与申购早已脱钩
+    （弹性 b < 0.5），把它们的成交额加进来会稀释掉真正的信号 ——
+    实测 20 只合计的成交额与净申购相关系数只有 −0.05，而一档 6 只是 +0.87。
+    所以 headline 与「量能」那条都以一档为准，20 只只作全池活跃度的背景。
     """
     mult = (turnover / avg_turn) if avg_turn else 0.0
-    heavy, light = mult >= 1.25, (0 < mult <= 0.80)
+    t = tier or {}
+    t_mult = t.get("mult")
+    t_verdict = t.get("verdict")
+    t_prob = t.get("prob")
+    t_count = t.get("count")
+    # 一档口径存在时，用它的档位判定「放没放量」；否则退回 20 只的阈值
+    if t_verdict:
+        heavy = t_verdict in ("高度疑似", "疑似入场")
+        light = t_verdict in ("未入场", "无异动")
+    else:
+        heavy, light = mult >= 1.25, (0 < mult <= 0.80)
     share_pending = net_in is None
     big_in = (net_in is not None) and net_in >= SUPPORT_THRESHOLD
     outflow = (net_in is not None) and net_in < 0
     chg = chg or 0.0
 
     # —— 量能 ——
-    if heavy:
-        vol = f"20 只 ETF 今日成交 {turnover:.0f} 亿，是 20 日均值的 {mult:.2f} 倍，明显放量"
-    elif light:
-        vol = f"20 只 ETF 今日成交 {turnover:.0f} 亿，仅为 20 日均值的 {mult:.2f} 倍，明显缩量"
+    band_word = {"高度疑似": "达到国家队量级", "疑似入场": "明显放量",
+                 "有异动": "略有异动", "无异动": "接近常态"}.get(t_verdict or "", "缩量")
+    if t_mult is not None:
+        vol = (f"一档 {t_count} 只（主力通道）成交 {t.get('amount', 0):.0f} 亿，"
+               f"为 20 日中位 {t.get('base', 0):.0f} 亿的 {t_mult:.2f} 倍，{band_word}")
+        if t_prob is not None:
+            vol += (f"；历史同档仅 {t_prob:.1f}% 出现国家队级净申购"
+                    f"（基准 {t.get('base_rate') or 0:.1f}%）")
+        vol += f"。全池 20 只 {turnover:.0f} 亿（{mult:.2f}×）"
     else:
-        vol = f"20 只 ETF 今日成交 {turnover:.0f} 亿，与 20 日均值基本持平（{mult:.2f} 倍）"
-    if quantile:
+        if heavy:
+            vol = f"20 只 ETF 今日成交 {turnover:.0f} 亿，是 20 日均值的 {mult:.2f} 倍，明显放量"
+        elif light:
+            vol = f"20 只 ETF 今日成交 {turnover:.0f} 亿，仅为 20 日均值的 {mult:.2f} 倍，明显缩量"
+        else:
+            vol = f"20 只 ETF 今日成交 {turnover:.0f} 亿，与 20 日均值基本持平（{mult:.2f} 倍）"
+    if quantile and t_mult is None:
         vol += f"；放在 {sup_n} 个历史托底日里排 {quantile:.0f} 分位"
     # 尾盘量能是「当日净流入」公布前唯一可用的前置指标，必须进结论而不是只挂个图
     if tail_mult is not None:
         tail_word = ("收盘前明显集中放量" if tail_mult >= 1.3
                      else "尾盘明显缩量" if tail_mult <= 0.8 else "尾盘量能正常")
-        vol += (f"；尾盘（14:31–15:00）占全天 {tail_today:.1f}%，"
-                f"为 20 日均值的 {tail_mult:.2f} 倍，{tail_word}" if tail_today is not None
-                else f"；尾盘量能为 20 日均值的 {tail_mult:.2f} 倍，{tail_word}")
+        vol += (f"；尾盘占全天 {tail_today:.1f}%，为 20 日均值的 {tail_mult:.2f} 倍"
+                if tail_today is not None
+                else f"；尾盘量能为 20 日均值的 {tail_mult:.2f} 倍")
 
     # —— 资金方向 ——
     if share_pending:
@@ -750,31 +842,48 @@ def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
         dirn = f"申赎口径净流出 {net_in:.0f} 亿，资金在往外走"
 
     # —— 结论 ——
-    if share_pending:
-        if heavy and chg < -0.5:
-            head, tone = "放量下跌，资金方向待份额确认", "warn"
-        elif heavy and chg > 0.5:
-            head, tone = "放量上涨，资金方向待份额确认", "warn"
-        elif heavy:
-            head, tone = "量能明显放大，资金方向待份额确认", "warn"
-        elif light:
-            head, tone = "缩量整理，等待盘后份额数据", "calm"
+    # 主线是「一档放量到什么档位」×「净申购有没有跟上」×「当天指数在跌还是在涨」
+    if t_verdict in ("高度疑似", "疑似入场"):
+        lvl = "巨量" if t_verdict == "高度疑似" else "放量"
+        if outflow:
+            head, tone = (f"一档{lvl} {t_mult:.2f}× 但净流出 {net_in:.0f} 亿："
+                          "国家队级撤退，不是托底"), "down"
+        elif big_in and chg < -0.3:
+            head, tone = f"一档{lvl} + 下跌 + 大额净申购：教科书式的托底形态", "up"
+        elif big_in:
+            head, tone = f"一档{lvl} + 大额净申购：资金主动加仓而非被动承接", "up"
+        elif share_pending:
+            head, tone = (f"一档{lvl} {t_mult:.2f}×，历史同档 {(t_prob or 0):.0f}% 出托底，"
+                          "资金方向待份额确认"), "warn"
         else:
-            head, tone = "量能平稳，等待盘后份额数据", "calm"
+            head, tone = f"一档{lvl}但净申购未跟上：有量无跟，尚未构成托底", "warn"
+    elif t_verdict == "有异动":
+        if big_in:
+            head, tone = "一档略有异动，但净申购已过大额门槛：低吸式承接", "up"
+        elif outflow:
+            head, tone = "一档略有异动且净流出：资金在往外走", "down"
+        else:
+            head, tone = "一档略有异动，量级未到国家队门槛", "calm"
+    elif t_verdict:
+        if outflow:
+            head, tone = f"一档缩量且净流出 {net_in:.0f} 亿：资金观望为主", "calm"
+        elif share_pending:
+            head, tone = "一档未入场，等待盘后份额数据", "calm"
+        elif net_in and net_in >= 20:
+            head, tone = (f"一档未入场：量能缩到 {t_mult:.2f}×，"
+                          f"仅小幅净流入 {net_in:.0f} 亿"), "calm"
+        else:
+            head, tone = "一档未入场：量能与资金均无异常，维持常态", "calm"
+    elif share_pending:
+        head, tone = "量能平稳，等待盘后份额数据", "calm"
     elif big_in and chg < -0.3:
         head, tone = "放量下跌 + 大额净申购：教科书式的托底形态", "up"
-    elif big_in and chg > 0.3:
-        head, tone = "上涨伴随大额净申购：资金主动加仓而非被动承接", "up"
     elif big_in:
-        head, tone = "横盘中出现大额净申购：低吸式承接", "up"
+        head, tone = "大额净申购：资金主动承接", "up"
     elif outflow and heavy:
         head, tone = "放量却净流出：换手热闹，但钱在往外走", "down"
     elif outflow:
         head, tone = "缩量净流出：资金观望为主", "down"
-    elif heavy:
-        head, tone = "放量但净流入温和：有量无跟，尚未构成托底确认", "warn"
-    elif light:
-        head, tone = "缩量且资金小幅流入：细水长流式低吸", "calm"
     else:
         head, tone = "量能与资金均无异常，维持常态", "calm"
 
@@ -787,18 +896,26 @@ def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
         base = nsi.get("base_position") or 0.7
         days = nsi.get("holding_days") or 0
         boost = pos > base + 1e-6
-        if boost and big_in:
-            sig = (f"NSI {score:.1f} 高于阈值 {hi:.1f}，仓位 {pos:.0%}，已加仓 {days} 个交易日。"
-                   f"当日资金流与信号同向，两者互相印证。")
-        elif boost and outflow:
-            sig = (f"NSI {score:.1f} 仍在阈值 {hi:.1f} 之上，仓位 {pos:.0%}，已加仓 {days} 个交易日；"
-                   f"但当日转为净流出——信号与观察出现分歧，需留意是否只是单日扰动。")
-        elif boost and share_pending:
-            sig = (f"NSI {score:.1f} 高于阈值 {hi:.1f}，仓位 {pos:.0%}，已加仓 {days} 个交易日；"
-                   f"当日资金方向待份额公布后才能与信号对照。")
+        # 仓位由「最后一次触发后滚动 20 个交易日」维持，它可以高于阈值、也可以已经回落。
+        # 早先的文案无条件写「score 高于阈值」，在 score 已跌破阈值时自相矛盾
+        # （实测 70.5 vs 71.3 仍写成「高于」）。这里按实际大小分岔。
+        above = score >= hi
+        if boost and above:
+            lead = f"NSI {score:.1f} 高于阈值 {hi:.1f}，仓位 {pos:.0%}，已加仓 {days} 个交易日"
         elif boost:
-            sig = (f"NSI {score:.1f} 高于阈值 {hi:.1f}，仓位 {pos:.0%}，已加仓 {days} 个交易日；"
-                   f"当日净流入未达托底门槛，属信号期内的常态日子。")
+            lead = (f"NSI {score:.1f} 已回落到阈值 {hi:.1f} 之下，但仓位仍维持 {pos:.0%}"
+                    f"（上次触发后 {days} 个交易日内），本轮窗口即将到期")
+        else:
+            lead = None
+
+        if lead and big_in:
+            sig = f"{lead}。当日资金流与信号同向，两者互相印证。"
+        elif lead and outflow:
+            sig = f"{lead}；但当日转为净流出——信号与观察出现分歧，需留意是否只是单日扰动。"
+        elif lead and share_pending:
+            sig = f"{lead}；当日资金方向待份额公布后才能与信号对照。"
+        elif lead:
+            sig = f"{lead}；当日净流入未达托底门槛，属信号期内的常态日子。"
         else:
             sig = (f"NSI {score:.1f} 低于阈值 {hi:.1f}，仓位维持基础 {base:.0%}，"
                    f"本期没有新的托底触发。")
@@ -808,7 +925,9 @@ def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
 
     metrics = [
         {"label": "20ETF 成交额", "value": f"{turnover:,.0f}", "unit": "亿",
-         "sub": f"20 日均值的 {mult:.2f} 倍" if avg_turn else "—",
+         "sub": ((f"20 日均值 {mult:.2f} 倍"
+                  + (f" ｜ 一档 {t_mult:.2f}×" if t_mult is not None else ""))
+                 if avg_turn else "—"),
          "tone": "up" if heavy else ("down" if light else "plain")},
         {"label": "当日净流入", "value": "待公布" if share_pending else f"{net_in:+.0f}",
          "unit": "" if share_pending else "亿",
@@ -830,8 +949,10 @@ def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
         "tone": tone,
         "metrics": metrics,
         "points": pts,
-        "caveat": ("观察口径，不构成交易信号。仓位依据以顶部 NSI 为准；"
-                   "盘中量能已被实测证伪为信号（IC 方向翻转），这里只用于判断资金活跃度。"),
+        "caveat": ("观察口径，不构成交易信号，仓位依据以顶部 NSI 为准。"
+                   "盘中量能预测不了买卖方向（IC 方向翻转），但能预测「今天是不是国家队级动作」"
+                   "——放量档出现国家队级净申购的概率远高于缩量档，具体数字见下方一档判据。"
+                   "判断归判断，不进入仓位。"),
     }
 
 
@@ -911,6 +1032,13 @@ def build_dashboard(db: Session) -> dict:
     today = now.strftime("%Y%m%d")
     u = universe_map(db)
     codes = list(u.keys())
+
+    # 份额晚到会让最新一天的 net_inflow 停在 0，必须在读 flow 之前补算，
+    # 否则下游的 dates / prev_trade / 结论卡全都基于错值。
+    try:
+        heal_latest_flow(db)
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("补算最新净流入失败：%s", str(_e)[:120])
 
     # ── 日度基础 ──
     flow_rows = db.execute(select(
@@ -1262,11 +1390,34 @@ def build_dashboard(db: Session) -> dict:
         brows = db.execute(select(EtfDailyBar.symbol, EtfDailyBar.amount,
                                   EtfDailyBar.pct_chg).where(
             EtfDailyBar.trade_date == _to_date(active))).all()
+
+        # 逐只放量倍数：今日 ÷ 前 20 日中位数，以及与前一日的比值。
+        # 只看绝对成交额会漏掉「小 ETF 翻了 3 倍但总量才 8 亿」——
+        # 参照看板的做法就是倍数筛完再用绝对量下限卡一道（国家队日单只 50–190 亿）。
+        recent_dates = db.execute(select(EtfDailyBar.trade_date).distinct()
+                                  .where(EtfDailyBar.trade_date <= _to_date(active))
+                                  .order_by(EtfDailyBar.trade_date.desc())
+                                  .limit(22)).scalars().all()
+        hist = db.execute(select(EtfDailyBar.symbol, EtfDailyBar.trade_date,
+                                 EtfDailyBar.amount)
+                          .where(EtfDailyBar.trade_date.in_(recent_dates))).all()
+        hmap: dict[str, list[tuple]] = {}
+        for r in hist:
+            hmap.setdefault(r.symbol, []).append((r.trade_date, float(r.amount or 0)))
+        for v in hmap.values():
+            v.sort()
+
         tot_amt = sum(float(r.amount or 0) for r in brows)
         mx = max((float(r.amount or 0) for r in brows), default=0.0)
         for r in brows:
             info = u.get(r.symbol, {})
             amt = float(r.amount or 0)
+            series = hmap.get(r.symbol, [])
+            prev = series[-2][1] if len(series) >= 2 else None
+            pool = [a for _, a in series[:-1]][-20:]
+            base20 = float(pd.Series(pool).median()) if pool else None
+            mult20 = round(amt / base20, 2) if base20 else None
+            mult_prev = round(amt / prev, 2) if prev else None
             etf_detail.append({
                 "symbol": r.symbol,
                 "name": info.get("name", ""),
@@ -1275,6 +1426,10 @@ def build_dashboard(db: Session) -> dict:
                 "share": round(amt / tot_amt * 100, 1) if tot_amt else 0.0,
                 "pct_chg": round(float(r.pct_chg), 2) if r.pct_chg is not None else None,
                 "rel": round(amt / mx, 3) if mx else 0.0,
+                "mult20": mult20,
+                "mult_prev": mult_prev,
+                # 倍数达标不等于国家队动手：绝对量不够就是「量级不足」
+                "enough": amt >= 50.0,
             })
         etf_detail.sort(key=lambda x: -x["amount"])
 
@@ -1458,11 +1613,35 @@ def build_dashboard(db: Session) -> dict:
     if not live_now and t_turn > 0:
         est = round(t_turn, 1)
 
+    # 一档/二档分层与「成交额→申购」判据。
+    # **必须在 summary 之前算**：headline 的主线是「一档放量到什么档位」。
+    # 局部 import：etf_elasticity 反依赖本模块的 flow_panel，模块级导入会成环。
+    from app.services import etf_elasticity
+    try:
+        elasticity = etf_elasticity.build_elasticity(db)
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("弹性分层计算失败：%s", str(_e)[:160])
+        elasticity = {"available": False}
+
+    # 只有当分层的最新日与页面展示日一致时才拿它做结论。
+    # 不一致时（例如盘中回退到上一交易日）宁可不给档位，也不能把今天的判据
+    # 套到昨天的数据上。
+    tier_ctx = None
+    _active_iso = f"{active[:4]}-{active[4:6]}-{active[6:]}" if active else None
+    if elasticity.get("available") and elasticity.get("as_of") == _active_iso:
+        _j = elasticity.get("judge") or {}
+        tier_ctx = {
+            "mult": _j.get("mult"), "verdict": _j.get("verdict"),
+            "prob": _j.get("prob"), "amount": _j.get("amount"),
+            "base": _j.get("base"), "base_rate": _j.get("base_rate"),
+            "count": elasticity.get("tier1_count"), "net": _j.get("net"),
+        }
+
     summary = _build_summary(
         t_turn, avg_turn20, q_t, t_net, t_chg, nsi_data,
         len(support_days),
-        f"{active[:4]}-{active[4:6]}-{active[6:]}" if active else "",
-        live_now, tail.get("mult"), tail.get("today"))
+        _active_iso or "",
+        live_now, tail.get("mult"), tail.get("today"), tier_ctx)
 
     # 信号 vs 观察：同屏两块口径可能打架，把结论写在一处
     if nsi_data.get("available"):
@@ -1492,6 +1671,7 @@ def build_dashboard(db: Session) -> dict:
         "etf_detail": etf_detail,
         "focus": focus,
         "valuation": valuation,
+        "elasticity": elasticity,
         "minute": {
             "labels": LABELS,
             "count": cnt,
