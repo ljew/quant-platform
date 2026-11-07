@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings, BASE_DIR
 from app.database import init_db
-from app.routers import data, market, strategy, paper, hedge, monitor, factor, llm, signal, agent, news, auto, research, live_ops, wechat, etf_flow
+from app.routers import data, market, strategy, paper, hedge, monitor, factor, llm, signal, agent, news, auto, research, live_ops, wechat, etf_flow, reports
 from app.schemas import HealthResponse
 
 import logging
@@ -62,6 +62,8 @@ app.include_router(wechat.router, prefix=settings.api_prefix)
 app.include_router(auto.router, prefix=settings.api_prefix)
 app.include_router(research.router, prefix=settings.api_prefix)
 app.include_router(etf_flow.router, prefix=settings.api_prefix)
+# 市场资讯报告（只读）：由 ingest_market_report.py 写入 market_reports 表
+app.include_router(reports.router, prefix=settings.api_prefix)
 
 
 @app.on_event("startup")
