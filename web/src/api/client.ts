@@ -377,6 +377,13 @@ export interface HealthReport {
 
 // —— GP 自动挖掘类型 ——
 /** 每小时热点简报条目 */
+export interface HotBriefSource {
+  ref: string;          // 输入编号，如 "S1"
+  kind: string;         // 快讯 / 搜索
+  label: string;        // 财联社电报 / DeepSeek · 央广财经
+  url: string;
+}
+
 export interface HotBriefItem {
   theme: string;
   direction: "bullish" | "bearish" | "neutral" | string;
@@ -385,6 +392,14 @@ export interface HotBriefItem {
   horizon: string;
   why: string;
   strength: number;
+  /** 来源：模型回填输入编号，服务端翻译成人可读标签（见 hot_brief._resolve_src） */
+  source_kind?: string;    // 快讯 / 搜索 / 快讯+搜索
+  source_label?: string;   // 财联社电报 / DeepSeek · 央广财经
+  source_url?: string;
+  source_refs?: string[];
+  /** 完整来源清单（source_label 超过 2 个时会压缩，这里是全量） */
+  source_all?: string[];
+  sources?: HotBriefSource[];
 }
 
 export interface HotBrief {

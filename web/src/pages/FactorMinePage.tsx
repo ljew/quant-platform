@@ -223,7 +223,31 @@ export default function FactorMinePage() {
                     <Badge text={`${up ? "多" : it.direction === "bearish" ? "空" : "中"} ${it.strength}/5`}
                            color={tone} soft />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12.5, fontWeight: 600 }}>{it.theme}</div>
+                      <div style={{ fontSize: 12.5, fontWeight: 600, display: "flex",
+                                    alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        <span>{it.theme}</span>
+                        {it.source_label && (() => {
+                          const isSearch = (it.source_kind || "").includes("搜索");
+                          const pill: React.CSSProperties = {
+                            fontSize: 10.5, fontWeight: 400, lineHeight: "16px",
+                            padding: "0 5px", borderRadius: 3,
+                            border: `1px solid ${colors.border}`,
+                            color: isSearch ? colors.accent : colors.muted,
+                            textDecoration: "none", whiteSpace: "nowrap",
+                          };
+                          const all = it.source_all?.length ? it.source_all : [it.source_label];
+                          const tip = `来源：${all.join(" / ")}`
+                            + (it.source_refs?.length ? `\n输入编号：${it.source_refs.join(", ")}` : "");
+                          return it.source_url ? (
+                            <a href={it.source_url} target="_blank" rel="noreferrer"
+                               title={`${tip} — 点击打开原文`} style={pill}>
+                              {it.source_label} ↗
+                            </a>
+                          ) : (
+                            <span title={tip} style={pill}>{it.source_label}</span>
+                          );
+                        })()}
+                      </div>
                       <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 2 }}>
                         {it.sectors.length > 0 && <>板块 {it.sectors.join("/")}　</>}
                         {it.tickers.length > 0 && <>个股 {it.tickers.join("/")}　</>}
@@ -240,6 +264,7 @@ export default function FactorMinePage() {
             <div style={{ marginTop: 8, fontSize: 11, color: colors.muted }}>
               输入 = 财联社一手快讯（时效）+ DeepSeek 网页搜索（覆盖广度），模型只做筛选与判断；
               已与上一条简报做过跨轮去重，本轮只报新增变化。
+              每条主题右侧标注来源：灰色「财联社电报」= 一手快讯，蓝色「DeepSeek · 站点」= 网页搜索（可点开原文）。
             </div>
           </Card>
         </div>

@@ -72,6 +72,8 @@ USER_TEMPLATE = """下面是两个来源的资讯。
 - horizon: 1-3日 / 1-4周 / 长期
 - why: 影响路径，一句话说清「因为什么 → 所以什么」，不超过 40 字
 - strength: 1-5 整数，1=可忽略，5=可能改变趋势
+- src: 这条来自哪些输入条目，用输入的编号，例如 "F3"、"S2"、"F1,S2"。
+  合并了多个来源就把编号都写上，用英文逗号分隔。**必须填真实编号，不要编造。**
 
 另外给 mainline：100 字以内，说清当前市场在交易什么逻辑（不是罗列，是判断）。
 
@@ -211,7 +213,57 @@ def _too_similar(a: str, b: str, thresh: float = 0.32) -> bool:
     return len(x & y) / len(x | y) >= thresh
 
 
-def _parse(text: str) -> tuple[list[dict], str]:
+def _ref_map(flash: list[dict], search: list[dict]) -> dict[str, dict]:
+    """输入编号 → 人类可读来源。F=财联社快讯，S=DeepSeek 搜索。
+
+    让模型回填编号、由代码翻译成来源，而不是让它直接写「据财联社」——
+    后者模型会编（把 S 条目写成「财联社」是常见幻觉）。
+    """
+    m: dict[str, dict] = {}
+    for i, _ in enumerate(flash, 1):
+        m[f"F{i}"] = {"kind": "快讯", "label": "财联社电报", "url": ""}
+    for i, x in enumerate(search, 1):
+        site = (x.get("site") or "网页").strip()
+        m[f"S{i}"] = {"kind": "搜索", "label": f"DeepSeek · {site}",
+                      "url": x.get("url") or ""}
+    return m
+
+
+def _resolve_src(raw, ref_map: dict[str, dict]) -> dict:
+    """把模型给的 "F2,S1" 解析成 {kind, label, url, refs}。"""
+    refs = re.findall(r"[FSfs]\s*\d+", str(raw or ""))
+    refs = [r.replace(" ", "").upper() for r in refs]
+    known = [(r, ref_map[r]) for r in refs if r in ref_map]
+    if not known:
+        return {"source_kind": "", "source_label": "未标注来源",
+                "source_url": "", "source_refs": [], "source_all": [],
+                "sources": []}
+    kinds, labels, url, sources = [], [], "", []
+    for r, info in known:
+        if info["kind"] not in kinds:
+            kinds.append(info["kind"])
+        if info["label"] not in labels:
+            labels.append(info["label"])
+        if not url and info["url"]:
+            url = info["url"]
+        sources.append({"ref": r, "kind": info["kind"],
+                        "label": info["label"], "url": info["url"]})
+    # 标签要短：三个站点全列出来会把主题挤走。完整清单留在 sources / refs 里，
+    # 前端悬停看全量。
+    if len(labels) <= 2:
+        label = " + ".join(labels)
+    else:
+        label = f"{labels[0]} 等 {len(labels)} 个来源"
+    return {"source_kind": "+".join(kinds),
+            "source_label": label,
+            "source_url": url,
+            "source_refs": [r for r, _ in known],
+            "source_all": labels,
+            "sources": sources}
+
+
+def _parse(text: str, ref_map: dict[str, dict] | None = None,
+           ) -> tuple[list[dict], str]:
     raw = _strip_fence(text)
     i, j = raw.find("{"), raw.rfind("}")
     if i >= 0 and j > i:
@@ -231,7 +283,7 @@ def _parse(text: str) -> tuple[list[dict], str]:
             strength = int(it.get("strength") or 3)
         except Exception:  # noqa: BLE001
             strength = 3
-        clean.append({
+        row = {
             "theme": str(it.get("theme") or "")[:40],
             "direction": str(it.get("direction") or "neutral"),
             "sectors": [str(x)[:12] for x in (it.get("sectors") or [])][:3],
@@ -239,7 +291,9 @@ def _parse(text: str) -> tuple[list[dict], str]:
             "horizon": str(it.get("horizon") or ""),
             "why": str(it.get("why") or "")[:120],
             "strength": max(1, min(5, strength)),
-        })
+        }
+        row.update(_resolve_src(it.get("src"), ref_map or {}))
+        clean.append(row)
     return clean, str(d.get("mainline") or "")[:300]
 
 
@@ -337,7 +391,7 @@ def run_brief(db: Session, minutes: int = 60,
         db.commit()
         return {"ok": False, "error": rec.error, "id": rec.id}
 
-    items, mainline = _parse(text)
+    items, mainline = _parse(text, _ref_map(flash, search))
     # 代码兜底去重：与上条简报主题高度相似的丢掉（提示词约束不住时这里收口）
     if items and recent:
         kept = [it for it in items
