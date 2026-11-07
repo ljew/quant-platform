@@ -136,7 +136,8 @@ def parse_report(path: Path) -> dict:
     sec8 = re.search(r"^## 8\..*?$(.*?)(?=^## 9\.)", text, re.M | re.S)
     news_count = len(re.findall(r"^\|\s*\d+\s*\|", sec8.group(1), re.M)) if sec8 else 0
 
-    cm = re.search(r"冲突字段[：:]\s*(\d+)", text)
+    # 兼容「冲突字段：6」与「冲突字段数：6」两种写法（模板第 6 节用的是后者）
+    cm = re.search(r"冲突字段(?:数)?[：:]\s*(\d+)", text)
     conflict_count = int(cm.group(1)) if cm else text.count("[源冲突⚠]")
     mm = re.search(r"计数[：:]\s*(\d+)\s*项", text)
     missing_count = int(mm.group(1)) if mm else 0
@@ -167,11 +168,12 @@ def parse_report(path: Path) -> dict:
     )
 
 
-def upsert(conn: sqlite3.Connection, rec: dict) -> str:
+def upsert(conn: sqlite3.Connection, rec: dict, force: bool = False) -> str:
     old = conn.execute("SELECT content_hash FROM market_reports WHERE report_id=?",
                        (rec["report_id"],)).fetchone()
     now = datetime.now().isoformat(timespec="seconds")
-    if old and old[0] == rec["content_hash"]:
+    # force=True 时即使正文未变也重算字段（解析逻辑改进后需要回填）
+    if old and old[0] == rec["content_hash"] and not force:
         return "skipped"
     rec = dict(rec)
     rec["ingested_at"] = now
@@ -276,6 +278,8 @@ def main() -> int:
     ap.add_argument("--dir", type=Path, help="批量扫描目录（默认 market_brief/）")
     ap.add_argument("--list", action="store_true", help="列出库中报告")
     ap.add_argument("--rebuild-index", action="store_true", help="只重建静态索引")
+    ap.add_argument("--force", action="store_true",
+                    help="正文未变也重算字段（解析逻辑改进后回填用）")
     args = ap.parse_args()
 
     db = resolve_db()
@@ -313,7 +317,7 @@ def main() -> int:
     for f in files:
         try:
             rec = parse_report(f)
-            r = upsert(conn, rec)
+            r = upsert(conn, rec, force=args.force)
             stat[r] += 1
             if r != "skipped":
                 touched.append(rec["report_id"])
