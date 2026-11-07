@@ -761,6 +761,62 @@ def _read_nsi() -> dict:
 
 
 
+HOLD_DAYS = 20          # 与 docs/NSI-SPEC.md 的 HOLD_DAYS 一致：最后一次触发后维持 20 个交易日
+
+
+def _nsi_window(nsi: dict) -> dict:
+    """加仓窗口倒计时。
+
+    NSI 是单向状态机（规格书 §4.3）：score 越过阈值触发后，仓位提到 100% 并
+    维持 HOLD_DAYS=20 个交易日，到期自动回落 —— **score 低不会触发减仓**。
+
+    所以「还剩几天」是一个独立的、每天都会变化的信息：即使今天 score 已经
+    跌破阈值，仓位仍可能因为窗口未到期而保持 100%。规格书 §4.4 预留了话术
+    「信号已转弱，但按规则仍在加仓窗口，{剩余天数} 个交易日后回落」。
+
+    到期日按交易日历算，不是加 20 个自然日 —— 否则会多算掉假期。
+    """
+    used = nsi.get("holding_days")
+    last_change = nsi.get("last_change")
+    pos = nsi.get("position") or 0.0
+    base = nsi.get("base_position") or 0.7
+    if used is None or pos <= base + 1e-6:
+        return {"active": False, "hold_days": HOLD_DAYS,
+                "used": 0, "remaining": 0, "expire": None,
+                "weakened": False, "note": "当前不在加仓窗口内"}
+
+    used = int(used)
+    remaining = max(0, HOLD_DAYS - used)
+    expire = None
+    try:
+        from app.core.trading_calendar import trading_days
+        start = pd.to_datetime(last_change).date()
+        days = trading_days(start, start + pd.Timedelta(days=HOLD_DAYS * 2 + 20))
+        # 触发日算第 0 天，第 HOLD_DAYS 个交易日收盘后回落
+        if len(days) > HOLD_DAYS:
+            expire = days[HOLD_DAYS].strftime("%Y-%m-%d")
+    except Exception as e:  # noqa: BLE001
+        logger.debug("窗口到期日计算失败：%s", e)
+
+    hi = nsi.get("hi_threshold") or 71.3
+    score = nsi.get("score")
+    weakened = score is not None and score < hi
+
+    if remaining <= 0:
+        note = "加仓窗口已到期，仓位应按规则回落"
+    elif weakened:
+        note = f"信号已转弱（score {score:.1f} < 阈值 {hi:.1f}），但按规则仍在加仓窗口，{remaining} 个交易日后回落"
+    else:
+        note = f"score 仍在阈值之上，窗口每触发一次就重新计时；当前已持续 {used} 个交易日，余 {remaining} 日"
+
+    return {
+        "active": True, "hold_days": HOLD_DAYS, "used": used,
+        "remaining": remaining, "expire": expire,
+        "weakened": bool(weakened), "last_trigger": last_change,
+        "note": note,
+    }
+
+
 def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
                    sup_n, as_of, is_live, tail_mult=None, tail_today=None,
                    tier=None) -> dict:
@@ -1647,6 +1703,7 @@ def build_dashboard(db: Session) -> dict:
     if nsi_data.get("available"):
         nsi_data["consistency"] = _signal_vs_view(
             nsi_data, t_net, tail.get("mult"), tail.get("today"))
+        nsi_data["window"] = _nsi_window(nsi_data)
 
     return {
         "meta": {

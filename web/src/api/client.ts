@@ -977,6 +977,18 @@ export interface EtfFlowNsi {
   data_warning?: string | null;
   note?: string;
   history?: NsiHistoryPoint[];
+  /** 加仓窗口倒计时（NSI 是单向状态机，到期自动回落） */
+  window?: {
+    active: boolean;
+    hold_days: number;
+    used: number;
+    remaining: number;
+    expire: string | null;
+    weakened: boolean;
+    last_trigger?: string;
+    note: string;
+  };
+
   /** 信号口径与观察视图当天是否配合（服务端判定） */
   consistency?: {
     status: "aligned" | "divergent" | "unconfirmed";

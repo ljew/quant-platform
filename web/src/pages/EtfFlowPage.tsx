@@ -1575,6 +1575,47 @@ function NsiCard({
       </div>
 
       {(() => {
+        const w = nsi.window;
+        if (!w || !w.active) return null;
+        const ratio = w.hold_days ? Math.min(1, w.used / w.hold_days) : 0;
+        const tone = w.weakened ? "#b9770e" : colors.accent;
+        return (
+          <div style={{ margin: "0 0 12px" }}>
+            <div style={{
+              display: "flex", alignItems: "baseline", gap: 10,
+              flexWrap: "wrap", marginBottom: 5,
+            }}>
+              <span style={{ fontSize: 11.5, fontWeight: 600, color: colors.text }}>加仓窗口</span>
+              <span style={{ fontSize: 11.5, color: colors.muted, fontVariantNumeric: "tabular-nums" }}>
+                {w.used} / {w.hold_days} 个交易日
+              </span>
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: tone }}>
+                剩 {w.remaining} 日
+              </span>
+              {w.expire && (
+                <span style={{ fontSize: 11, color: colors.axis }}>· {w.expire} 到期</span>
+              )}
+              <span style={{ fontSize: 10.5, color: colors.axis, marginLeft: "auto" }}>
+                单向状态机：score 低不减仓，到期自然回落
+              </span>
+            </div>
+            <div style={{
+              height: 6, background: colors.tableStripe,
+              borderRadius: 3, overflow: "hidden",
+            }}>
+              <div style={{
+                width: `${ratio * 100}%`, height: "100%",
+                background: tone, opacity: 0.72, borderRadius: 3,
+              }} />
+            </div>
+            <div style={{
+              fontSize: 11.5, color: colors.muted, marginTop: 5, lineHeight: 1.6,
+            }}>{w.note}</div>
+          </div>
+        );
+      })()}
+
+      {(() => {
         const c = nsi.consistency;
         if (!c) return null;
         const tone = c.status === "aligned"
