@@ -61,6 +61,15 @@ export interface KlineBar {
   amount: number;
 }
 
+/** /market/quote/{symbol} 实时快照（个股与指数通用）。 */
+export interface SpotQuote {
+  symbol: string;
+  name: string;
+  price: number;
+  change_pct: number;
+  updated_at: string;
+}
+
 /** /market/stocks 返回的标的信息 */
 export interface StockItem {
   symbol: string;
@@ -102,8 +111,10 @@ export interface BacktestResult {
 // —— 业务 API ——
 export const api = {
   strategies: () => get<StrategyInfo[]>("/strategy/strategies"),
-  kline: (symbol: string, start: string, end: string) =>
-    get<KlineBar[]>(`/market/kline/${symbol}?start=${start}&end=${end}`),
+  // limit 显式传入：后端默认只返回 500 根，长区间会被静默截断成「最近 500 根」。
+  kline: (symbol: string, start: string, end: string, limit = 500) =>
+    get<KlineBar[]>(`/market/kline/${symbol}?start=${start}&end=${end}&limit=${limit}`),
+  quote: (symbol: string) => get<SpotQuote>(`/market/quote/${symbol}`),
   stocks: (keyword: string, limit = 10) =>
     get<StockItem[]>(`/market/stocks?keyword=${encodeURIComponent(keyword)}&limit=${limit}`),
   backtestSync: (payload: Record<string, unknown>) =>
@@ -152,6 +163,27 @@ export const api = {
   // GP 自动挖掘
   factorGpDirections: () => get<{ key: string; note: string }[]>("/factor/gp/directions"),
   factorGpMine: (payload: Record<string, unknown>) => post<GpMineResult>("/factor/gp/mine", payload),
+  /** 情绪时序（非结构化管道）。source: news=东财新闻 / mp=公众号语料 */
+  factorNewsDaily: (limit = 500, source: "news" | "mp" = "news") =>
+    get<{ date: string; n_articles: number; n_finance: number; bull: number; bear: number; net_sentiment: number | null }[]>(`/factor/news/daily?limit=${limit}&source=${source}`),
+  /** 极端情绪日 → 未来 N 日指数收益检验。source 支持 news / mp / both 合并 */
+  factorNewsTest: (extreme_pct: number, horizon: number, source: "news" | "mp" | "both" = "both") =>
+    post<NewsEventReport>("/factor/news/event-test", { extreme_pct, horizon, source }),
+  /** 每小时热点简报（一手快讯 → LLM 筛选解读） */
+  hotBriefLatest: () => get<HotBrief>("/factor/hot-brief/latest"),
+  /** 今日累计：各轮条目合并去重 + 最新综述（首页用这个） */
+  hotBriefToday: () => get<HotBrief>("/factor/hot-brief/today"),
+  hotBriefList: (limit = 24) => get<HotBrief[]>("/factor/hot-brief/list?limit=" + limit),
+  /** 单条输入的原文内容；full=true 时实时抓整页正文（联网、按次计费） */
+  hotBriefInput: (ref: string, opts?: { runId?: number; full?: boolean }) => {
+    const q = new URLSearchParams({ ref });
+    if (opts?.runId) q.set("run_id", String(opts.runId));
+    if (opts?.full) q.set("full", "1");
+    return get<HotBriefInputDetail>(`/factor/hot-brief/input?${q.toString()}`);
+  },
+  /** 社交关注度（雪球 A 股热股 / 微博热搜）；只有热度、无正文，不做多空打分 */
+  factorSocialHeat: (days = 30) =>
+    get<{ date: string; source: string; n_items: number; n_finance: number; heat_total: number; heat_top10: number }[]>(`/factor/social/heat?days=${days}`),
   // AI 因子生成（自然语言 ↔ 表达式）
   factorAiStatus: () => get<AiStatus>("/factor/ai/status"),
   factorAiGenerate: (text: string, max_retry = 3) =>
@@ -364,6 +396,103 @@ export interface HealthReport {
 }
 
 // —— GP 自动挖掘类型 ——
+/** 每小时热点简报条目 */
+export interface HotBriefSource {
+  ref: string;          // 输入编号，如 "S1"
+  kind: string;         // 快讯 / 搜索
+  label: string;        // 财联社电报 / DeepSeek · 央广财经
+  url: string;
+}
+
+export interface HotBriefItem {
+  theme: string;
+  direction: "bullish" | "bearish" | "neutral" | string;
+  sectors: string[];
+  tickers: string[];
+  horizon: string;
+  why: string;
+  strength: number;
+  /** 来源：模型回填输入编号，服务端翻译成人可读标签（见 hot_brief._resolve_src） */
+  source_kind?: string;    // 快讯 / 搜索 / 快讯+搜索
+  source_label?: string;   // 财联社电报 / DeepSeek · 央广财经
+  source_url?: string;
+  source_refs?: string[];
+  /** 完整来源清单（source_label 超过 2 个时会压缩，这里是全量） */
+  source_all?: string[];
+  sources?: HotBriefSource[];
+  /** 今日累计视图里：该条首次被报出的时间（HH:MM） */
+  first_seen?: string;
+}
+
+/** 本轮喂给模型的原始输入（用于回溯「这条是从哪看到的」） */
+export interface HotBriefInput {
+  ref: string;      // F1 / S2
+  kind: string;     // 快讯 / 搜索
+  ts: number;       // unix 秒；搜索可能为 0
+  title: string;
+  site: string;
+  url: string;
+  /** 正文快照：快讯=财联社电报正文，搜索=DeepSeek 返回的 600~800 字摘要。
+   *  3 天前的快照会被后端剥掉，只剩定位信息。 */
+  body?: string;
+}
+
+/** 单条输入的详情（`full=1` 时多一个 content：实时抓到的整页正文） */
+export interface HotBriefInputDetail extends HotBriefInput {
+  run_id?: number;
+  content?: string;
+  content_title?: string;
+  error?: string;
+}
+
+export interface HotBrief {
+  id?: number;
+  created_at?: string;
+  window_start?: string;
+  window_end?: string;
+  n_input?: number;
+  n_flash?: number;
+  n_search?: number;
+  n_items?: number;
+  items?: HotBriefItem[];
+  /** 本轮原始输入快照（标题/站点/链接），可回溯原文 */
+  inputs?: HotBriefInput[];
+  mainline?: string;
+  /** 今日综述（350~1000 字，分政策/产业/海外/资金四段） */
+  summary?: string;
+  /** 今日累计视图专有 */
+  n_briefs?: number;
+  /** 最近一轮（本小时）真正新报的条目 */
+  latest_items?: HotBriefItem[];
+  latest_at?: string;
+  n_latest?: number;
+  date?: string;
+  source_split?: Record<string, number>;
+  model?: string;
+  error?: string;
+}
+
+/** 新闻情绪择时检验（市场级 · 非结构化数据）。2026-09-18 下线，2026-11-07 恢复。 */
+export interface NewsEventReport {
+  ok: boolean;
+  error?: string;
+  extreme_pct: number;
+  horizon: number;
+  hi_threshold?: number;
+  lo_threshold?: number;
+  baseline_ret: number;
+  n_days_all: number;
+  bull: { n_days: number; avg_ret: number; win_rate: number };
+  bear: { n_days: number; avg_ret: number; win_rate: number };
+  edge_long_vs_base?: number | null;
+  edge_short_vs_base?: number | null;
+  /** 按实测动态给的结论（含样本覆盖警告），不要在前端另写死判断 */
+  verdict?: string;
+  note?: string;
+  n_effective_days?: number;
+  coverage_warning?: string | null;
+}
+
 export interface GpMineResult {
   ok: boolean;
   directions: string[];
@@ -692,10 +821,43 @@ export interface StockNews {
   ok: boolean; error?: string; symbol?: string; items: NewsItem[]; cached?: boolean;
 }
 
+/** 统一资讯流条目（各来源原文归一后的形态） */
+export interface NewsFeedItem {
+  id: number;
+  source: string;          // cls / eastmoney / sina / tushare / wechat / guba
+  source_label: string;    // 财联社 / 东财 / …
+  title: string;
+  summary: string;
+  url: string;
+  published_at: string | null;
+  symbols: string;
+}
+
+export interface NewsSourceStat {
+  key: string;
+  label: string;
+  count: number;
+  latest: string | null;
+}
+
 export const newsApi = {
   feed: (refresh = false) => get<NewsFeed>(`/news/feed${refresh ? "?refresh=true" : ""}`),
   stock: (symbol: string) =>
     get<StockNews>(`/news/stock?symbol=${encodeURIComponent(symbol)}`),
+  /** 统一资讯流（分页）。sources 传逗号串，空=全部 */
+  feedItems: (p: { sources?: string; q?: string; hours?: number; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (p.sources) qs.set("sources", p.sources);
+    if (p.q) qs.set("q", p.q);
+    if (p.hours !== undefined) qs.set("hours", String(p.hours));
+    qs.set("limit", String(p.limit ?? 60));
+    qs.set("offset", String(p.offset ?? 0));
+    return get<{ items: NewsFeedItem[]; total: number; has_more: boolean }>(`/news/items?${qs}`);
+  },
+  /** 各来源条数与最新时间 */
+  feedSources: (hours = 0) => get<NewsSourceStat[]>(`/news/sources?hours=${hours}`),
+  /** 手动触发一次同步 */
+  feedSync: () => post<Record<string, number>>("/news/sync", {}),
 };
 
 // —— 自动研究闭环（/auto/*）——
@@ -920,6 +1082,18 @@ export interface EtfFlowNsi {
   data_warning?: string | null;
   note?: string;
   history?: NsiHistoryPoint[];
+  /** 加仓窗口倒计时（NSI 是单向状态机，到期自动回落） */
+  window?: {
+    active: boolean;
+    hold_days: number;
+    used: number;
+    remaining: number;
+    expire: string | null;
+    weakened: boolean;
+    last_trigger?: string;
+    note: string;
+  };
+
   /** 信号口径与观察视图当天是否配合（服务端判定） */
   consistency?: {
     status: "aligned" | "divergent" | "unconfirmed";
@@ -994,6 +1168,9 @@ export interface EtfFlowForwardPoint {
   t5: number | null;
   t20: number | null;
   t60: number | null;
+  /** 对照基准：上证综指 / 510300 的同窗口收益 */
+  ix5?: number | null; ix20?: number | null; ix60?: number | null;
+  hs5?: number | null; hs20?: number | null; hs60?: number | null;
 }
 
 export interface EtfFlowForwardGroup {
@@ -1006,7 +1183,14 @@ export interface EtfFlowForwardGroup {
 
 export interface EtfFlowForward {
   horizons: number[];
+  /** 主基准 = 一档等权净值（实际被托底的宽基组合） */
   stats: Record<string, EtfFlowForwardStat>;
+  /** 对照：上证综指（旧口径）与 510300，用来暴露结论对基准的敏感度 */
+  benchmark?: {
+    main: string; index: string; core: string; tier1: string[]; note: string;
+  };
+  index_stats?: Record<string, EtfFlowForwardStat>;
+  core_stats?: Record<string, EtfFlowForwardStat>;
   corr: Record<string, number | null>;
   points: EtfFlowForwardPoint[];
   /** 按托底时的估值分位分组后的后市表现 */
@@ -1042,6 +1226,94 @@ export interface EtfFlowValuation {
   } | null;
   /** 按年看托底时的估值分位中位数 —— 最能说明行为模式变化 */
   support_yearly?: { year: string; n: number; median: number }[];
+}
+
+/** 一档弹性判据：成交额能否反推申购（分层依据是逐只回归的弹性 b 与 R²） */
+export interface EtfElasticityMember {
+  symbol: string;
+  name: string;
+  category: string;
+  scale: number;
+  b21: number | null;
+  b60: number | null;
+  b120: number | null;
+  r2_60: number | null;
+  hits: number;          // 三个窗口里达标的个数
+  tier: "一档" | "二档";
+  marginal: boolean;     // 贴着阈值，会随一天数据翻档
+}
+
+export interface EtfElasticityBand {
+  label: string;
+  verdict: string;
+  n: number;
+  median: number | null;
+  positive: number | null;
+  big: number | null;    // 「国家队级净申购」概率 %
+  lift: number | null;   // 相对全体基准的倍数
+  hits: number;          // 该档实际命中次数
+  /** Wilson 95% 区间（百分数）。k=0 时 ci_hi 是「尚未观测到」的上界，不能写成 0% */
+  ci_lo: number | null;
+  ci_hi: number | null;
+}
+
+export interface EtfElasticityDay {
+  date: string;
+  amount: number;
+  base: number | null;
+  mult: number | null;
+  net: number | null;
+}
+
+export interface EtfElasticity {
+  available: boolean;
+  as_of?: string;
+  reason?: string;
+  params?: {
+    windows: number[]; votes: number; b: number; r2: number;
+    base_win: number; big_net: number;
+  };
+  members?: EtfElasticityMember[];
+  tier1?: string[];
+  tier1_count?: number;
+  tier1_share?: number | null;
+  judge?: {
+    amount: number; base: number | null; mult: number | null;
+    net: number | null; band: string | null; verdict: string | null;
+    prob: number | null; lift: number | null; base_rate: number | null;
+  };
+  /** 主表口径：point_in_time = 逐日重选名单，无前视偏差 */
+  basis?: "point_in_time" | "sample";
+  bands?: EtfElasticityBand[];
+  /** 对照：用今天名单回溯全历史的样本内口径，用来暴露选择偏差 */
+  bands_sample?: EtfElasticityBand[];
+  pit?: {
+    valid_days: number; total_days: number; coverage: number;
+    tier1_median: number | null; overlap_mean: number | null;
+    same_list_share: number | null; base_rate: number | null;
+  };
+  recent?: EtfElasticityDay[];
+  /** 近 250 日「一档合计」的滚动 60 日弹性轨迹 */
+  trend?: { date: string; b: number }[];
+  /** 判据可用性护栏：名单被挑走 / 弹性翻负时，概率表要降级或停用 */
+  availability?: {
+    state: "ok" | "degraded" | "disabled";
+    reasons: string[];
+    note: string;
+    checks: {
+      tier1_count: number; b_now: number | null;
+      regime: string; marginal: number;
+    };
+  };
+  sign_flag?: {
+    year: number;
+    b_ytd: number | null; r2_ytd: number | null;
+    b_now: number | null; r2_now: number | null;
+    net_sum: number;
+    regime: "regime_shift" | "aligned_sell" | "aligned_buy" | "unclear";
+    tone: "up" | "down" | "warn" | "plain";
+    note: string;
+  };
 }
 
 /** 焦点切换：当日成交额 top3 与前一日的对比 */
@@ -1112,6 +1384,8 @@ export interface EtfFlowSummary {
   metrics: EtfFlowSummaryMetric[];
   points: EtfFlowSummaryPoint[];
   caveat: string;
+  /** 与 elasticity.availability 同步，结论卡据此显示护栏徽标 */
+  availability?: "ok" | "degraded" | "disabled";
 }
 
 export interface EtfFlowDetailItem {
@@ -1122,6 +1396,32 @@ export interface EtfFlowDetailItem {
   share: number;       // 占 20 只合计的百分比
   pct_chg: number | null;
   rel: number;         // 相对成交额最大者的比例（0–1，用作条形长度）
+  /** 今日成交额 ÷ 前 20 日中位数 */
+  mult20: number | null;
+  /** 今日 ÷ 前一交易日 */
+  mult_prev: number | null;
+  /** 绝对量是否够国家队量级（≥50 亿）——倍数达标但量级不足就是噪声 */
+  enough: boolean;
+}
+
+/** 托底门槛口径对照：固定 100 亿 vs 随成交额缩放的相对门槛 */
+export interface EtfFlowThresholdSummary {
+  count: number;
+  by_year: { year: string; n: number; share: number }[];
+  pct_median: number | null;
+  pct_n: number;
+  low_share: number | null;
+  high_share: number | null;
+  fwd: Record<string, number | null>;
+}
+
+export interface EtfFlowThresholdCompare {
+  absolute: EtfFlowThresholdSummary;
+  relative: EtfFlowThresholdSummary;
+  ratio: number;
+  note: string;
+  verdict: string;
+  pct_median_gap: number | null;
 }
 
 export interface EtfFlowDashboard {
@@ -1130,6 +1430,8 @@ export interface EtfFlowDashboard {
   etf_detail: EtfFlowDetailItem[];
   focus: EtfFlowFocus;
   valuation: EtfFlowValuation;
+  threshold_compare?: EtfFlowThresholdCompare;
+  elasticity: EtfElasticity;
   nsi: EtfFlowNsi;
   minute: EtfFlowMinute;
   intraday_15m: EtfFlowSlots;

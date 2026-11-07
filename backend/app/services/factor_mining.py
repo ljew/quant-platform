@@ -876,3 +876,156 @@ def _corr_with_existing(db, expr, syms, attrs, es_map, aligned, axis_dates, benc
     max_abs = max((abs(v) for v in corr.values()), default=0.0)
     return {"corr": corr, "max_abs_corr": round(max_abs, 3)}
 
+# ───────── 非结构化（新闻情绪）择时检验 ─────────
+# 2026-09-18 随「非结构化链路整体下线」一并删除；2026-11-07 恢复。
+# 恢复依据：市场级情绪数据已连续 838 天、日均 66 篇，足以做事件检验
+# （当初下线的原因是**个股**情绪稀疏，与市场级无关）。
+# ⚠️ 只恢复市场级；`news_senti` 个股截面仍保持 TEXT_FACTOR_ENABLED=False —— 
+# 近 60 天每天仅 58 只 / 核心池 1808 只 ≈ 3.2%，进截面 IC 依然是噪声。
+def _sentiment_rows(db: Session, source: str, min_articles: int) -> list[tuple]:
+    """按来源取 (date, net_sentiment, n_finance)。
+
+    source：
+      - news（默认）：东财新闻/公告聚合，`news_market_daily`
+      - mp          ：公众号语料聚合，`mp_sentiment_daily`
+      - both        ：两表按日合并，多空分相加后重新归一
+    """
+    from app.models import MpSentimentDaily, NewsMarketDaily
+
+    if source == "mp":
+        rows = db.execute(
+            select(MpSentimentDaily.date, MpSentimentDaily.net_sentiment,
+                   MpSentimentDaily.n_finance)
+            .where(MpSentimentDaily.n_finance >= min_articles, MpSentimentDaily.n_finance > 0)
+            .order_by(MpSentimentDaily.date)
+        ).all()
+        return [(r[0], float(r[1]), int(r[2])) for r in rows if r[1] is not None]
+
+    if source == "both":
+        agg: dict = {}
+        for model in (NewsMarketDaily, MpSentimentDaily):
+            for d, bull, bear in db.execute(
+                select(model.date, model.bull_score, model.bear_score)
+            ).all():
+                rec = agg.setdefault(d, [0, 0])
+                rec[0] += int(bull or 0)
+                rec[1] += int(bear or 0)
+        out = []
+        for d in sorted(agg):
+            bull, bear = agg[d]
+            total = bull + bear
+            if total < min_articles:      # 用「多空词总命中数」当活跃度门槛
+                continue
+            out.append((d, (bull - bear) / total, total))
+        return out
+
+    rows = db.execute(
+        select(NewsMarketDaily.date, NewsMarketDaily.net_sentiment, NewsMarketDaily.n_finance)
+        .where(NewsMarketDaily.n_finance >= min_articles)
+        .order_by(NewsMarketDaily.date)
+    ).all()
+    return [(r[0], float(r[1]), int(r[2])) for r in rows if r[1] is not None]
+
+
+def news_event_test(db: Session, extreme_pct: float = 0.10, horizon: int = 5,
+                    min_articles: int = 5, source: str = "news") -> dict:
+    """极端情绪日的未来指数收益检验。
+
+    看多日 = net_sentiment ≥ 分位数(1-extreme_pct)；看空日 ≤ extreme_pct。
+    收益基准 = 中证800(sh000906) 之后 horizon 个交易日收盘收益。
+    source 见 `_sentiment_rows`：news / mp / both。
+    """
+    from app.models import IndexKlineDaily
+
+    if source not in ("news", "mp", "both"):
+        source = "news"
+    rows = _sentiment_rows(db, source, min_articles)
+    if len(rows) < 50:
+        return {"ok": False, "error": f"情绪样本不足（{len(rows)} 天 < 50，来源={source}）"}
+
+    bench = db.execute(
+        select(IndexKlineDaily.trade_date, IndexKlineDaily.close)
+        .where(IndexKlineDaily.symbol == "sh000906", IndexKlineDaily.trade_date >= rows[0][0])
+        .order_by(IndexKlineDaily.trade_date)
+    ).all()
+    dates = [r[0] for r in bench]
+    closes = [float(r[1]) for r in bench]
+    pos_of = {d: i for i, d in enumerate(dates)}
+
+    def fwd_return(d: date) -> float | None:
+        i = pos_of.get(d)
+        if i is None or i + horizon >= len(closes):
+            return None
+        return closes[i + horizon] / closes[i] - 1.0
+
+    sentis = [r[1] for r in rows]
+    s_sorted = sorted(sentis)
+    hi_th = s_sorted[int(len(s_sorted) * (1 - extreme_pct))]
+    lo_th = s_sorted[int(len(s_sorted) * extreme_pct)]
+
+    bull_rets, bear_rets, all_rets = [], [], []
+    for d, senti, _nf in rows:
+        fr = fwd_return(d)
+        if fr is None:
+            continue
+        all_rets.append(fr)
+        if senti >= hi_th:
+            bull_rets.append(fr)
+        elif senti <= lo_th:
+            bear_rets.append(fr)
+
+    base = _mean(all_rets) if all_rets else 0.0
+    win = lambda xs: (sum(1 for x in xs if x > 0) / len(xs)) if xs else 0.0
+    edge_l = (_mean(bull_rets) - base) if bull_rets else None
+    edge_s = (base - _mean(bear_rets)) if bear_rets else None
+
+    # 结论必须按实测给，**不能预设方向**。2026-11-07 首次恢复实测：
+    # 看多日未来 5 日 -1.07%（胜率 37%）、基线 -0.47% → edge=-0.60%，是**反向**的。
+    # 旧代码把「看多日跑赢基线」写死在 note 里，等于用文案骗自己。
+    # 数据覆盖警告：2026-11-07 实测 news_market_daily 有 838 天记录，但
+    # n_finance≥5 的只有 254 天，且 **245 天集中在 2026 年**（2020-2025 基本空）。
+    # 一年样本算出来的 edge 是噪声，必须写在结论里，否则容易被当成有效信号。
+    coverage = ""
+    if len(rows) < 500:
+        coverage = (f"｜⚠️ 有效样本仅 {len(rows)} 天（要求每日新闻≥{min_articles} 篇），"
+                    "且集中在 2026 年 —— 仅供观察，不足以支撑实盘决策")
+
+    if edge_l is None or edge_s is None:
+        verdict = "样本不足，无法判别"
+    elif edge_l > 0.005 and edge_s > 0.005:
+        verdict = "两个方向都有正超额 → 情绪指标具择时价值"
+    elif edge_l < -0.005 and edge_s < -0.005:
+        verdict = "两个方向都是负超额 → 指标反向或无信息，不建议直接使用"
+    elif edge_l > 0.005 and edge_s <= 0.005:
+        verdict = ("仅多头方向有效：看多日跑赢基线，但看空日不跌 → "
+                   "只能当加仓/减仓参考，不能反向做空")
+    elif edge_s > 0.005 and edge_l <= 0.005:
+        verdict = ("仅空头方向有效：看空日确实下跌，但看多日不涨 → "
+                   "只能当风险预警，不能当买入信号")
+    elif edge_l < -0.005 and edge_s >= -0.005:
+        verdict = "多头方向负超额：看多日反而跑输，该方向反向（不宜追情绪高点的多）"
+    elif edge_s < -0.005 and edge_l >= -0.005:
+        verdict = "空头方向负超额：看空日反而上涨，该方向反向（不宜按情绪低点做空）"
+    else:
+        verdict = "超额不显著（|edge|<0.5%）→ 无可用择时信号"
+
+    return {
+        "ok": True,
+        "source": source,
+        "extreme_pct": extreme_pct,
+        "horizon": horizon,
+        "hi_threshold": round(hi_th, 4),
+        "lo_threshold": round(lo_th, 4),
+        "baseline_ret": round(base, 5),
+        "n_days_all": len(all_rets),
+        "bull": {"n_days": len(bull_rets), "avg_ret": round(_mean(bull_rets), 5),
+                 "win_rate": round(win(bull_rets), 3)},
+        "bear": {"n_days": len(bear_rets), "avg_ret": round(_mean(bear_rets), 5),
+                 "win_rate": round(win(bear_rets), 3)},
+        "edge_long_vs_base": round(edge_l, 5) if edge_l is not None else None,
+        "edge_short_vs_base": round(edge_s, 5) if edge_s is not None else None,
+        "verdict": verdict + coverage,
+        "note": verdict + coverage,
+        "n_effective_days": len(rows),
+        "coverage_warning": coverage.lstrip("｜") or None,
+    }

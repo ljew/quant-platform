@@ -370,11 +370,13 @@ def get_daily_kline(symbol: str, start_date: date, end_date: date | None = None,
             )
             out = []
             for _, r in df.iterrows():
+                # akshare「成交额」单位是元，tushare / 库内 / API 统一用千元。
+                # 不换算会让 19:00 ETL 写入放大 1000 倍的成交额（2026-11-07 修）。
                 out.append({
                     "trade_date": r["日期"].date() if hasattr(r["日期"], "date") else r["日期"],
                     "open": float(r["开盘"]), "high": float(r["最高"]),
                     "low": float(r["最低"]), "close": float(r["收盘"]),
-                    "volume": int(r["成交量"]), "amount": float(r["成交额"]),
+                    "volume": int(r["成交量"]), "amount": float(r["成交额"]) / 1000.0,
                 })
             if             limit:
                 out = out[-limit:]
@@ -419,6 +421,25 @@ def _get_kline_westock(symbol: str, limit: int) -> list[dict]:
 
 # ============ 实时行情 ============
 _TX_QUOTE_URL = "https://qt.gtimg.cn/q="
+
+
+def is_index_symbol(symbol: str) -> bool:
+    """判断是否为 A 股指数代码（必须与个股分流查询）。
+
+    sh000001 = 上证指数，而 sz000001 = 平安银行 —— 两者去掉前缀后都是 000001。
+    akshare 的 stock_zh_a_spot_em() 只含个股，把 sh000001 剥成 000001 就会
+    误命中平安银行，且只要命中一条就短路 return，把支持指数的腾讯源挡在后面
+    （2026-11-07 首页「指数概览」显示平安银行 +1.46% 的根因）。
+
+    沪市指数: 000xxx / 950xxx；深市指数: 399xxx。
+    沪市个股是 60/68/9/5/11 开头，深市个股是 00/30/15/12 开头，不冲突。
+    """
+    s = symbol.lower()
+    if s.startswith("sh"):
+        return s[2:].startswith(("000", "950"))
+    if s.startswith("sz"):
+        return s[2:].startswith("399")
+    return False
 
 
 def _tx_spot_quotes(symbols: list[str]) -> list[dict]:
@@ -474,49 +495,80 @@ def _tx_spot_quotes(symbols: list[str]) -> list[dict]:
 
 
 def get_spot_quotes(symbols: list[str] | None = None) -> list[dict]:
-    """实时行情快照。a) akshare 东财全市场（仅 A 股，指数会过滤为空不视为成功）
-    b) 腾讯实时兜底（个股/指数通用，沙箱可达）c) westock CLI 末位逐只兜底。"""
+    """实时行情快照。指数与个股**分流**取数，按请求顺序返回。
+
+    ⚠️ 2026-11-07 起已**从请求链路下线**：/market/quote 改为只读
+    services/quote_snapshot.py 的收盘快照（毫秒级），这里是唯一还能取
+    「盘中实时价」的路径，保留给将来需要盘中行情的场景备用，勿在 API 中调用
+    （akshare 全市场截面分页拉 59 页，约 11 秒，曾把服务拖到看门狗重启）。
+
+
+    a) 指数：只走腾讯（qt.gtimg.cn 个股/指数通用）—— 东财全市场快照不含指数
+    b) 个股：akshare 东财全市场截面优先
+    c) 缺失的统一用腾讯补齐
+    d) westock CLI 末位逐只兜底
+
+    2026-11-07 修：原实现把指数一起塞进 akshare 的「代码」过滤，sh000001 被
+    剥成 000001 后误命中平安银行，且 len(rows)>0 就 return，腾讯源永远走不到，
+    导致首页指数概览只剩一张「平安银行」错卡、涨跌方向还与大盘相反。
+    """
     targets = symbols or ["sh600519", "sz300750", "sh601318", "sz000858", "sh600036"]
-    if check_akshare():
+    index_syms = [s for s in targets if is_index_symbol(s)]
+    stock_syms = [s for s in targets if not is_index_symbol(s)]
+    got: dict[str, dict] = {}
+
+    # 1) 指数：跳过 akshare，直接走腾讯
+    if index_syms:
+        try:
+            for q in _tx_spot_quotes(index_syms):
+                got[q["symbol"]] = q
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 2) 个股：东财全市场截面，仅在个股集合内匹配（key 保持请求原值）
+    if stock_syms and check_akshare():
         try:
             ak = _require_ak()
             df = ak.stock_zh_a_spot_em()
-            rows = df
-            if symbols:
-                wanted = {to_ak_code(s) for s in symbols}
-                rows = df[df["代码"].isin(wanted)]
-            if len(rows):
-                return [
-                    {
-                        "symbol": normalize_symbol(str(r["代码"]).zfill(6))[0],
-                        "name": r["名称"], "price": float(r["最新价"]),
-                        "change_pct": float(r["涨跌幅"]),
-                    }
-                    for _, r in rows.iterrows()
-                ]
-        except Exception:
+            by_code = {to_ak_code(s): s for s in stock_syms}
+            rows = df[df["代码"].isin(by_code)]
+            for _, r in rows.iterrows():
+                orig = by_code.get(str(r["代码"]).zfill(6))
+                if not orig:
+                    continue
+                got[orig] = {
+                    "symbol": orig, "name": str(r["名称"]).replace(" ", ""),  # 东财名称含对齐空格（「五 粮 液」）
+                    "price": float(r["最新价"]),
+                    "change_pct": float(r["涨跌幅"]),
+                }
+        except Exception:  # noqa: BLE001
             pass
-    try:
-        qs = _tx_spot_quotes(targets)
-        if qs:
-            return qs
-    except Exception:  # noqa: BLE001
-        pass
-    # westock 末位兜底：取个股实时截面
-    out = []
-    for sym in targets:
+
+    # 3) 未命中的（含指数、akshare 不可用或未收录的标的）统一腾讯补齐
+    missing = [s for s in targets if s not in got]
+    if missing:
         try:
-            text = _run_westock(["quote", sym])
-            rows = _parse_md_table(text)
-            if rows:
-                r = rows[0]
-                price = float(r.get("current", r.get("price", r.get("last", 0))))
-                chg = float(r.get("change_percent", r.get("涨跌额", 0)))
-            out.append({"symbol": sym, "name": r.get("name", sym),
-                        "price": price, "change_pct": chg})
-        except Exception:
+            for q in _tx_spot_quotes(missing):
+                got[q["symbol"]] = q
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 4) westock 末位兜底
+    for sym in [s for s in targets if s not in got]:
+        try:
+            rows = _parse_md_table(_run_westock(["quote", sym]))
+            if not rows:
+                continue
+            r = rows[0]
+            got[sym] = {
+                "symbol": sym, "name": r.get("name", sym),
+                "price": float(r.get("current", r.get("price", r.get("last", 0)))),
+                "change_pct": float(r.get("change_percent", r.get("涨跌额", 0))),
+            }
+        except Exception:  # noqa: BLE001
             continue
-    return out
+
+    return [got[s] for s in targets if s in got]
 
 
 # 实时价缓存（避免每 tick 拉全市场快照）
@@ -569,7 +621,7 @@ def get_realtime_prices(symbols: list[str]) -> list:
             df = ak.stock_zh_a_spot_em()
             for _, r in df.iterrows():
                 sym = normalize_symbol(str(r["代码"]).zfill(6))[0]
-                out[sym] = {"symbol": sym, "name": r["名称"],
+                out[sym] = {"symbol": sym, "name": str(r["名称"]).replace(" ", ""),  # 东财名称含对齐空格（「五 粮 液」）
                             "price": float(r["最新价"]), "change_pct": float(r["涨跌幅"])}
         except Exception:
             pass

@@ -78,7 +78,9 @@ def on_startup():
         "%(asctime)s %(levelname)s %(name)s: %(message)s"))
     for _name in ("data_scheduler", "wechat_scheduler",
                   "app.services.auto_research", "app.core.nsi_scheduler",
-                  "etf_flow_scheduler"):
+                  "etf_flow_scheduler", "hot_brief_scheduler",
+                  "news_feed_scheduler", "news_feed",
+                  "quote_scheduler", "quote_snapshot"):
         _lg = logging.getLogger(_name)
         if not _lg.handlers:
             _lg.addHandler(_h)
@@ -114,6 +116,23 @@ def on_startup():
         # 公众号是附加模块，起不来不能拖垮主服务
         logging.getLogger(__name__).warning("公众号调度器启动失败：%s", _e)
 
+    # 统一资讯流：各来源原文归一入库（news_feed），供「全部资讯」页浏览。
+    # 快源 10 分钟同步，慢源每小时顺带（公众号/tushare/股吧）。
+    try:
+        from app.core.news_feed_scheduler import start_news_feed_scheduler
+        start_news_feed_scheduler()
+    except Exception as _e:  # noqa: BLE001
+        logging.getLogger(__name__).warning("资讯同步调度器启动失败：%s", _e)
+
+    # 每小时热点简报：一手快讯（财联社）→ LLM 筛选解读 → hot_brief 表。
+    # DeepSeek API 无联网能力（tools 只支持 function，2026-11-07 实测 422），
+    # 所以输入用平台自采资讯，模型只负责筛选与判断。
+    try:
+        from app.core.hot_brief_scheduler import start_hot_brief_scheduler
+        start_hot_brief_scheduler()
+    except Exception as _e:  # noqa: BLE001
+        logging.getLogger(__name__).warning("热点简报调度器启动失败：%s", _e)
+
     # ETF 资金流看板（观察口径，非信号）：盘中每分钟采样 + 15:05–20:00 反复补官方分钟线
     # + 19:30 日更 + 次日 08:30 补份额。
     # 与下面 NSI 的分工见 services/etf_flow.py 开头；本模块不进任何策略。
@@ -130,6 +149,14 @@ def on_startup():
         start_nsi_scheduler()
     except Exception as _e:  # noqa: BLE001
         logging.getLogger(__name__).warning("NSI 调度器启动失败：%s", _e)
+
+    # 收盘行情快照：每交易日 18:30 后从 tushare 拉一次全市场截面落库，
+    # /market/quote 只读本地（毫秒级），请求链路不再访问外部数据源。
+    try:
+        from app.core.quote_scheduler import start_quote_scheduler
+        start_quote_scheduler()
+    except Exception as _e:  # noqa: BLE001
+        logging.getLogger(__name__).warning("行情快照调度器启动失败：%s", _e)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["meta"])

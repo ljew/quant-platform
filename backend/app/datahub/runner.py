@@ -18,7 +18,8 @@ from app.datahub.ns_vars import TEXT_FACTOR_ENABLED
 from app.datahub.registry import write_bronze
 from app.datahub.source_config import get_source
 from app.database import SessionLocal, init_db
-from app.models import (FactorDaily, KlineDaily, NewsMarketDaily, NewsStockDaily,
+from app.models import (FactorDaily, KlineDaily, MpSentimentDaily, NewsMarketDaily, NewsStockDaily,
+                        SocialHeatDaily,
                         PipelineRun, PipelineStepLog, Stock, IndexKlineDaily,
                         FactorRegistry, FactorMinedDaily)
 
@@ -129,7 +130,15 @@ def step_extract_wechat_articles(db) -> int:
         return 0
     db_path = src.get("params", {}).get("db_path", "")
     body_chars = int(src.get("params", {}).get("body_chars", 4000))
+    # 配置里留空/失效时，跟随 settings.wechat_data_dir（容器 /data/wechat、本机 data/wechat）。
+    # 2026-11-07 之前 sources.yaml 写死的是旧 Xiaoan 项目路径，容器内不存在 →
+    # 本步骤静默 return 0，**公众号语料从未进入情绪管道**（用户反馈「加上公众号内容」的根因）。
     if not db_path or not os.path.exists(db_path):
+        from app.config import settings
+
+        cand = os.path.join(settings.wechat_data_dir, "knowledge.db")
+        db_path = cand if os.path.exists(cand) else ""
+    if not db_path:
         return 0
     import sqlite3
 
@@ -233,6 +242,200 @@ def step_extract_eastmoney_news(db) -> int:
     return len(df) + n_stock
 
 
+def _score_media_text(db, df, tag: str) -> int:
+    """媒体类文本通用流程：去重 → 词典打分 → 累加 news_market_daily → 个股匹配。
+
+    tushare 资讯、财联社电报、东财新闻都是「媒体口径」，走同一套，
+    保证 `news_market_daily` 里不会出现两种算法拼出来的数。
+    """
+    from datetime import datetime as _dt
+
+    from app.datahub.cleaners.core import (load_name_map, load_processed,
+                                           match_stock_mentions, save_processed,
+                                           upsert_stock_sentiment)
+    from app.datahub.scorers.dict_v1 import DictScorerV1
+
+    if df is None or df.empty:
+        return 0
+    processed = load_processed()
+    df = df[~df["article_id"].map(lambda x: x in processed)]
+    if df.empty:
+        return 0
+
+    scorer = DictScorerV1()
+    # 去掉正文里的 $xxx$ 标记（财联社的个股/板块标注），否则会污染词频
+    body = df["content_text"].fillna("").str.replace(r"\$([^$]+)\$", r"\1", regex=True)
+    texts = list(df["title"].fillna("") + "\n" + body)
+    scored = scorer.score(texts)
+    processed |= set(df["article_id"])
+    save_processed(processed)
+    dates = pd.to_datetime(df["publish_time"], unit="s").dt.strftime("%Y-%m-%d")
+
+    scored["date"] = dates.values
+    day = scored.groupby("date").agg(n=("bull", "size"),
+                                     bull=("bull", "sum"), bear=("bear", "sum"))
+    for d_str, r in day.iterrows():
+        d2 = _dt.strptime(str(d_str), "%Y-%m-%d").date()
+        row = db.execute(select(NewsMarketDaily).where(NewsMarketDaily.date == d2)).scalar()
+        bull, bear, n = int(r.bull), int(r.bear), int(r.n)
+        if row is None:
+            db.add(NewsMarketDaily(date=d2, n_articles=n, n_finance=n,
+                                   bull_score=bull, bear_score=bear,
+                                   net_sentiment=round((bull - bear) / max(bull + bear, 1), 5)))
+        else:
+            row.n_articles = int(row.n_articles or 0) + n
+            row.n_finance = int(row.n_finance or 0) + n
+            row.bull_score = int(row.bull_score or 0) + bull
+            row.bear_score = int(row.bear_score or 0) + bear
+            row.net_sentiment = round((row.bull_score - row.bear_score)
+                                      / max(row.bull_score + row.bear_score, 1), 5)
+    db.commit()
+
+    name_map = load_name_map(db)
+    stock_rows: dict = {}
+    for i, t in enumerate(texts):
+        hits = match_stock_mentions(t, name_map)
+        if not hits:
+            continue
+        bull, bear = int(scored.iloc[i]["bull"]), int(scored.iloc[i]["bear"])
+        if bull + bear == 0:
+            continue
+        d_str = dates.iloc[i]
+        for sym in hits:
+            rec = stock_rows.setdefault((sym, d_str), [0, 0, 0])
+            rec[0] += 1
+            rec[1] += bull
+            rec[2] += bear
+    n_stock = upsert_stock_sentiment(db, stock_rows, NewsStockDaily) if stock_rows else 0
+    logger.info("媒体文本 %s：%d 篇 → 市场情绪 + 个股 %d 条", tag, len(df), n_stock)
+    return len(df) + n_stock
+
+
+def step_extract_cls_telegraph(db) -> int:
+    """财联社电报 → Bronze + 市场/个股情绪。
+
+    三个别处没有的优势：接口直接给 `stock_list`（相关个股）、`plate_list`（板块）、
+    `level`（A/B/C 重要等级）。采集器会把个股名拼进正文，让简称匹配直接命中。
+    """
+    src = get_source("cls_telegraph")
+    if not src:
+        return 0
+    from datetime import datetime as _dt
+
+    from app.datahub.extractors.cls_telegraph import ClsTelegraphExtractor
+
+    params = src.get("params", {})
+    try:
+        df = ClsTelegraphExtractor().fetch(rn=int(params.get("rn", 100)),
+                                           pages=int(params.get("pages", 2)),
+                                           min_level=str(params.get("min_level", "")))
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"财联社电报抓取失败: {e}")
+    if df.empty:
+        return 0
+    write_bronze("text/cls_telegraph", df, batch=_dt.now().strftime("%Y%m%d%H%M%S"))
+    return _score_media_text(db, df, "财联社")
+
+
+def step_extract_tushare_news(db) -> int:
+    """tushare 资讯（major_news 深度新闻 + cctv_news 新闻联播）→ Bronze + 情绪。
+
+    与东财/财联社共用 `_score_media_text` 一套口径，都进 `news_market_daily`。
+    `pro.news(src=...)` 各源实测 0 行（权限不够），所以只接这两个能用的接口。
+    """
+    src = get_source("tushare_news")
+    if not src:
+        return 0
+    from datetime import datetime as _dt
+
+    from app.datahub.extractors.tushare_news import TushareNewsExtractor
+
+    params = src.get("params", {})
+    try:
+        df = TushareNewsExtractor().fetch(days=int(params.get("days", 3)),
+                                          major_rows=int(params.get("major_rows", 500)))
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"tushare 资讯抓取失败: {e}")
+    if df.empty:
+        return 0
+    write_bronze("text/tushare_news", df, batch=_dt.now().strftime("%Y%m%d%H%M%S"))
+    return _score_media_text(db, df, "tushare资讯")
+
+
+def _upsert_social_heat(db, df, tag: str) -> int:
+    """社交关注度聚合：按 (date, source) 覆盖写入 social_heat_daily。"""
+    from datetime import datetime as _dt
+
+    if df is None or df.empty:
+        return 0
+    n = 0
+    for (d_str, source), g in df.groupby(["date", "source"]):
+        d2 = _dt.strptime(str(d_str), "%Y-%m-%d").date()
+        top10 = float(g.nlargest(min(10, len(g)), "heat")["heat"].sum())
+        row = db.execute(select(SocialHeatDaily).where(
+            SocialHeatDaily.date == d2, SocialHeatDaily.source == source)).scalar()
+        vals = dict(n_items=int(len(g)), n_finance=int(g["is_fin"].sum()),
+                    heat_total=float(g["heat"].sum()), heat_top10=top10)
+        if row is None:
+            db.add(SocialHeatDaily(date=d2, source=source, **vals))
+        else:
+            for k, v in vals.items():
+                setattr(row, k, v)
+        n += 1
+    db.commit()
+    logger.info("社交热度 %s：%d 个平台日", tag, n)
+    return n
+
+
+def step_extract_social_heat(db) -> int:
+    """雪球 A 股热股 + 微博热搜 → 关注度日频（social_heat_daily）。
+
+    只有热度没有正文，所以**不做多空打分**，只统计条数/热度/财经占比。
+    明细落 bronze parquet 留档，便于回溯「哪条热搜被算成财经」。
+    """
+    src = get_source("social_heat")
+    if not src:
+        return 0
+    from datetime import datetime as _dt
+
+    from app.datahub.extractors.social_heat import SocialHeatExtractor
+
+    params = src.get("params", {})
+    try:
+        df = SocialHeatExtractor().fetch(xq_size=int(params.get("xq_size", 50)),
+                                         weibo_size=int(params.get("weibo_size", 60)))
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"社交热度抓取失败: {e}")
+    if df.empty:
+        return 0
+    write_bronze("text/social_heat", df, batch=_dt.now().strftime("%Y%m%d%H%M%S"))
+    return _upsert_social_heat(db, df, "雪球+微博")
+
+
+def step_extract_guba_heat(db) -> int:
+    """东财股吧：热门股的帖子阅读/评论热度 → social_heat_daily（source=股吧）。
+
+    不做多空打分：股吧内容以喊单、标题党为主，词典打分没有意义。
+    """
+    src = get_source("guba_hot")
+    if not src:
+        return 0
+    from datetime import datetime as _dt
+
+    from app.datahub.extractors.guba_hot import GubaHotExtractor
+
+    params = src.get("params", {})
+    try:
+        df = GubaHotExtractor().fetch(top_n=int(params.get("top_n", 10)),
+                                      max_posts=int(params.get("max_posts", 40)))
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"股吧抓取失败: {e}")
+    if df.empty:
+        return 0
+    write_bronze("text/guba_hot", df, batch=_dt.now().strftime("%Y%m%d%H%M%S"))
+    return _upsert_social_heat(db, df, "股吧")
+
+
 def step_extract_announcements(db) -> int:
     """东财全市场公告 → Bronze + 个股情绪（codes 精确关联）。"""
     src = get_source("eastmoney_announcements")
@@ -322,13 +525,17 @@ def step_score_sentiment(db) -> int:
     for d_str, r in day.iterrows():
         d2 = datetime.strptime(d_str, "%Y-%m-%d").date()
         senti = (r.bull - r.bear) / max(r.bull + r.bear, 1)
-        row = db.execute(select(NewsMarketDaily).where(NewsMarketDaily.date == d2)).scalar()
+        # ⚠️ 写 **公众号专属表** mp_sentiment_daily，不再动 news_market_daily。
+        # 2026-11-07 之前这里直接覆盖 news_market_daily 的 bull/bear —— 而东财新闻那个
+        # step 是累加，两者互相冲：公众号每天 30~60 篇会把东财 100~500 篇的结果抹掉。
+        row = db.execute(select(MpSentimentDaily).where(MpSentimentDaily.date == d2)).scalar()
         if row is None:
-            db.add(NewsMarketDaily(date=d2, n_articles=int(r.n_finance),
-                                   n_finance=int(r.n_finance), bull_score=int(r.bull),
-                                   bear_score=int(r.bear), net_sentiment=round(senti, 5)))
+            db.add(MpSentimentDaily(date=d2, n_articles=int(r.n_finance),
+                                    n_finance=int(r.n_finance), bull_score=int(r.bull),
+                                    bear_score=int(r.bear), net_sentiment=round(senti, 5)))
         else:
-            row.n_finance = max(int(row.n_finance or 0), int(r.n_finance))
+            row.n_articles = int(r.n_finance)
+            row.n_finance = int(r.n_finance)
             row.bull_score = int(r.bull)
             row.bear_score = int(r.bear)
             row.net_sentiment = round(senti, 5)
@@ -541,6 +748,10 @@ STEPS = [
     ("extract_eastmoney_news", step_extract_eastmoney_news),
     ("extract_announcements", step_extract_announcements),
     ("extract_wechat_articles", step_extract_wechat_articles),
+    ("extract_cls_telegraph", step_extract_cls_telegraph),
+    ("extract_tushare_news", step_extract_tushare_news),
+    ("extract_social_heat", step_extract_social_heat),
+    ("extract_guba_heat", step_extract_guba_heat),
     ("clean_text", step_clean_text),
     ("score_sentiment", step_score_sentiment),
     ("compute_mined_factors", step_compute_mined_factors),

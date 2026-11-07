@@ -37,6 +37,7 @@ from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger("nsi_scheduler")
+from app.core.netguard import TUSHARE, explain as net_explain, network_ready
 
 SLOTS = [(8, 30)]
 _CHECK_INTERVAL = 60          # 秒
@@ -129,6 +130,14 @@ def _loop(enabled: bool) -> None:
                 for h, m in SLOTS:
                     key = f"{_today()}#{h:02d}:{m:02d}"
                     if (now.hour, now.minute) >= (h, m) and key not in _done:
+                        # 断网时不记 done：NSI 脚本要打 tushare，网没醒必然失败。
+                        # 不占位的话，网络恢复后当天还能补上（nsi_signal.csv 决定
+                        # national_team 策略的仓位信号，越早补越好）。
+                        if not network_ready(*TUSHARE):
+                            _status["last_error"] = (
+                                f"网络未就绪（{net_explain(*TUSHARE)}），等恢复后自动补跑")
+                            logger.info("网络未就绪，暂缓 NSI 信号更新")
+                            break
                         with _lock:
                             _done.add(key)
                             _status["last_run_at"] = now.isoformat(timespec="seconds")

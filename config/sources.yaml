@@ -51,8 +51,58 @@ sources:
     enabled: true
     description: 公众号财经语料（文本管道输入）
     params:
-      db_path: /Users/happyljew/Desktop/kimiwork/Xiaoan_0811_bak/wechat-monitor/knowledge.db
+      # 留空 = 自动跟随 settings.wechat_data_dir（容器 /data/wechat、本机 data/wechat）。
+      # 2026-11-07 之前这里写死旧 Xiaoan 项目路径，容器内不存在 → step 静默 return 0，
+      # 公众号语料从未进入情绪管道。显式填路径仍优先。
+      db_path: ""
       body_chars: 4000
+
+  cls_telegraph:
+    type: cls_telegraph
+    step: extract_cls_telegraph
+    layer: bronze
+    produces: text/cls_telegraph
+    enabled: true
+    description: 财联社电报（有正文 + 相关个股 + 板块 + 重要等级，时效最强）
+    params:
+      rn: 50             # 每页条数（接口上限 50，传 100 会返回空）
+      pages: 3           # 拉几页（用 last_time 翻页）→ 约 150 条
+      min_level: ""      # 只保留重要等级 <= 该值（A 最高）；空=全要
+
+  tushare_news:
+    type: tushare_news
+    step: extract_tushare_news
+    layer: bronze
+    produces: text/tushare_news
+    enabled: true
+    description: tushare 资讯（major_news 深度新闻 + cctv_news 新闻联播）
+    params:
+      # pro.news(src=...) 各源实测 0 行（权限不够），只接这两个能用的接口。
+      # major_news 只有标题、没有正文，打分时只跑标题；cctv_news 有正文。
+      days: 3
+      major_rows: 500
+
+  social_heat:
+    type: social_heat
+    step: extract_social_heat
+    layer: bronze
+    produces: text/social_heat
+    enabled: true
+    description: 雪球 A 股热股 + 微博热搜（关注度，不含多空情绪）
+    params:
+      xq_size: 50          # 雪球 A 股热股榜条数（type=12）
+      weibo_size: 60       # 微博热搜条数（免登录接口约 52 条）
+
+  guba_hot:
+    type: guba_hot
+    step: extract_guba_heat
+    layer: bronze
+    produces: text/guba_hot
+    enabled: true
+    description: 东财股吧热门股讨论热度（只有阅读/评论数，不做多空打分）
+    params:
+      top_n: 10          # 取雪球 A 股热股前 N 只的股吧
+      max_posts: 40      # 每只股吧取多少条帖子
 
   eastmoney_news:
     type: eastmoney_news

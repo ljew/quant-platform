@@ -9,9 +9,9 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
-from app.models import Stock, KlineDaily
+from app.models import Stock, KlineDaily, IndexKlineDaily
 from app.schemas import KlinePoint, Quote, StockItem
-from app.services import data_source, ingestion
+from app.services import data_source, ingestion, quote_snapshot
 
 router = APIRouter(prefix="/market", tags=["market"])
 
@@ -62,6 +62,25 @@ def get_kline(
     adj: str = Query("qfq", description="qfq/hfq/none"),
     db: Session = Depends(get_db),
 ):
+    # 指数与个股分表：index_kline_daily 存 sh000001 等 8 个核心指数的完整历史，
+    # kline_daily 里没有指数行。原实现查不到就回源 get_daily_kline()，后者把
+    # sh000001 剥成 000001 抓回平安银行 —— 指数 K 线画出的是 11.81 的个股价
+    # （2026-11-07 修）。指数无复权概念，库内查不到就返回空，绝不回源到个股。
+    if data_source.is_index_symbol(symbol):
+        stmt = select(IndexKlineDaily).where(IndexKlineDaily.symbol == symbol)
+        if start:
+            stmt = stmt.where(IndexKlineDaily.trade_date >= date.fromisoformat(start))
+        if end:
+            stmt = stmt.where(IndexKlineDaily.trade_date <= date.fromisoformat(end))
+        stmt = stmt.order_by(IndexKlineDaily.trade_date.desc()).limit(limit)
+        idx_rows = db.execute(stmt).scalars().all()
+        idx_rows.reverse()  # 时间升序，与个股分支一致
+        return [
+            KlinePoint(date=r.trade_date.isoformat(), open=r.open, high=r.high,
+                       low=r.low, close=r.close, volume=r.volume, amount=r.amount)
+            for r in idx_rows
+        ]
+
     stmt = select(KlineDaily).where(
         KlineDaily.symbol == symbol, KlineDaily.adj == "none"
     )
@@ -126,30 +145,41 @@ def get_kline(
 
 @router.get("/quote/{symbol}", response_model=Quote)
 def get_quote(symbol: str):
-    """实时快照（盘中有值；非交易时段返回最近收盘价）。"""
-    try:
-        quotes = data_source.get_spot_quotes([symbol])
-        if quotes:
-            q = quotes[0]
-            return Quote(
-                symbol=q["symbol"], name=q["name"],
-                price=q["price"], change_pct=q["change_pct"],
-                updated_at=datetime.utcnow(),
-            )
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    raise HTTPException(status_code=404, detail=f"未找到 {symbol} 的实时行情")
+    """收盘快照：**只读本地库，零网络请求**。
+
+    数据由 quote_scheduler 每交易日 18:30 后从 tushare 拉回落库（2026-11-07 改）。
+    原先每次请求都实时查 akshare 全市场截面，约 11 秒且会拖到看门狗重启。
+    """
+    rows = quote_snapshot.read([symbol.lower()])
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"未找到 {symbol} 的行情快照")
+    q = rows[0]
+    return Quote(symbol=q["symbol"], name=q["name"], price=q["price"],
+                 change_pct=q["change_pct"], updated_at=q["updated_at"])
 
 
 @router.get("/quote", response_model=list[Quote])
 def get_quotes(symbols: str | None = Query(None, description="逗号分隔代码列表")):
-    sym_list = [s.strip() for s in symbols.split(",")] if symbols else None
-    try:
-        quotes = data_source.get_spot_quotes(sym_list)
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+    """批量收盘快照，只读本地库，按请求顺序返回。"""
+    sym_list = [s.strip().lower() for s in symbols.split(",")] if symbols else None
     return [
         Quote(symbol=q["symbol"], name=q["name"], price=q["price"],
-              change_pct=q["change_pct"], updated_at=datetime.utcnow())
-        for q in quotes
+              change_pct=q["change_pct"], updated_at=q["updated_at"])
+        for q in quote_snapshot.read(sym_list)
     ]
+
+
+@router.get("/snapshot/status")
+def snapshot_status():
+    """快照新鲜度 + 定时任务状态（运维排查用，不访问外部数据源）。"""
+    from app.core.quote_scheduler import get_status
+    return get_status()
+
+
+@router.post("/snapshot/refresh")
+def snapshot_refresh():
+    """手动补跑一次 tushare 收盘快照。定时任务失败或临时核对时使用。"""
+    r = quote_snapshot.refresh()
+    if not r.get("ok"):
+        raise HTTPException(status_code=503, detail=str(r.get("error")))
+    return r

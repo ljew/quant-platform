@@ -22,7 +22,7 @@ from app.database import get_db
 from app.models import FactorMineResult
 from app.services.factor_mining import (
     mine_factor, validate_expr, compute_complexity, resolve_range,
-    snapshot_dates,
+    snapshot_dates, news_event_test,
 )
 from app.services.factor_gp import gp_search, DIRECTION_TEMPLATES
 
@@ -391,3 +391,97 @@ def registry_toggle(rid: int, db: Session = Depends(get_db)):
         row.status = "candidate"
     db.commit()
     return {"ok": True, "id": rid, "status": row.status}
+
+# ───────── 非结构化（新闻情绪）─────────
+# 2026-09-18 随链路下线删除，2026-11-07 恢复市场级部分（数据已够）。
+class NewsTestPayload(BaseModel):
+    extreme_pct: float = Field(0.10, ge=0.02, le=0.3)
+    horizon: int = Field(5, ge=1, le=60)
+    # news=东财新闻/公告、mp=公众号语料、both=合并（默认：用户 2026-11-07 要求把公众号纳入）
+    source: str = Field("both", description="news / mp / both")
+
+
+@router.get("/news/daily")
+def news_daily(db: Session = Depends(get_db), limit: int = 500, source: str = "news"):
+    """情绪时序（倒序）。source=news(东财) / mp(公众号)。"""
+    from app.models import MpSentimentDaily, NewsMarketDaily
+
+    model = MpSentimentDaily if source == "mp" else NewsMarketDaily
+    rows = db.execute(
+        select(model).order_by(model.date.desc()).limit(min(limit, 1500))
+    ).scalars().all()
+    return [
+        {"date": r.date.isoformat(), "n_articles": r.n_articles, "n_finance": r.n_finance,
+         "bull": r.bull_score, "bear": r.bear_score, "net_sentiment": r.net_sentiment}
+        for r in rows
+    ]
+
+
+@router.post("/news/event-test")
+def news_event(payload: NewsTestPayload, db: Session = Depends(get_db)):
+    """极端情绪日 → 未来 N 日指数收益检验（择时有效性）。"""
+    return news_event_test(db, extreme_pct=payload.extreme_pct, horizon=payload.horizon,
+                           source=payload.source)
+
+@router.get("/social/heat")
+def social_heat(db: Session = Depends(get_db), days: int = 30):
+    """社交关注度（雪球 A 股热股 / 微博热搜）近 N 天。
+
+    只有热度没有正文，故不做多空打分；`n_finance` 是命中财经关键词的条数。
+    """
+    from app.models import SocialHeatDaily
+
+    rows = db.execute(
+        select(SocialHeatDaily).order_by(SocialHeatDaily.date.desc())
+        .limit(min(max(days, 1) * 3, 300))
+    ).scalars().all()
+    return [
+        {"date": r.date.isoformat(), "source": r.source, "n_items": r.n_items,
+         "n_finance": r.n_finance, "heat_total": r.heat_total, "heat_top10": r.heat_top10}
+        for r in rows
+    ]
+
+# ───────── 热点简报（按交易时段；非结构化资讯 → LLM 解读）─────────
+@router.get("/hot-brief/latest")
+def hot_brief_latest(db: Session = Depends(get_db)):
+    """最新一份简报（只返回有内容的）。"""
+    from app.services.hot_brief import latest_brief
+
+    return latest_brief(db) or {}
+
+
+@router.get("/hot-brief/today")
+def hot_brief_today(db: Session = Depends(get_db)):
+    """今日累计：各轮条目合并去重 + 最新综述（首页用这个，而不是只看最新一轮）。"""
+    from app.services.hot_brief import today_brief
+
+    return today_brief(db) or {}
+
+
+@router.get("/hot-brief/list")
+def hot_brief_list(limit: int = 24, db: Session = Depends(get_db)):
+    from app.services.hot_brief import list_briefs
+
+    return list_briefs(db, limit)
+
+
+@router.get("/hot-brief/input")
+def hot_brief_input(ref: str = "", run_id: int | None = None, full: bool = False,
+                    db: Session = Depends(get_db)):
+    """单条输入的原文内容。
+
+    默认返回生成简报时存下的正文快照（快讯=财联社电报正文，
+    搜索=DeepSeek 返回的 600~800 字摘要）。
+    `full=true` 才实时抓整页正文，按次计费，只在用户点「抓全文」时用。
+    """
+    from app.services.hot_brief import input_detail
+
+    return input_detail(db, ref, run_id=run_id, full=full)
+
+
+@router.post("/hot-brief/run")
+def hot_brief_run(minutes: int = 60, db: Session = Depends(get_db)):
+    """手动触发一次（调试用；调度器每小时 :02 自动跑）。"""
+    from app.services.hot_brief import run_brief
+
+    return run_brief(db, minutes=minutes)

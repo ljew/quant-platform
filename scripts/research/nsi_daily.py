@@ -79,60 +79,102 @@ def call(api, params, fields="", retry=3):
             time.sleep(1.5 * (a + 1))
 
 
+FULL_START = "20180101"  # 历史文件损坏时按此起点全量重建（与 --full 一致）
+
+
+def read_csv_safe(path: Path, columns: list[str]) -> tuple[pd.DataFrame, bool]:
+    """读增量历史；返回 (历史表, 是否损坏需全量重建)。
+
+    2026-11-07：to_csv 直接覆盖会先截断原文件，进程被 kill / 容器重启时
+    就留下 0 字节 CSV（idx_sz50.csv 实测），此后每天 pd.read_csv 抛
+    EmptyDataError，NSI 调度永久卡死。这里把「文件损坏」与「文件不存在」
+    区分开：前者必须重新拉全量，绝不能当空表跳过（会让信号静默算错）。
+    """
+    cols = list(columns)
+    if not path.exists():
+        return pd.DataFrame(columns=cols), False
+    if path.stat().st_size == 0:
+        return pd.DataFrame(columns=cols), True
+    try:
+        return pd.read_csv(path), False
+    except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError):
+        return pd.DataFrame(columns=cols), True
+
+
+def write_csv_atomic(df: pd.DataFrame, path: Path) -> None:
+    """先写同目录 .tmp 再 os.replace，中断也不会把已有历史截断成 0 字节。"""
+    tmp = path.with_name(path.name + ".tmp")
+    df.to_csv(tmp, index=False)
+    os.replace(tmp, path)
+
+
+def merge_history(old: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
+    """拼接增量时跳过空表，避免 pandas 的 all-NA concat FutureWarning / dtype 漂移。"""
+    parts = [d for d in (old, new) if not d.empty]
+    return pd.concat(parts, ignore_index=True) if parts else new
+
+
 def update_index(code, tag, start):
-    rows = call("index_daily", {"ts_code": code, "start_date": start, "end_date": today()},
-                "trade_date,open,high,low,close,pre_close,pct_chg,vol,amount")
+    cols = ["trade_date", "open", "high", "low", "close", "pre_close",
+            "pct_chg", "vol", "amount"]
     path = RAW / f"idx_{tag}.csv"
-    new = pd.DataFrame(rows, columns=["trade_date", "open", "high", "low", "close",
-                                      "pre_close", "pct_chg", "vol", "amount"])
-    if path.exists():
-        old = pd.read_csv(path)
+    old, rebuild = read_csv_safe(path, cols)
+    if rebuild:
+        print(f"  ! idx_{tag}.csv 损坏，按 {FULL_START} 全量重建")
+        start = FULL_START
+    rows = call("index_daily", {"ts_code": code, "start_date": start, "end_date": today()},
+                ",".join(cols))
+    new = pd.DataFrame(rows, columns=cols)
+    if not old.empty:
         new = new[~new["trade_date"].astype(str).isin(old["trade_date"].astype(str))]
-        pd.concat([old, new]).to_csv(path, index=False)
-    else:
-        new.to_csv(path, index=False)
+    write_csv_atomic(merge_history(old, new), path)
     return len(new)
 
 
 def update_etf(code, tag, start):
+    cols = ["trade_date", "fd_share"]
+    path = RAW / f"sh_{tag}.csv"
+    old, rebuild = read_csv_safe(path, cols)
+    if rebuild:
+        print(f"  ! sh_{tag}.csv 损坏，按 {FULL_START} 全量重建")
+        start = FULL_START
     rows = []
-    for off in range(0, 4000, 2000):
+    # 全量重建时 8 年份额可能超过 4000 行，把分页上限放宽（返回空即 break）
+    for off in range(0, 10000, 2000):
         r = call("fund_share", {"ts_code": code, "start_date": start, "end_date": today(),
-                                "offset": off, "limit": 2000}, "trade_date,fd_share")
+                                "offset": off, "limit": 2000}, ",".join(cols))
         if not r:
             break
         rows += r
         if len(r) < 2000:
             break
-    path = RAW / f"sh_{tag}.csv"
-    new = pd.DataFrame(rows, columns=["trade_date", "fd_share"])
-    if path.exists():
-        old = pd.read_csv(path)
+    new = pd.DataFrame(rows, columns=cols)
+    if not old.empty:
         new = new[~new["trade_date"].astype(str).isin(old["trade_date"].astype(str))]
-        pd.concat([old, new]).to_csv(path, index=False)
-    else:
-        new.to_csv(path, index=False)
+    write_csv_atomic(merge_history(old, new), path)
     return len(new)
 
 
 def update_min(start_year):
     """30min 分钟数据按年拉，只补最近两年（首尾重叠由去重处理）"""
+    cols = ["trade_time", "open", "high", "low", "close", "vol", "amount"]
     path = RAW / "min_hs300_30m.csv"
+    old, rebuild = read_csv_safe(path, cols)
+    if rebuild:
+        print("  ! min_hs300_30m.csv 损坏，按近三年全量重建")
+    lo = max(start_year, datetime.now().year - (2 if rebuild else 1))
     rows = []
-    for y in range(max(start_year, datetime.now().year - 1), datetime.now().year + 1):
+    for y in range(lo, datetime.now().year + 1):
         r = call("stk_mins", {"ts_code": "000300.SH", "freq": "30min",
                               "start_date": f"{y}-01-01 09:00:00",
                               "end_date": f"{y}-12-31 15:00:00"},
-                 "trade_time,open,high,low,close,vol,amount")
+                 ",".join(cols))
         rows += r
-    new = pd.DataFrame(rows, columns=["trade_time", "open", "high", "low", "close", "vol", "amount"])
-    if path.exists():
-        old = pd.read_csv(path)
+    new = pd.DataFrame(rows, columns=cols)
+    if not old.empty:
         old["trade_time"] = old["trade_time"].astype(str)
         new = new[~new["trade_time"].astype(str).isin(set(old["trade_time"]))]
-        pd.concat([old, new]).to_csv(path, index=False)
-    else:
-        new.to_csv(path, index=False)
+    write_csv_atomic(merge_history(old, new), path)
     return len(new)
 
 
@@ -347,7 +389,8 @@ def main():
     idx_last, sh_last, gap_days = _freshness(df)
 
     df["position"] = pos
-    df[["NSI", "score", "pos_pen", "p750", "position", "FLOW", "BEHAV", "PRESS", "hhi"]].to_csv(
+    write_csv_atomic(
+        df[["NSI", "score", "pos_pen", "p750", "position", "FLOW", "BEHAV", "PRESS", "hhi"]],
         OUT / "nsi_signal.csv")
 
     d = df["score"].dropna()
@@ -382,7 +425,9 @@ def main():
         "regime": ("加仓中（国家队托底）" if cur_pos >= BOOST_POS else "基础仓位"),
         "note": "score = NSI + 位置惩罚×4；NSI 低不等于看空，只代表没有托底；只做加法不做减法",
     }
-    (OUT / "nsi_latest.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    _json_tmp = OUT / "nsi_latest.json.tmp"
+    _json_tmp.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(_json_tmp, OUT / "nsi_latest.json")
 
     print(f"\n[NSI] {out['as_of']}  score={out['score']:.1f}"
           f"（NSI {out['nsi_raw']:.1f} + 位置惩罚 {out['pos_penalty']:+.1f}×{POS_PEN_W:.0f}）")

@@ -6,13 +6,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Card, PageHeader } from "../components/ui";
 import EChart from "../components/EChart";
+import HotBriefCard from "../components/HotBriefCard";
 import { agentApi, api, get, newsApi, AgentState, FrameworkHealth, KlineBar, NewsFeed } from "../api/client";
+import { localDate } from "../utils/date";
+import { formatPrice2, klineTooltip } from "../utils/klineTooltip";
 import { useTheme } from "../theme";
 
 interface ActionItem {
   symbol: string; name: string | null; action: string; streak: number;
   resonance: number; strategies: string; quality_tier: string;
-  close: number | null; reason: string;
+  close: number | null; last_price: number | null; reason: string;
 }
 
 const ACTION_META: Record<string, { cn: string; color: string }> = {
@@ -45,19 +48,16 @@ const INDICES = [
   { symbol: "sh000300", name: "沪深300" },
 ];
 
-function daysAgo(n: number): string {
-  const d = new Date(Date.now() - n * 86400000);
-  return d.toISOString().slice(0, 10);
-}
-
 export default function TodayPage() {
   const { colors } = useTheme();
   const [date, setDate] = useState("");
   const [dates, setDates] = useState<{ date: string; symbols: number }[]>([]);
   const [actions, setActions] = useState<ActionItem[]>([]);
-  const [feed, setFeed] = useState<NewsFeed | null>(null);
   const [agent, setAgent] = useState<AgentState | null>(null);
   const [fwHealth, setFwHealth] = useState<FrameworkHealth | null>(null);
+  // 注意：这个 feed 仍要拉 —— 右栏「指数概览」用的是它的 global_quotes。
+  // 首页已不再展示原始快讯列表（2026-11-07 挪到「全部资讯」页）。
+  const [feed, setFeed] = useState<NewsFeed | null>(null);
   const [filter, setFilter] = useState<string>("buy");
   const [idxQuotes, setIdxQuotes] = useState<{ name: string; price: number; pct: number }[]>([]);
   // K 线抽屉
@@ -66,11 +66,11 @@ export default function TodayPage() {
   const [drawerLoading, setDrawerLoading] = useState(false);
 
   useEffect(() => {
+    newsApi.feed(false).then(setFeed).catch(() => {});
     get<{ date: string; symbols: number }[]>("/signal/dates").then((d) => {
       setDates(d);
       if (d[0]) setDate(d[0].date);
     }).catch(() => {});
-    newsApi.feed(false).then(setFeed).catch(() => {});
     agentApi.state().then(setAgent).catch(() => {});
   }, []);
 
@@ -88,22 +88,40 @@ export default function TodayPage() {
       .then((d) => setActions(d.items)).catch(() => setActions([]));
   }, [date]);
 
-  // 指数概览：优先实时快照（批量接口），失败回退资讯里的全球行情
+  // 指数概览：优先实时快照（批量接口），失败或不完整回退资讯里的全球行情
   useEffect(() => {
     (async () => {
       try {
         const qs = await get<{ symbol: string; name: string; price: number; change_pct: number }[]>(
           `/market/quote?symbols=${INDICES.map((i) => i.symbol).join(",")}`);
-        if (qs.length) {
-          setIdxQuotes(qs.map((q) => ({ name: q.name, price: q.price, pct: q.change_pct })));
+        // 双保险：四个指数必须按代码全部命中才采用，名称一律取本地 INDICES。
+        // 后端若只回 1 条、或把 sh000001 串成个股 sz000001，这里会拒绝展示并回退，
+        // 避免 2×2 网格冒出「平安银行」这种错卡（2026-11-07）。
+        const bySym = new Map(qs.map((q) => [q.symbol?.toLowerCase(), q]));
+        const matched = INDICES.map((i) => {
+          const q = bySym.get(i.symbol);
+          return q ? { name: i.name, price: q.price, pct: q.change_pct } : null;
+        });
+        if (matched.every((x) => x !== null)) {
+          setIdxQuotes(matched as { name: string; price: number; pct: number }[]);
           return;
         }
       } catch { /* 回退到资讯快照 */ }
       if (feed) {
-        // 优先 A 股指数，其次全球指数
-        const a = feed.global_quotes.filter((q) => /^(sh|sz)/.test(q.code));
-        const rest = feed.global_quotes.filter((q) => !/^(sh|sz)/.test(q.code));
-        setIdxQuotes([...a, ...rest].slice(0, 4).map((q) => ({ name: q.name, price: q.price, pct: q.change_pct })));
+        // 按 INDICES 的代码与顺序对齐，不依赖后端列表顺序（原实现 slice(0,4)
+        // 会在缺创业板指时把第 3 张卡换成中证800）。缺项才用其它行情补位。
+        const byCode = new Map(feed.global_quotes.map((q) => [q.code.toLowerCase(), q]));
+        const aligned: { name: string; price: number; pct: number }[] = [];
+        for (const i of INDICES) {
+          const q = byCode.get(i.symbol);
+          if (q) aligned.push({ name: i.name, price: q.price, pct: q.change_pct });
+        }
+        for (const q of feed.global_quotes) {
+          if (aligned.length >= INDICES.length) break;
+          if (INDICES.some((i) => i.symbol === q.code.toLowerCase())) continue;
+          aligned.push({ name: q.name, price: q.price, pct: q.change_pct });
+        }
+        setIdxQuotes(aligned.slice(0, INDICES.length));
       }
     })();
   }, [feed]);
@@ -111,7 +129,7 @@ export default function TodayPage() {
   const openDrawer = useCallback((it: ActionItem) => {
     setDrawer({ symbol: it.symbol, name: it.name || it.symbol });
     setDrawerLoading(true);
-    api.kline(it.symbol, daysAgo(400), daysAgo(0))
+    api.kline(it.symbol, localDate(400), localDate(), 500)
       .then(setBars).catch(() => setBars([]))
       .finally(() => setDrawerLoading(false));
   }, []);
@@ -153,10 +171,10 @@ export default function TodayPage() {
 
   const shown = counts[filter] || [];
   const klineOption = useMemo(() => ({
-    tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
+    tooltip: klineTooltip(bars, colors),
     grid: { left: 64, right: 16, top: 16, bottom: 44 },
     xAxis: { type: "category", data: bars.map((b) => b.date), boundaryGap: true, axisLabel: { fontSize: 10 } },
-    yAxis: { scale: true, axisLabel: { fontSize: 10 } },
+    yAxis: { scale: true, axisLabel: { fontSize: 10, formatter: formatPrice2 } },
     dataZoom: [
       { type: "inside", start: 55, end: 100 },
       { type: "slider", height: 16, bottom: 6, start: 55, end: 100 },
@@ -228,6 +246,11 @@ export default function TodayPage() {
         {verdict}
       </div>
 
+      {/* —— 每小时热点简报（非结构化资讯 → LLM 判断）——
+          放在「一句话观点」下面：两个都是判断，先读完观点再看可执行清单。
+          两列排布是为了不把「信号明细」挤出首屏。 */}
+      <HotBriefCard columns={2} dense />
+
       {/* —— 动作汇总卡 —— */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
         {CARD_DEFS.map((c) => (
@@ -275,7 +298,14 @@ export default function TodayPage() {
                     <td style={{ padding: "8px 10px", borderBottom: `1px solid ${colors.border}` }}>
                       <Badge text={meta.cn} color={meta.color} soft />
                     </td>
-                    <td style={{ padding: "8px 10px", borderBottom: `1px solid ${colors.border}` }}>{it.close ?? "—"}</td>
+                    <td style={{ padding: "8px 10px", borderBottom: `1px solid ${colors.border}` }}>
+                      {(() => {
+                        // 优先展示信号日的未复权实际收盘价（与同花顺口径一致）；
+                        // 库里无原始 K 线时才退回策略用的复权价。
+                        const p = it.last_price ?? it.close;
+                        return p == null ? "—" : p.toFixed(2);
+                      })()}
+                    </td>
                     <td style={{ padding: "8px 10px", borderBottom: `1px solid ${colors.border}` }}>
                       {it.streak > 0 ? <span style={{ color: meta.color, fontWeight: 600 }}>{it.streak} 日</span> : "—"}
                     </td>
@@ -315,7 +345,7 @@ export default function TodayPage() {
           )}
         </Card>
 
-        {/* —— 右侧：指数 + 资讯 —— */}
+        {/* —— 右侧：指数概览 —— */}
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <Card colors={colors} title="指数概览" pad={10}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -336,29 +366,6 @@ export default function TodayPage() {
             </div>
           </Card>
 
-          <Card colors={colors} title={
-            <span>资讯快讯
-              {feed && <span style={{ color: colors.muted, fontSize: 11.5, fontWeight: 400, marginLeft: 8 }}>
-                {feed.cached ? `缓存 ${Math.round(feed.age_sec)}s` : "刚刚更新"}{feed.stale ? " · 上游暂不可达" : ""}
-              </span>}
-            </span>
-          } pad={8}>
-            {[...(feed?.headlines || []).slice(0, 5), ...(feed?.sina_roll || []).slice(0, 4)].map((n, i) => (
-              <a key={i} href={n.url} target="_blank" rel="noreferrer" style={{
-                display: "block", padding: "8px 10px", borderBottom: `1px solid ${colors.border}`,
-                color: colors.text, textDecoration: "none", fontSize: 12.5, lineHeight: 1.55,
-              }}>
-                {n.title}
-                <div style={{ color: colors.muted, fontSize: 11, marginTop: 2 }}>{n.source} · {n.time}</div>
-              </a>
-            ))}
-            {!feed && <div style={{ color: colors.muted, fontSize: 12.5, padding: 10 }}>加载中…</div>}
-            {feed?.xueqiu_hot?.length ? (
-              <div style={{ padding: "8px 10px", fontSize: 12, color: colors.muted }}>
-                雪球热榜：{feed.xueqiu_hot.slice(0, 5).map((h) => h.name).join("、")}
-              </div>
-            ) : null}
-          </Card>
         </div>
       </div>
     </div>

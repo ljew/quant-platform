@@ -539,6 +539,132 @@ class NewsMarketDaily(Base):
         return f"<NewsMarketDaily {self.date} senti={self.net_sentiment}>"
 
 
+class NewsFeedItem(Base):
+    """统一资讯流：各来源的原文条目归一存放，供「全部资讯」页浏览与检索。
+
+    为什么不复用旧的 `doc_document`（6.4 万行）：那张表是已下线的 kb 模块留下的，
+    最后写入停在 2026-10-24，且无任何代码引用；它的 `content_hash / dup_group_id /
+    is_canonical` 三件套是给去重合并设计的，本场景不需要这么重。
+
+    设计要点：
+    - `uid` = sha1(source + 自然主键)，靠唯一约束做幂等，重复同步不会长胖
+    - `summary` 截断存（长文只留前 600 字），全文在各来源自己的库/页面
+    - 各源时间口径不同（unix 秒 / ISO 字符串），入库前统一成 datetime
+    """
+
+    __tablename__ = "news_feed"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    uid: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    source: Mapped[str] = mapped_column(String(24), index=True)      # cls/eastmoney/...
+    source_label: Mapped[str] = mapped_column(String(32), default="")
+    title: Mapped[str] = mapped_column(String(400), default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    url: Mapped[str] = mapped_column(String(600), default="")
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, index=True, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    symbols: Mapped[str] = mapped_column(String(200), default="")
+    extra_json: Mapped[str] = mapped_column(Text, default="{}")
+
+    def __repr__(self):
+        return f"<NewsFeedItem {self.source} {self.title[:16]}>"
+
+
+class HotBrief(Base):
+    """每小时热点简报（非结构化资讯 → LLM 筛选解读）。
+
+    输入是两条腿：① 平台自采一手快讯（财联社电报，时效最强）；
+    ② DeepSeek 网页搜索 `/v1/tools/search`（覆盖快讯发不到的地方：
+    部委原文、行业数据、券商观点、隔夜外盘）。
+    模型只负责按「对 A 股有没有实质影响」筛选判断。
+
+    ⚠️ 2026-11-07 我曾误判「DeepSeek API 无联网能力」——当时只试了
+    `tools:[{type:"web_search"}]`（422）和几个错误路径（404），没查文档。
+    实际联网做成了独立端点 `/v1/tools/search` + `/v1/tools/fetch`，见 ds_search.py。
+
+    `items_json` 存结构化条目（theme/direction/sectors/tickers/horizon/why/strength），
+    原文快照留在 bronze，需要回溯时按 window 时间取。
+    """
+
+    __tablename__ = "hot_brief"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
+    window_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    window_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    n_input: Mapped[int] = mapped_column(Integer, default=0)      # 输入资讯条数（快讯+搜索）
+    n_flash: Mapped[int] = mapped_column(Integer, default=0)      # 其中：财联社一手快讯
+    n_search: Mapped[int] = mapped_column(Integer, default=0)     # 其中：DeepSeek 网页搜索
+    n_items: Mapped[int] = mapped_column(Integer, default=0)      # 模型保留条数
+    items_json: Mapped[str] = mapped_column(Text, default="[]")
+    # 本轮喂给模型的**原始输入快照**（编号/来源/时间/标题/链接）。
+    # 不存正文，只存可回溯的定位信息：2026-11-07 之前只存模型输出，
+    # 想核对「这条是从哪看到的」只能翻日志，而日志里根本没有。
+    inputs_json: Mapped[str] = mapped_column(Text, default="[]")
+    mainline: Mapped[str] = mapped_column(Text, default="")       # 一句话主线（≤60 字）
+    # 今日综述：350~600 字、分政策/产业/海外/资金四段。每轮重写并覆盖当日整体，
+    # 不是只总结本小时 —— 老刘 2026-11-07 反馈「首页总结太简单，要全面一点」。
+    summary: Mapped[str] = mapped_column(Text, default="")
+    # 今日合并后的主题列表（LLM 去重，带 first_seen）。
+    # 每轮生成时重算：字符相似度判不出「暴雪黄色预警覆盖东北华北」和
+    # 「京津冀暴雪与强冷空气」是同一件事（Jaccard 仅 0.05），必须靠语义。
+    today_items_json: Mapped[str] = mapped_column(Text, default="[]")
+    model: Mapped[str] = mapped_column(String(40), default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+
+    def __repr__(self):
+        return f"<HotBrief {self.created_at:%m-%d %H:%M} n={self.n_items}>"
+
+
+class SocialHeatDaily(Base):
+    """社交关注度日频（雪球 A 股热股 / 微博热搜）。
+
+    与 `news_market_daily` 的区别：那边是「多空情绪」（有正文可打分），这边是
+    「关注度」（只有热度值、没有正文）。两者互补：一个答「偏多还是偏空」，
+    一个答「大家在聊什么、聊得有多热」。
+
+    `source` 区分平台（雪球/微博），`n_finance` 是命中财经关键词的条数，
+    `heat_total` 量纲随平台不同（雪球热度 vs 微博搜索量），跨平台不可直接相加。
+    """
+
+    __tablename__ = "social_heat_daily"
+    __table_args__ = (UniqueConstraint("date", "source", name="uq_social_heat"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    date: Mapped[date] = mapped_column(Date, index=True)
+    source: Mapped[str] = mapped_column(String(12))
+    n_items: Mapped[int] = mapped_column(Integer, default=0)
+    n_finance: Mapped[int] = mapped_column(Integer, default=0)
+    heat_total: Mapped[float] = mapped_column(Float, default=0.0)
+    heat_top10: Mapped[float] = mapped_column(Float, default=0.0)
+
+    def __repr__(self):
+        return f"<SocialHeatDaily {self.date} {self.source} n={self.n_items}>"
+
+
+class MpSentimentDaily(Base):
+    """公众号文章情绪日频聚合（非结构化 · 公众号语料）。
+
+    为什么要独立一张表：`news_market_daily` 被两个 step 写，口径不同 ——
+    东财新闻是**累加**（增量去重后 +=），而公众号的 gold 步骤是**覆盖**（重算）。
+    塞进同一张表会互相冲掉（公众号每天 30~60 篇，覆盖会把东财 100~500 篇冲没）。
+    分表后 `news_event_test(source="news"|"mp"|"both")` 可按需组合。
+    """
+
+    __tablename__ = "mp_sentiment_daily"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    date: Mapped[date] = mapped_column(Date, unique=True)
+    n_articles: Mapped[int] = mapped_column(Integer, default=0)
+    n_finance: Mapped[int] = mapped_column(Integer, default=0)
+    bull_score: Mapped[int] = mapped_column(Integer, default=0)
+    bear_score: Mapped[int] = mapped_column(Integer, default=0)
+    net_sentiment: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    def __repr__(self):
+        return f"<MpSentimentDaily {self.date} senti={self.net_sentiment}>"
+
+
 class NewsStockDaily(Base):
     """个股新闻情绪日频因子（文章内公司简称匹配 + 多空词典计分）。"""
 
@@ -1203,3 +1329,27 @@ class EtfDailyBar(Base):
     close: Mapped[float] = mapped_column(Float, default=0.0)
     amount: Mapped[float] = mapped_column(Float, default=0.0)     # 成交额（亿元）
     pct_chg: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class QuoteSnapshot(Base):
+    """收盘行情快照：每交易日由定时任务从 tushare 拉回后落库，供 /market/quote 只读。
+
+    为什么单独一张表：原先 /market/quote 每次请求都实时查 akshare 全市场截面
+    （stock_zh_a_spot_em 分页拉 59 页，约 11 秒），首页四个指数 + 行情看板标题
+    一起打开就把服务拖到看门狗重启。行情展示属于「一天一更就够」的数据，
+    不该在请求链路里访问外部数据源（2026-11-07）。
+
+    口径：price 为当日收盘价（2 位小数），change_pct 用 tushare pct_chg
+    （已按 pre_close 处理除权，比「相邻两根 close 相除」准确），保留 2 位。
+    """
+
+    __tablename__ = "quote_snapshot"
+    __table_args__ = (Index("ix_quote_snapshot_date", "trade_date"),)
+
+    symbol: Mapped[str] = mapped_column(String(16), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    price: Mapped[float] = mapped_column(Float, nullable=False)
+    change_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(16), default="tushare")  # tushare / kline_fallback
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)

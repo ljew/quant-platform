@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { EChartsOption } from "echarts";
 import EChart from "../components/EChart";
+import DocDrawer from "../components/DocDrawer";
 import { useTheme } from "../theme";
+// 设计说明的真源在 docs/（与 NSI-SPEC.md 同级），构建时以原文打进包里，
+// 保证「页面上看到的」与「仓库里的文档」永远是同一份，不会各写一版。
+import specMarkdown from "../../../docs/ETF-FLOW-SPEC.md?raw";
 import {
   etfFlowApi,
   type EtfFlowDashboard,
@@ -57,6 +61,11 @@ export default function EtfFlowPage() {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState("");
   const [auto, setAuto] = useState(true);
+  // 支持 ?doc=1#etfflow 直接展开说明，便于把「设计说明」单独收藏成一个链接
+  const [docOpen, setDocOpen] = useState(
+    () => typeof window !== "undefined"
+      && new URLSearchParams(window.location.search).get("doc") === "1",
+  );
   const [updatedAt, setUpdatedAt] = useState("");
   const [note, setNote] = useState("");
 
@@ -119,7 +128,7 @@ export default function EtfFlowPage() {
     );
   }
 
-  const { meta, nsi, minute, support, daily, category, intraday_15m, summary, etf_detail, focus, valuation } = data;
+  const { meta, nsi, minute, support, daily, category, intraday_15m, summary, etf_detail, focus, valuation, elasticity } = data;
   const empty = meta.universe.length === 0;
 
   return (
@@ -142,6 +151,12 @@ export default function EtfFlowPage() {
               fontSize: 12, cursor: "pointer", whiteSpace: "nowrap",
             }}>{x.label}</button>
           ))}
+          {/* 分析逻辑随时可查：浮层打开，不打断看板的滚动位置与图表缩放 */}
+          <button onClick={() => setDocOpen(true)} title="每张卡怎么算、阈值怎么来的、不能用来做什么" style={{
+            background: "transparent", border: `1px solid ${colors.accent}`,
+            color: colors.accent, borderRadius: 6, padding: "5px 11px",
+            fontSize: 12, cursor: "pointer", whiteSpace: "nowrap", fontWeight: 600,
+          }}>设计说明</button>
         </div>
       </div>
 
@@ -216,6 +231,7 @@ export default function EtfFlowPage() {
       <MinuteCard meta={meta} minute={minute} colors={colors} mode={mode} />
       <CumCard meta={meta} minute={minute} colors={colors} mode={mode} />
       <TailCard tail={minute.tail} asOf={meta.as_of} colors={colors} />
+      <ElasticityCard e={elasticity} colors={colors} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
         <SlotCard
           title="历史放量日 · 15 分钟形态"
@@ -250,7 +266,7 @@ export default function EtfFlowPage() {
       />
       <SupportCard support={support} meta={meta} colors={colors} mode={mode} />
       <ForwardCard forward={support.forward} colors={colors} />
-      <ValuationCard v={valuation} colors={colors} />
+      <ValuationCard v={valuation} t={data?.threshold_compare} colors={colors} />
 
       {/* ═══ 四、日度资金全景 ═══ */}
       <SectionTitle
@@ -303,6 +319,15 @@ export default function EtfFlowPage() {
           {status && ` · 库内 ${status.share_rows.toLocaleString()} 条份额 / ${status.minute_rows.toLocaleString()} 条分钟`}
         </div>
       </div>
+
+      {/* 分析逻辑说明（浮层，来源 docs/ETF-FLOW-SPEC.md） */}
+      <DocDrawer
+        open={docOpen}
+        onClose={() => setDocOpen(false)}
+        title="国家队 ETF 资金看板 · 设计说明"
+        subtitle="每张卡怎么算 · 阈值怎么来的 · 哪些事不能拿它做"
+        markdown={specMarkdown}
+      />
     </div>
   );
 }
@@ -528,6 +553,7 @@ function EtfDetailTable({
               <th style={{ textAlign: "left", padding: "0 8px 6px", fontWeight: 500 }}>名称</th>
               <th style={{ textAlign: "left", padding: "0 8px 6px", fontWeight: 500, width: 78 }}>跟踪指数</th>
               <th style={{ textAlign: "right", padding: "0 8px 6px", fontWeight: 500, width: 92 }}>成交额(亿)</th>
+              <th style={{ textAlign: "right", padding: "0 8px 6px", fontWeight: 500, width: 96 }}>放量倍数</th>
               <th style={{ textAlign: "left", padding: "0 8px 6px", fontWeight: 500, width: 150 }}>占比</th>
               <th style={{ textAlign: "right", padding: "0 2px 6px 8px", fontWeight: 500, width: 78 }}>涨跌幅</th>
             </tr>
@@ -543,6 +569,21 @@ function EtfDetailTable({
                   <td style={{ padding: "6px 8px", color: colors.muted }}>{d.category}</td>
                   <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600, fontVariantNumeric: "tabular-nums", color: colors.text }}>
                     {d.amount.toFixed(1)}
+                    {d.mult20 != null && d.mult20 >= 1.6 && !d.enough && (
+                      <span style={{ fontSize: 9.5, fontWeight: 400, color: colors.axis, marginLeft: 4 }}>
+                        量级不足
+                      </span>
+                    )}
+                  </td>
+                  <td style={{
+                    padding: "6px 8px", textAlign: "right", fontVariantNumeric: "tabular-nums",
+                    fontWeight: d.mult20 != null && d.mult20 >= 1.6 ? 700 : 500,
+                    color: d.mult20 == null ? colors.muted
+                      : d.mult20 >= 2.2 ? colors.up
+                        : d.mult20 >= 1.6 ? "#b9770e"
+                          : d.mult20 >= 1.0 ? colors.text : colors.muted,
+                  }}>
+                    {d.mult20 == null ? "—" : `${d.mult20.toFixed(2)}×`}
                   </td>
                   <td style={{ padding: "6px 8px" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
@@ -745,12 +786,14 @@ function ForwardCard({
 
   const hs = forward.horizons;
   const corr20 = forward.corr["20"] ?? forward.corr[20 as unknown as string];
+  const valLow = (forward.by_valuation ?? []).find((g) => g.label.startsWith("低"))?.t60;
+  const valHigh = (forward.by_valuation ?? []).find((g) => g.label.startsWith("高"))?.t60;
 
   return (
     <div style={cardStyle(colors)}>
       <CardHead
         title={`托底之后：${forward.points.length} 个托底日的后市`}
-        tag="同一指数口径的事后统计 · 非可交易回测"
+        tag="一档等权净值口径 · 非可交易回测 · 三基准对照"
         colors={colors}
       />
 
@@ -786,6 +829,64 @@ function ForwardCard({
           );
         })}
       </div>
+
+      {forward.benchmark && forward.index_stats && forward.core_stats && (
+        <div style={{
+          margin: "0 0 12px", padding: "9px 11px",
+          background: rgba(colors.accent, 0.04),
+          border: `1px solid ${colors.border}`, borderRadius: 8,
+        }}>
+          <div style={{ fontSize: 11.5, fontWeight: 600, color: colors.text, marginBottom: 5 }}>
+            收益基准对照 · 同一批托底日，换个基准结论就变
+          </div>
+          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11 }}>
+            <thead>
+              <tr style={{ color: colors.axis, fontSize: 10.5 }}>
+                <th style={{ textAlign: "left", padding: "2px 8px 4px 0", fontWeight: 500 }}>基准</th>
+                {hs.map((h) => (
+                  <th key={h} style={{ textAlign: "right", padding: "2px 8px 4px", fontWeight: 500 }}>
+                    T+{h} 胜率
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                { label: forward.benchmark.main, data: forward.stats, main: true },
+                { label: forward.benchmark.core, data: forward.core_stats, main: false },
+                { label: forward.benchmark.index, data: forward.index_stats, main: false },
+              ].map((r, i) => (
+                <tr key={i} style={{ borderTop: `1px solid ${colors.border}` }}>
+                  <td style={{
+                    padding: "4px 8px 4px 0",
+                    color: r.main ? colors.text : colors.muted,
+                    fontWeight: r.main ? 700 : 400,
+                  }}>
+                    {r.label}
+                    {r.main && <span style={{ color: colors.accent, fontSize: 10, marginLeft: 5 }}>主</span>}
+                  </td>
+                  {hs.map((h) => {
+                    const s = r.data[String(h)];
+                    const w = s?.win ?? 0;
+                    return (
+                      <td key={h} style={{
+                        textAlign: "right", padding: "4px 8px",
+                        color: w >= 55 ? colors.up : w <= 45 ? colors.down : colors.text,
+                        fontVariantNumeric: "tabular-nums",
+                      }}>
+                        {s && s.n ? `${w.toFixed(1)}%` : "—"}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{ fontSize: 10.5, color: colors.axis, marginTop: 6, lineHeight: 1.6 }}>
+            {forward.benchmark.note}
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 236px", gap: 16, alignItems: "center" }}>
         <EChart option={opt} height={252} />
@@ -824,7 +925,7 @@ function ForwardCard({
                 按托底时的估值分位分组 · 看 T+60
               </span>
               <span style={{ fontSize: 11, color: colors.muted }}>
-                同一个「托底」，估值位置不同，结果差一大截
+                方向有差，但换基准后差距收窄、未通过显著性检验
               </span>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
@@ -909,13 +1010,17 @@ function ForwardCard({
         横截面越长，样本越少（最近的托底日还没有 60 个交易日的后市数据），所以每格都标了 n。
         <br />
         <span style={{ color: colors.text }}>
-          要特别说明：上面 T+60 的 56.5% 是<strong>两拨方向相反的样本平均出来的</strong> ——
-          低估值组 86%、高估值组 33%，平均之后就成了一个「什么都说明不了」的数字。
-          这就是上面那张分组对比的意义。
+          要特别说明：上面 T+60 的 {forward.stats["60"]?.win?.toFixed(1) ?? "—"}% 是
+          <strong>两拨方向不同的样本平均出来的</strong>——
+          低估值组 {valLow?.win?.toFixed(0) ?? "—"}%、高估值组 {valHigh?.win?.toFixed(0) ?? "—"}%。
+          但换成一档等权净值口径后差距已明显收窄，段去重后 Fisher 精确检验 p≈0.24，
+          <strong>未通过显著性检验</strong>。这张分组只能当方向提示，不能当独立依据。
         </span>
         <br />
         <span style={{ color: colors.axis }}>
-          注意这是<strong>同一指数口径的事后统计</strong>，不是可交易策略回测：没扣成本、没算滑点、
+          主基准是<strong>一档等权净值</strong>（实际被托底的宽基组合），上证综指与 510300 见上方对照表；
+          同一批托底日换个基准，T+20 胜率能差 4–11pp，所以别只记住一个数字。
+          注意这是<strong>事后统计</strong>，不是可交易策略回测：没扣成本、没算滑点、
           没做样本外；连续托底日的持有期还会互相重叠，样本并不独立。
           它的用途是校准预期，不能当收益承诺，更不该据此定仓位 —— 那件事归 NSI。
         </span>
@@ -926,9 +1031,10 @@ function ForwardCard({
 
 /* ── 估值 × 资金流 ──────────────────────────────────────────────── */
 function ValuationCard({
-  v, colors,
+  v, t, colors,
 }: {
   v: EtfFlowDashboard["valuation"] | undefined;
+  t: EtfFlowDashboard["threshold_compare"];
   colors: ReturnType<typeof useTheme>["colors"];
 }) {
   const opt = useMemo<EChartsOption>(() => {
@@ -1039,6 +1145,75 @@ function ValuationCard({
         colors={colors}
       />
 
+      {t && (
+        <div style={{
+          margin: "2px 0 12px", padding: "9px 11px",
+          background: "rgba(185,119,14,0.06)",
+          border: `1px solid ${colors.border}`,
+          borderLeft: "3px solid #b9770e", borderRadius: 8,
+        }}>
+          <div style={{ fontSize: 11.5, fontWeight: 600, color: colors.text, marginBottom: 5 }}>
+            门槛口径对照 · 100 亿是固定金额，但全池成交额三年涨了 3.2 倍
+          </div>
+          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11 }}>
+            <thead>
+              <tr style={{ color: colors.axis, fontSize: 10.5 }}>
+                <th style={{ textAlign: "left", padding: "2px 8px 4px 0", fontWeight: 500 }}>口径</th>
+                <th style={{ textAlign: "right", padding: "2px 8px 4px", fontWeight: 500 }}>天数</th>
+                <th style={{ textAlign: "right", padding: "2px 8px 4px", fontWeight: 500 }}>估值分位中位</th>
+                <th style={{ textAlign: "right", padding: "2px 8px 4px", fontWeight: 500 }}>≤20% 占比</th>
+                <th style={{ textAlign: "right", padding: "2px 8px 4px", fontWeight: 500 }}>≥80% 占比</th>
+                <th style={{ textAlign: "right", padding: "2px 8px 4px", fontWeight: 500 }}>T+20 胜率</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                { label: "绝对 · 净流入 > 100 亿", d: t.absolute, main: true },
+                { label: `相对 · 净流入/20日成交额中位 > ${t.ratio}`, d: t.relative, main: false },
+              ].map((r, i) => (
+                <tr key={i} style={{ borderTop: `1px solid ${colors.border}` }}>
+                  <td style={{
+                    padding: "4px 8px 4px 0",
+                    color: r.main ? colors.text : colors.muted,
+                    fontWeight: r.main ? 700 : 400,
+                  }}>
+                    {r.label}{r.main && <span style={{ color: colors.accent, fontSize: 10, marginLeft: 5 }}>主</span>}
+                  </td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", color: colors.text,
+                               fontVariantNumeric: "tabular-nums" }}>{r.d.count}</td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", fontWeight: 600,
+                               color: "#b9770e", fontVariantNumeric: "tabular-nums" }}>
+                    {r.d.pct_median == null ? "—" : `${r.d.pct_median.toFixed(1)}%`}
+                  </td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", color: colors.muted,
+                               fontVariantNumeric: "tabular-nums" }}>
+                    {r.d.low_share == null ? "—" : `${r.d.low_share.toFixed(1)}%`}
+                  </td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", color: colors.muted,
+                               fontVariantNumeric: "tabular-nums" }}>
+                    {r.d.high_share == null ? "—" : `${r.d.high_share.toFixed(1)}%`}
+                  </td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", color: colors.muted,
+                               fontVariantNumeric: "tabular-nums" }}>
+                    {r.d.fwd["20"] == null ? "—" : `${r.d.fwd["20"].toFixed(1)}%`}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{ marginTop: 6, fontSize: 10.5, color: colors.axis, lineHeight: 1.65 }}>
+            2026 年占比 {t.absolute.by_year.find((y) => y.year === "2026")?.share ?? 0}%
+            → {t.relative.by_year.find((y) => y.year === "2026")?.share ?? 0}%
+            ｜ 2024 年 {t.absolute.by_year.find((y) => y.year === "2024")?.share ?? 0}%
+            → {t.relative.by_year.find((y) => y.year === "2024")?.share ?? 0}%
+            <br />{t.note}
+          </div>
+          <div style={{ marginTop: 6, fontSize: 11, fontWeight: 600, color: "#b9770e", lineHeight: 1.65 }}>
+            ⚠️ {t.verdict}
+          </div>
+        </div>
+      )}
+
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, margin: "2px 0 12px" }}>
         {blocks.map((b) => (
           <div key={b.label} style={{
@@ -1079,6 +1254,408 @@ function ValuationCard({
           口径提醒：这里是<strong>全 A 股 PE 中位数的 5 年滚动分位</strong>，与市面上按中证 800
           或等权口径算的「估值星级」并不等价，绝对值不可直接对照；看趋势与相对位置即可。
           估值只说明「贵不贵」，不说明「会不会买」—— 与资金流叠加才有意义。
+        </span>
+      </Note>
+    </div>
+  );
+}
+
+/* ── 一档弹性判据 ──────────────────────────────────────────────── */
+function ElasticityCard({
+  e, colors,
+}: {
+  e: EtfFlowDashboard["elasticity"] | undefined;
+  colors: ReturnType<typeof useTheme>["colors"];
+}) {
+  const members = e?.members ?? [];
+  const j = e?.judge;
+  const sf = e?.sign_flag;
+  const av = e?.availability;
+  const avState = av?.state ?? "ok";
+  const avDisabled = avState === "disabled";
+  const avDegraded = avState === "degraded";
+  const curBand = (e?.bands ?? []).find((b) => b.label === j?.band);
+  const pitTop = (e?.bands ?? []).find((b) => b.label === ">2.2×");
+  const sampleTop = (e?.bands_sample ?? []).find((b) => b.label === ">2.2×");
+  const pit = e?.pit;
+
+  const opt = useMemo<EChartsOption>(() => {
+    const pts = e?.recent ?? [];
+    return {
+      grid: { left: 38, right: 10, top: 18, bottom: 22 },
+      tooltip: {
+        backgroundColor: colors.card, borderColor: colors.border,
+        textStyle: { color: colors.text, fontSize: 12 },
+        formatter: (ps) => {
+          const arr = ps as unknown as { dataIndex: number }[];
+          const i = arr[0]?.dataIndex;
+          const x = pts[i];
+          if (!x) return "";
+          return `<div style="font-size:11px;color:${colors.muted};margin-bottom:3px">${x.date}</div>`
+            + `成交额 <b>${f1(x.amount)}</b> 亿 · 基准 ${x.base == null ? "—" : f1(x.base)} 亿<br/>`
+            + `倍数 <b>${x.mult == null ? "—" : x.mult.toFixed(2) + "×"}</b>`
+            + (x.net == null ? "" : ` · 净申购 <b>${sgn(x.net)}${f1(x.net)}</b> 亿`);
+        },
+      },
+      xAxis: {
+        type: "category",
+        data: pts.map((x) => x.date.slice(5)),
+        axisLine: { lineStyle: { color: colors.border } },
+        axisTick: { show: false },
+        axisLabel: { color: colors.axis, fontSize: 9, hideOverlap: true,
+                     interval: (i: number) => i % 4 === 0 || i === pts.length - 1 },
+      },
+      yAxis: {
+        type: "value", min: 0,
+        axisLabel: { color: colors.axis, fontSize: 9, formatter: "{value}×" },
+        splitLine: { lineStyle: { color: colors.border } },
+        splitNumber: 3,
+      },
+      series: [{
+        type: "bar", barWidth: "58%",
+        data: pts.map((x) => ({
+          value: x.mult,
+          itemStyle: {
+            color: x.mult == null ? rgba(colors.axis, 0.25)
+              : x.mult >= 2.2 ? colors.up
+                : x.mult >= 1.6 ? rgba(colors.up, 0.72)
+                  : x.mult >= 1.0 ? rgba(colors.up, 0.34)
+                    : rgba(colors.axis, 0.45),
+            borderRadius: [2, 2, 0, 0],
+          },
+        })),
+        markLine: {
+          silent: true, symbol: "none", animation: false,
+          lineStyle: { color: colors.axis, type: "dashed", width: 1, opacity: 0.55 },
+          label: { show: false },
+          data: [{ yAxis: 1.0 }, { yAxis: 2.2 }],
+        },
+      }],
+    };
+  }, [e, colors]);
+
+  const trendOpt = useMemo<EChartsOption>(() => {
+    const pts = e?.trend ?? [];
+    return {
+      grid: { left: 36, right: 12, top: 12, bottom: 20 },
+      tooltip: {
+        trigger: "axis",
+        backgroundColor: colors.card, borderColor: colors.border,
+        textStyle: { color: colors.text, fontSize: 12 },
+        formatter: (ps) => {
+          const arr = ps as unknown as { axisValue: string; value: number }[];
+          const a0 = arr?.[0];
+          return a0 ? `${a0.axisValue}　弹性 b = <b>${Number(a0.value).toFixed(2)}</b>` : "";
+        },
+      },
+      xAxis: {
+        type: "category",
+        data: pts.map((x) => x.date.slice(2, 7)),
+        axisLine: { lineStyle: { color: colors.border } },
+        axisTick: { show: false },
+        axisLabel: { color: colors.axis, fontSize: 9, hideOverlap: true,
+                     interval: (i: number) => i % 30 === 0 || i === pts.length - 1 },
+      },
+      yAxis: {
+        type: "value", min: -1, max: 1,
+        axisLabel: { color: colors.axis, fontSize: 9 },
+        splitLine: { lineStyle: { color: colors.border } },
+        splitNumber: 2,
+      },
+      series: [{
+        type: "line", data: pts.map((x) => x.b),
+        showSymbol: false, smooth: false,
+        lineStyle: { color: colors.accent, width: 1.5 },
+        itemStyle: { color: colors.accent },
+        // 不铺面积：曲线穿过 0 轴时，面积会变成「线下全是填充」，
+        // 视觉上像是负值区更强，实际没有含义
+        markLine: {
+          silent: true, symbol: "none", animation: false,
+          label: { show: false },
+          data: [
+            { yAxis: 0, lineStyle: { color: colors.muted, type: "solid", width: 1 } },
+            { yAxis: 0.8, lineStyle: { color: colors.axis, type: "dashed", width: 1, opacity: 0.6 } },
+          ],
+        },
+      }],
+    };
+  }, [e, colors]);
+
+  if (!e?.available || !j) return null;
+
+  const toneOf = (v: string | null) =>
+    v === "高度疑似" ? colors.up
+      : v === "疑似入场" ? "#b9770e"
+        : v === "有异动" ? "#b9770e"
+          : colors.muted;
+
+  const tone = toneOf(j.verdict);
+  const sfTone = sf?.tone === "up" ? colors.up : sf?.tone === "down" ? colors.down
+    : sf?.tone === "warn" ? "#b9770e" : colors.muted;
+  const sfBg = sf?.tone === "warn" ? "#b9770e0c" : rgba(
+    sf?.tone === "up" ? colors.up : sf?.tone === "down" ? colors.down : colors.border, 0.05);
+
+  const tier1 = members.filter((m) => m.tier === "一档");
+  const tier2n = members.length - tier1.length;
+
+  return (
+    <div style={cardStyle(colors)}>
+      <CardHead
+        title="一档弹性判据 · 成交额能否反推申购"
+        tag={`${e.as_of ?? ""} · 一档 ${tier1.length} 只 / 二档 ${tier2n} 只 · 占全池成交额 ${e.tier1_share ?? "—"}% · PIT 口径`}
+        colors={colors}
+      />
+
+      {av && avState !== "ok" && (
+        <div style={{
+          display: "flex", alignItems: "baseline", gap: 8,
+          background: avDisabled ? rgba(colors.down, 0.07) : "rgba(185,119,14,0.07)",
+          borderLeft: `3px solid ${avDisabled ? colors.down : "#b9770e"}`,
+          borderRadius: 6, padding: "7px 10px", margin: "2px 0 10px",
+          fontSize: 11.5, lineHeight: 1.65, color: colors.text,
+        }}>
+          <b style={{ color: avDisabled ? colors.down : "#b9770e", flexShrink: 0 }}>
+            {avDisabled ? "判据停用" : "判据降级"}
+          </b>
+          <span style={{ color: colors.muted }}>{av.note}</span>
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "250px 1fr", gap: 18,
+                    alignItems: "center", margin: "2px 0 4px" }}>
+        <div>
+          <div style={{ fontSize: 11, color: colors.muted, marginBottom: 2 }}>
+            一档 {tier1.length} 只合计放量倍数
+          </div>
+          <div style={{
+            fontSize: 32, fontWeight: 700, lineHeight: 1.1, color: tone,
+            fontVariantNumeric: "tabular-nums",
+          }}>
+            {j.mult == null ? "—" : `${j.mult.toFixed(2)}×`}
+          </div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: tone, marginTop: 4 }}>
+            {j.verdict ?? "—"}
+          </div>
+          <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 6, lineHeight: 1.7 }}>
+            成交 <b style={{ color: colors.text }}>{f1(j.amount)}</b> 亿
+            ／ 20 日中位 {j.base == null ? "—" : f1(j.base)} 亿
+            <br />
+            当日净申购 <b style={{ color: (j.net ?? 0) >= 0 ? colors.up : colors.down }}>
+              {j.net == null ? "待公布" : `${sgn(j.net)}${f1(j.net)}`}
+            </b> 亿
+            <br />
+            历史同档「国家队级」概率{" "}
+            <b style={{ color: colors.text }}>
+              {j.prob == null ? "—"
+                : curBand?.hits === 0 && curBand.ci_hi != null
+                  ? `<${curBand.ci_hi.toFixed(1)}%`
+                  : `${j.prob.toFixed(1)}%`}
+            </b>
+            <span style={{ color: colors.axis }}>（基准 {j.base_rate ?? "—"}%）</span>
+            {curBand?.ci_lo != null && curBand.ci_hi != null && (
+              <span style={{ color: colors.axis }}>
+                <br />95% 区间 {curBand.ci_lo.toFixed(1)}–{curBand.ci_hi.toFixed(1)}%
+              </span>
+            )}
+          </div>
+        </div>
+        <EChart option={opt} height={186} />
+      </div>
+
+      <div style={{ overflowX: "auto", marginTop: 6,
+                    opacity: avDisabled ? 0.42 : avDegraded ? 0.85 : 1 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11.5 }}>
+          <thead>
+            <tr style={{ color: colors.axis, fontSize: 10.5 }}>
+              <th style={{ textAlign: "left", padding: "0 8px 6px 2px", fontWeight: 500 }}>倍数档</th>
+              <th style={{ textAlign: "right", padding: "0 8px 6px", fontWeight: 500, width: 56 }}>n</th>
+              <th style={{ textAlign: "right", padding: "0 8px 6px", fontWeight: 500, width: 92 }}>净申购中位</th>
+              <th style={{ textAlign: "right", padding: "0 8px 6px", fontWeight: 500, width: 72 }}>为正</th>
+              <th style={{ textAlign: "right", padding: "0 8px 6px", fontWeight: 500, width: 96 }}>国家队级</th>
+              <th style={{ textAlign: "right", padding: "0 8px 6px", fontWeight: 500, width: 104 }}>95% 区间</th>
+              <th style={{ textAlign: "right", padding: "0 8px 6px", fontWeight: 500, width: 64 }}>提升</th>
+              <th style={{ textAlign: "left", padding: "0 2px 6px 10px", fontWeight: 500 }}>判定</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(e.bands ?? []).map((b) => {
+              const cur = b.label === j.band;
+              return (
+                <tr key={b.label} style={{
+                  borderTop: `1px solid ${colors.border}`,
+                  background: cur ? rgba(colors.accent, 0.06) : undefined,
+                }}>
+                  <td style={{ padding: "5px 8px 5px 2px", color: colors.text,
+                               fontVariantNumeric: "tabular-nums", fontWeight: cur ? 700 : 400 }}>
+                    {b.label}
+                    {cur && <span style={{ color: colors.accent, marginLeft: 5, fontSize: 10 }}>← 当前</span>}
+                  </td>
+                  <td style={{ padding: "5px 8px", textAlign: "right", color: colors.muted,
+                               fontVariantNumeric: "tabular-nums" }}>{b.n}</td>
+                  <td style={{ padding: "5px 8px", textAlign: "right",
+                               color: (b.median ?? 0) >= 0 ? colors.up : colors.down,
+                               fontVariantNumeric: "tabular-nums" }}>
+                    {b.median == null ? "—" : `${sgn(b.median)}${f1(b.median)}`}
+                  </td>
+                  <td style={{ padding: "5px 8px", textAlign: "right", color: colors.muted,
+                               fontVariantNumeric: "tabular-nums" }}>
+                    {b.positive == null ? "—" : `${b.positive.toFixed(0)}%`}
+                  </td>
+                  <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 600,
+                               color: (b.big ?? 0) >= 20 ? colors.up : colors.text,
+                               fontVariantNumeric: "tabular-nums" }}>
+                    {b.big == null ? "—"
+                      : b.hits === 0 && b.ci_hi != null
+                        ? `<${b.ci_hi.toFixed(1)}%`
+                        : `${b.big.toFixed(1)}%`}
+                  </td>
+                  <td style={{ padding: "5px 8px", textAlign: "right", color: colors.axis,
+                               fontSize: 10.5, fontVariantNumeric: "tabular-nums" }}>
+                    {b.ci_lo == null || b.ci_hi == null
+                      ? "—" : `${b.ci_lo.toFixed(1)}–${b.ci_hi.toFixed(1)}`}
+                  </td>
+                  <td style={{ padding: "5px 8px", textAlign: "right", color: colors.muted,
+                               fontVariantNumeric: "tabular-nums" }}>
+                    {b.lift == null ? "—" : `${b.lift.toFixed(1)}×`}
+                  </td>
+                  <td style={{ padding: "5px 2px 5px 10px", color: toneOf(b.verdict), fontWeight: cur ? 700 : 400 }}>
+                    {b.verdict}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ fontSize: 10.5, color: colors.axis, marginTop: 6, lineHeight: 1.65 }}>
+        本表是 <b style={{ color: colors.muted }}>point-in-time 口径</b>：每个历史交易日只用截至当天的数据
+        重选一档名单再算倍数，不含未来信息。有效 {pit?.valid_days ?? "—"} / {pit?.total_days ?? "—"} 天
+        （覆盖 {pit?.coverage ?? "—"}%，其余日子选不满一档或历史窗口不足，直接跳过）；
+        当时一档只数中位 {pit?.tier1_median ?? "—"} 只，与今天名单平均重合 {pit?.overlap_mean ?? "—"} 只。
+        <br />
+        95% 区间为 Wilson 区间；0 次命中写成「&lt;上界」而不是 0%。
+        {sampleTop && pitTop && (
+          <span> 对照：拿<b>今天名单回溯全历史</b>的样本内口径会给出 {sampleTop.big?.toFixed(1)}% /
+            {sampleTop.lift?.toFixed(1)}×，PIT 口径只有 {pitTop.big?.toFixed(1)}% /
+            {pitTop.lift?.toFixed(1)}× —— 选择偏差把 lift 高估了
+            {sampleTop.lift && pitTop.lift
+              ? ` ${(sampleTop.lift / pitTop.lift).toFixed(1)} 倍` : "不少"}。</span>
+        )}
+        {avDisabled && <b style={{ color: colors.down }}> 判据已停用，本表不参与今日结论。</b>}
+      </div>
+
+      {sf && (
+        <div style={{
+          background: sfBg, border: `1px solid ${sfTone}33`,
+          borderLeft: `3px solid ${sfTone}`,
+          borderRadius: 7, padding: "8px 11px", marginTop: 10,
+          fontSize: 11.5, lineHeight: 1.7, color: colors.text,
+        }}>
+          <b style={{ color: sfTone }}>
+            {sf.regime === "regime_shift" ? "状态切换"
+              : sf.regime === "aligned_sell" ? "判据反向"
+                : sf.regime === "aligned_buy" ? "判据有效" : "关系不稳"}
+          </b>
+          <span style={{ color: colors.muted }}> · {sf.note}</span>
+        </div>
+      )}
+
+      <div style={{ marginTop: 10 }}>
+        <div style={{
+          fontSize: 11, color: colors.muted, marginBottom: 2,
+          display: "flex", justifyContent: "space-between", gap: 10,
+        }}>
+          <span>一档合计的滚动 60 日弹性 b（近 250 个交易日）</span>
+          <span style={{ color: colors.axis }}>
+            虚线 0.8 = 一档门槛 ｜ 实线 0 = 方向分界
+          </span>
+        </div>
+        <EChart option={trendOpt} height={140} />
+      </div>
+
+      <div style={{ overflowX: "auto", marginTop: 10 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11.5 }}>
+          <thead>
+            <tr style={{ color: colors.axis, fontSize: 10.5 }}>
+              <th style={{ textAlign: "left", padding: "0 8px 5px 2px", fontWeight: 500, width: 92 }}>代码</th>
+              <th style={{ textAlign: "left", padding: "0 8px 5px", fontWeight: 500 }}>名称</th>
+              <th style={{ textAlign: "right", padding: "0 8px 5px", fontWeight: 500, width: 60 }}>b(21)</th>
+              <th style={{ textAlign: "right", padding: "0 8px 5px", fontWeight: 500, width: 60 }}>b(60)</th>
+              <th style={{ textAlign: "right", padding: "0 8px 5px", fontWeight: 500, width: 64 }}>b(120)</th>
+              <th style={{ textAlign: "right", padding: "0 8px 5px", fontWeight: 500, width: 56 }}>R²(60)</th>
+              <th style={{ textAlign: "right", padding: "0 2px 5px 8px", fontWeight: 500, width: 78 }}>规模</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tier1.map((m) => (
+              <tr key={m.symbol} style={{ borderTop: `1px solid ${colors.border}` }}>
+                <td style={{ padding: "4px 8px 4px 2px", color: colors.muted,
+                             fontVariantNumeric: "tabular-nums" }}>{m.symbol}</td>
+                <td style={{ padding: "4px 8px", color: colors.text }}>
+                  {m.name}
+                  {m.marginal && (
+                    <span style={{ fontSize: 10, color: "#b9770e", marginLeft: 6 }}>边缘</span>
+                  )}
+                </td>
+                {[m.b21, m.b60, m.b120].map((v, i) => (
+                  <td key={i} style={{
+                    padding: "4px 8px", textAlign: "right",
+                    color: v == null ? colors.axis : v >= 0.8 ? colors.text : colors.muted,
+                    fontVariantNumeric: "tabular-nums",
+                  }}>{v == null ? "—" : v.toFixed(2)}</td>
+                ))}
+                <td style={{ padding: "4px 8px", textAlign: "right", color: colors.muted,
+                             fontVariantNumeric: "tabular-nums" }}>
+                  {m.r2_60 == null ? "—" : m.r2_60.toFixed(2)}
+                </td>
+                <td style={{ padding: "4px 2px 4px 8px", textAlign: "right", color: colors.muted,
+                             fontVariantNumeric: "tabular-nums" }}>
+                  {m.scale ? `${m.scale.toLocaleString()}` : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {(() => {
+        // 二档按 b60 降序展示，否则顺序毫无意义（原顺序是 hits+b21，b60 会忽高忽低）
+        const t2 = members.filter((m) => m.tier !== "一档")
+          .slice()
+          .sort((a, x) => (x.b60 ?? -9) - (a.b60 ?? -9))
+          .slice(0, 5);
+        if (!t2.length) return null;
+        return (
+          <div style={{
+            marginTop: 6, fontSize: 11, color: colors.axis, lineHeight: 1.7,
+          }}>
+            二档 {members.length - tier1.length} 只（成交额与申购已脱钩，只能等收盘看份额）：
+            {t2.map((m, i) => (
+              <span key={m.symbol}>
+                {i > 0 ? " · " : " "}
+                {m.name.replace(/ETF|成份/g, "")}
+                <span style={{ color: colors.muted }}> b60={m.b60 == null ? "—" : m.b60.toFixed(2)}</span>
+              </span>
+            ))}
+            {members.length - tier1.length > 5 ? " …" : ""}
+          </div>
+        );
+      })()}
+
+      <Note colors={colors} label="这张表在讲什么">
+        盘中拿不到份额，只能看成交额。但<strong>成交额能不能反推申购，要逐只检验</strong>：
+        把「当日成交额 → 当日净申购」做回归，弹性 b 接近 1、R² 接近 1 的，说明成交额基本
+        就是申购的镜像，盘中放量可以直接读；b 低、R² 低的，成交额里混了大量二级换手，
+        只能等收盘看份额。
+        <br />
+        一档的门槛是<strong>三个窗口（21/60/120 日）里至少两个</strong>满足 b≥0.80 且 R²≥0.50。
+        用多数票而不是单一窗口，是因为 21 个点的回归 R² 容易虚高，而 120 日窗口一旦跨进
+        另一种资金状态就会失真 —— 标了「边缘」的那几只，b 就贴着 0.80 上下摆，
+        一天数据就能让它翻档，别当信号看。
+        <br />
+        <span style={{ color: colors.axis }}>
+          口径提醒：这里的「国家队级」指一档合计单日净申购 &gt; 100 亿，比第 02 节「20 只托底日」
+          更严（池子更小、只含主力通道），两个数不能直接比。
         </span>
       </Note>
     </div>
@@ -1216,6 +1793,48 @@ function NsiCard({
       </div>
 
       {(() => {
+        const w = nsi.window;
+        if (!w || !w.active) return null;
+        const ratio = w.hold_days ? Math.min(1, w.used / w.hold_days) : 0;
+        const tone = w.weakened ? "#b9770e" : colors.accent;
+        return (
+          <div style={{ margin: "0 0 12px" }}>
+            <div style={{
+              display: "flex", alignItems: "baseline", gap: 10,
+              flexWrap: "wrap", marginBottom: 5,
+            }}>
+              <span style={{ fontSize: 11.5, fontWeight: 600, color: colors.text }}>加仓窗口</span>
+              {/* 已用天数由左侧 KPI「已加仓 15 个交易日」和进度条表达，
+                  这里只讲「还剩多少、哪天到期」，避免同一个数字连说两遍 */}
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: tone }}>
+                剩 {w.remaining} 个交易日
+              </span>
+              {w.expire && (
+                <span style={{ fontSize: 11, color: colors.axis }}>· {w.expire} 到期</span>
+              )}
+              <span style={{ fontSize: 10.5, color: colors.axis, marginLeft: "auto" }}>
+                单向状态机：score 低不减仓，到期自然回落
+              </span>
+            </div>
+            {/* 底色必须带一点 tone 色：用 tableStripe（近白）时，白色的卡片上
+                看不出「还剩一截」，进度条会一直像走满了 */}
+            <div style={{
+              height: 6, background: rgba(tone, 0.2),
+              borderRadius: 3, overflow: "hidden",
+            }}>
+              <div style={{
+                width: `${ratio * 100}%`, height: "100%",
+                background: tone, opacity: 0.72, borderRadius: 3,
+              }} />
+            </div>
+            <div style={{
+              fontSize: 11.5, color: colors.muted, marginTop: 5, lineHeight: 1.6,
+            }}>{w.note}</div>
+          </div>
+        );
+      })()}
+
+      {(() => {
         const c = nsi.consistency;
         if (!c) return null;
         const tone = c.status === "aligned"
@@ -1254,7 +1873,14 @@ function NsiCard({
         );
       })()}
 
-      <EChart option={opt} height={272} />
+      {(nsi.history?.length ?? 0) > 0 ? (
+        <EChart option={opt} height={272} />
+      ) : (
+        <Empty colors={colors}>
+          NSI 历史序列暂不可用 —— 请检查 data/research/nsi_signal.csv 是否已生成且可读
+          （历史文件缺日期列时按交易日历尾部对齐）。
+        </Empty>
+      )}
       <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 6, lineHeight: 1.7 }}>
         上：score 与触发阈值（{f2(hi)}）；下：建议仓位。NSI 只做加法——score 低不会触发减仓，
         加仓窗口在最后一次触发后自然滚动 20 个交易日。{nsi.note}
@@ -1275,8 +1901,19 @@ function MinuteCard({
   const opt = useMemo<EChartsOption>(() => {
     const n = minute.count || 0;
     const labels = minute.labels.slice(0, n);
-    const hot = minute.today_amount.map((v, i) =>
-      v != null && minute.avg20_amount[i] > 0 && v / minute.avg20_amount[i] > 2.6);
+    const amt = minute.today_amount.slice(0, n);
+    // 09:31 含集合竞价，单根常是其余分钟的几倍到十几倍。让它去撑 Y 轴，
+    // 另外 239 根会被压成贴地的一条线 —— 图上有柱子，但等于看不见。
+    // 按「除首分钟外的最大值」定上界，首柱截断显示并在柱顶标真实值，
+    // tooltip 始终给原始数值，不伪造数据。
+    const rest = amt.slice(1).filter((v): v is number => v != null && v > 0);
+    const restMax = rest.length ? Math.max(...rest) : 20;
+    const yMax = Math.max(20, Math.ceil(restMax * 1.25 / 5) * 5);
+    // 脉冲判定加绝对量门槛：均量接近 0 时，0.1 亿也能算出「10 倍放量」，
+    // 那是噪声不是资金进场。
+    const hot = amt.map((v, i) =>
+      v != null && v >= 5 && minute.avg20_amount[i] > 0.5
+      && v / minute.avg20_amount[i] > 2.6);
     return {
       grid: [
         { left: 54, right: 56, top: 30, height: 150 },
@@ -1320,7 +1957,7 @@ function MinuteCard({
           splitLine: { lineStyle: { color: colors.border } },
         },
         {
-          gridIndex: 1,
+          gridIndex: 1, min: 0, max: yMax,
           axisLabel: { color: colors.axis, fontSize: 10 },
           splitLine: { lineStyle: { color: colors.border } },
         },
@@ -1349,9 +1986,13 @@ function MinuteCard({
         {
           name: "分钟成交额", type: "bar", xAxisIndex: 1, yAxisIndex: 1,
           barWidth: "72%",
-          data: minute.today_amount.map((v, i) => ({
-            value: v,
+          data: amt.map((v, i) => ({
+            value: v == null ? null : Math.min(v, yMax),
             itemStyle: { color: hot[i] ? colors.up : `${rgba(colors.up,0.30)}`, borderRadius: [1, 1, 0, 0] },
+            ...(v != null && v > yMax ? {
+              label: { show: true, position: "top", formatter: `${f1(v)}↑`,
+                       color: colors.up, fontSize: 10, fontWeight: 600 },
+            } : {}),
           })),
         },
         {
@@ -1367,6 +2008,9 @@ function MinuteCard({
     ? `采样自 ${minute.labels[meta.partial_from]}，此前无数据`
     : meta.count ? `${minute.labels[0]} – ${minute.labels[meta.count - 1]}`
       : (meta.is_today ? "今日暂无分钟数据" : "等待盘中数据");
+  // 柱子序列必须与分钟轴等长。后端曾把日度序列覆盖进这个字段，
+  // 结果 ECharts 收不到合法数值，整片柱子静默消失、只剩坐标轴。
+  const barsOk = minute.today_amount.length >= (minute.count || 0) && minute.count > 0;
 
   return (
     <div style={cardStyle(colors)}>
@@ -1376,11 +2020,18 @@ function MinuteCard({
           暂无分钟数据 —— 交易时段内服务会自动逐分钟采集；
           已收盘的话点状态栏「拉官方分钟线」立即补
         </Empty>
+      ) : !barsOk ? (
+        <Empty colors={colors}>
+          分钟成交额序列长度异常（{minute.today_amount.length} 条 / 应有 {minute.count} 条），
+          柱状图已停用以免画出空图。
+        </Empty>
       ) : <EChart option={opt} height={372} />}
       <Note colors={colors}>
-        一天里 20 只重点 ETF 每一分钟在二级市场的真实成交，加总成一根根柱子；折线是上证综指同步点位，虚线是昨收。
-        它回答的是「今天资金有没有在动」——柱子突然拔高、又伴随指数向上，往往是资金进场；柱子放量但指数不动或下跌，
-        则更像托底或对倒。深红色标记的是该分钟成交额超过 20 日同期均量 2.6 倍的时刻，是全天最值得留意的脉冲。
+        下半图每一根柱子 = 20 只重点 ETF 该分钟在二级市场的真实成交额之和，灰线是过去 20 天同一分钟的均量；
+        上半图蓝线是上证综指同步点位，虚线是昨收。它回答的是「今天资金有没有在动」——柱子突然拔高、又伴随指数向上，
+        往往是资金进场；柱子放量但指数不动或下跌，则更像托底或对倒。
+        深红色标记的是成交额 ≥ 5 亿且超过 20 日同期均量 2.6 倍的时刻（加绝对量门槛是为了避免均量趋近 0 时把噪声算成脉冲）。
+        09:31 含集合竞价，量级常是其余分钟的十几倍，图上按轴上界截断并在柱顶标出真实值；悬停任意柱子可看原始数值。
       </Note>
     </div>
   );
