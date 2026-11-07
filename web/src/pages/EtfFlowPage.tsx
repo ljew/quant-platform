@@ -1622,8 +1622,10 @@ function NsiCard({
                 单向状态机：score 低不减仓，到期自然回落
               </span>
             </div>
+            {/* 底色必须带一点 tone 色：用 tableStripe（近白）时，白色的卡片上
+                看不出「还剩一截」，进度条会一直像走满了 */}
             <div style={{
-              height: 6, background: colors.tableStripe,
+              height: 6, background: rgba(tone, 0.2),
               borderRadius: 3, overflow: "hidden",
             }}>
               <div style={{
