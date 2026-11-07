@@ -422,3 +422,21 @@ def news_event(payload: NewsTestPayload, db: Session = Depends(get_db)):
     """极端情绪日 → 未来 N 日指数收益检验（择时有效性）。"""
     return news_event_test(db, extreme_pct=payload.extreme_pct, horizon=payload.horizon,
                            source=payload.source)
+
+@router.get("/social/heat")
+def social_heat(db: Session = Depends(get_db), days: int = 30):
+    """社交关注度（雪球 A 股热股 / 微博热搜）近 N 天。
+
+    只有热度没有正文，故不做多空打分；`n_finance` 是命中财经关键词的条数。
+    """
+    from app.models import SocialHeatDaily
+
+    rows = db.execute(
+        select(SocialHeatDaily).order_by(SocialHeatDaily.date.desc())
+        .limit(min(max(days, 1) * 3, 300))
+    ).scalars().all()
+    return [
+        {"date": r.date.isoformat(), "source": r.source, "n_items": r.n_items,
+         "n_finance": r.n_finance, "heat_total": r.heat_total, "heat_top10": r.heat_top10}
+        for r in rows
+    ]

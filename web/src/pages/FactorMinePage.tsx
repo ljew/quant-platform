@@ -36,6 +36,10 @@ export default function FactorMinePage() {
   const [newsReport, setNewsReport] = useState<NewsEventReport | null>(null);
   // 数据源：both=合并（默认，样本最多）/ news=东财新闻 / mp=公众号语料
   const [newsSource, setNewsSource] = useState<"news" | "mp" | "both">("both");
+  // 社交关注度（雪球/微博）：只有热度、没正文，所以只展示不参与打分
+  const [socialHeat, setSocialHeat] = useState<
+    { date: string; source: string; n_items: number; n_finance: number; heat_total: number; heat_top10: number }[]
+  >([]);
   // both 没有单一时序，图表退化为公众号
   const chartSource: "news" | "mp" = newsSource === "news" ? "news" : "mp";
   // AI 自然语言生成（生成后需人工确认，不自动挖掘）
@@ -163,6 +167,10 @@ export default function FactorMinePage() {
     api.factorNewsDaily(600, chartSource).then(setNewsSeries).catch(() => {});
   }, [chartSource]);
 
+  useEffect(() => {
+    api.factorSocialHeat(7).then(setSocialHeat).catch(() => {});
+  }, []);
+
   const runNewsTest = async () => {
     setNewsTesting(true);
     try {
@@ -246,6 +254,21 @@ export default function FactorMinePage() {
           )}
           {newsReport && !newsReport.ok && (
             <div style={{ marginTop: 8, fontSize: 12.5, color: colors.up }}>{newsReport.error}</div>
+          )}
+          {socialHeat.length > 0 && (
+            <div style={{
+              marginTop: 10, paddingTop: 10, borderTop: `1px solid ${colors.border}`,
+              fontSize: 11.5, color: colors.muted, display: "flex", gap: 18, flexWrap: "wrap",
+            }}>
+              <span style={{ fontWeight: 600 }}>社交关注度</span>
+              {socialHeat.slice(0, 4).map((r) => (
+                <span key={r.date + r.source}>
+                  {r.date.slice(5)} {r.source}：{r.n_items} 条
+                  {r.source === "微博" ? `（财经 ${r.n_finance}）` : ` · 热度 ${Math.round(r.heat_total)}`}
+                </span>
+              ))}
+              <span style={{ opacity: 0.75 }}>仅热度、无正文，不参与多空打分</span>
+            </div>
           )}
           <div style={{ marginTop: 8, fontSize: 11.5, color: colors.muted }}>
             看多日 = 净情绪 ≥ 前 10% 分位；观察其后续 {newsHorizon} 日中证800 收益是否系统性跑赢基线。

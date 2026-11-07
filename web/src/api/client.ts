@@ -158,6 +158,9 @@ export const api = {
   /** 极端情绪日 → 未来 N 日指数收益检验。source 支持 news / mp / both 合并 */
   factorNewsTest: (extreme_pct: number, horizon: number, source: "news" | "mp" | "both" = "both") =>
     post<NewsEventReport>("/factor/news/event-test", { extreme_pct, horizon, source }),
+  /** 社交关注度（雪球 A 股热股 / 微博热搜）；只有热度、无正文，不做多空打分 */
+  factorSocialHeat: (days = 30) =>
+    get<{ date: string; source: string; n_items: number; n_finance: number; heat_total: number; heat_top10: number }[]>(`/factor/social/heat?days=${days}`),
   // AI 因子生成（自然语言 ↔ 表达式）
   factorAiStatus: () => get<AiStatus>("/factor/ai/status"),
   factorAiGenerate: (text: string, max_retry = 3) =>
@@ -1071,6 +1074,69 @@ export interface EtfFlowValuation {
   support_yearly?: { year: string; n: number; median: number }[];
 }
 
+/** 一档弹性判据：成交额能否反推申购（分层依据是逐只回归的弹性 b 与 R²） */
+export interface EtfElasticityMember {
+  symbol: string;
+  name: string;
+  category: string;
+  scale: number;
+  b21: number | null;
+  b60: number | null;
+  b120: number | null;
+  r2_60: number | null;
+  hits: number;          // 三个窗口里达标的个数
+  tier: "一档" | "二档";
+  marginal: boolean;     // 贴着阈值，会随一天数据翻档
+}
+
+export interface EtfElasticityBand {
+  label: string;
+  verdict: string;
+  n: number;
+  median: number | null;
+  positive: number | null;
+  big: number | null;    // 「国家队级净申购」概率 %
+  lift: number | null;   // 相对全体基准的倍数
+}
+
+export interface EtfElasticityDay {
+  date: string;
+  amount: number;
+  base: number | null;
+  mult: number | null;
+  net: number | null;
+}
+
+export interface EtfElasticity {
+  available: boolean;
+  as_of?: string;
+  reason?: string;
+  params?: {
+    windows: number[]; votes: number; b: number; r2: number;
+    base_win: number; big_net: number;
+  };
+  members?: EtfElasticityMember[];
+  tier1?: string[];
+  tier1_count?: number;
+  tier1_share?: number | null;
+  judge?: {
+    amount: number; base: number | null; mult: number | null;
+    net: number | null; band: string | null; verdict: string | null;
+    prob: number | null; lift: number | null; base_rate: number | null;
+  };
+  bands?: EtfElasticityBand[];
+  recent?: EtfElasticityDay[];
+  sign_flag?: {
+    year: number;
+    b_ytd: number | null; r2_ytd: number | null;
+    b_now: number | null; r2_now: number | null;
+    net_sum: number;
+    regime: "regime_shift" | "aligned_sell" | "aligned_buy" | "unclear";
+    tone: "up" | "down" | "warn" | "plain";
+    note: string;
+  };
+}
+
 /** 焦点切换：当日成交额 top3 与前一日的对比 */
 export interface EtfFlowFocusItem {
   symbol: string;
@@ -1157,6 +1223,7 @@ export interface EtfFlowDashboard {
   etf_detail: EtfFlowDetailItem[];
   focus: EtfFlowFocus;
   valuation: EtfFlowValuation;
+  elasticity: EtfElasticity;
   nsi: EtfFlowNsi;
   minute: EtfFlowMinute;
   intraday_15m: EtfFlowSlots;
