@@ -60,7 +60,11 @@ logger = logging.getLogger(__name__)
 INDEX_CODE = "000001.SH"
 HIST_START = "20230101"          # 日度历史起点（净流入需要足够回看窗口筛托底日）
 MIN_LOOKBACK = 25                # 分钟线回看交易日数
-SUPPORT_THRESHOLD = 100.0        # 托底日门槛：单日净流入 > 100 亿
+SUPPORT_THRESHOLD = 100.0        # 托底日主门槛：单日净流入 > 100 亿
+# 复核用的相对门槛：净流入 ÷ 过去 20 日成交额中位。
+# 100 亿是固定金额，但全池成交额 2023→2026 涨了 3.2 倍，同一个门槛在不同年份
+# 不是同一类事件（2023 年 100 亿在 98 分位，2026 年只在 84 分位）。
+REL_SUPPORT_RATIO = 0.35
 CAT_MONTH_DAYS = 22              # 分类矩阵回看交易日数
 # 盘中采样满 2 个点就用当日实时，**不再要求 30 个点**。
 # 门槛定 30 时的实际行为是「服务刚启动的半小时里，你看到的是昨天的数据」——
@@ -1375,6 +1379,23 @@ def build_dashboard(db: Session) -> dict:
         "index_chg": round(float(r.index_chg), 2) if pd.notna(r.index_chg) else 0.0,
     } for r in sup_rows.itertuples()]
 
+    # ── 相对门槛的托底日（复核用，不替代主口径）──
+    # 目的是检验 §5.4「2025–2026 在估值中高位持续买入」是不是「门槛在后期变松」
+    # 造出来的：如果换成随成交额缩放的门槛后 2026 年的占比大幅回落，
+    # 那条结论就不能写成行为模式变化。
+    _turn_med20 = (flow["turnover"].shift(1)
+                   .rolling(20, min_periods=10).median()) if len(flow) else None
+    _rel = flow["net_inflow"] / _turn_med20 if _turn_med20 is not None else None
+    alt_days: list[dict] = []
+    if _rel is not None:
+        _alt = flow.loc[(_rel > REL_SUPPORT_RATIO) & _rel.notna()].copy()
+        _alt = _alt[~_alt["trade_date"].map(excluded)]
+        alt_days = [{
+            "date": f"{r.trade_date[:4]}-{r.trade_date[4:6]}-{r.trade_date[6:]}",
+            "net_inflow": round(float(r.net_inflow), 1),
+            "rel": round(float(_rel.loc[r.Index]), 3),
+        } for r in _alt.itertuples()]
+
     # ── 托底之后：历史上托底日的后市表现 ──
     # 2026-11-07 复核修正：主基准从「上证综指」换成「一档等权净值」。
     # 上证含大量小盘股，与国家队实际买入的大盘宽基 ETF 不是同一类资产；
@@ -1613,8 +1634,10 @@ def build_dashboard(db: Session) -> dict:
     # 螺丝钉那套方法的核心前提是「国家队主要在低估值区动手」。这里用可算的口径
     # 去验证它：把 66 个托底日发生时的估值分位拉出来，看是否真的集中在低位。
     valuation = market_valuation.series(db)
+    _pct_full: dict = {}   # 全日期估值分位，门槛对照时要查相对门槛那批日子
     if valuation.get("available"):
         pct_map = dict(zip(valuation["dates"], valuation["pct_series"]))
+        _pct_full = pct_map
         marks = [{"date": d["date"], "pct": pct_map[d["date"]]}
                  for d in support_days
                  if d["date"] in pct_map and pct_map[d["date"]] is not None]
@@ -1703,6 +1726,61 @@ def build_dashboard(db: Session) -> dict:
             valuation["support_marks"] = []
             valuation["support_pct"] = None
             valuation["support_yearly"] = []
+
+    # ── 门槛口径对照（2026-11-07 复核）──
+    # 主口径「净流入 > 100 亿」是固定金额；全池成交额中位 2023 年 167 亿、
+    # 2026 年 537 亿，100 亿在两年里的异常程度完全不同。这里并排给出相对口径，
+    # 直接回答「§5.4 的年度模式是不是门槛漂移造出来的」。
+    def _thr_summary(days: list[dict]) -> dict:
+        _by: dict[str, int] = {}
+        for x in days:
+            y = x["date"][:4]
+            _by[y] = _by.get(y, 0) + 1
+        _pv = pd.Series([_pct_full[x["date"]] for x in days
+                         if x["date"] in _pct_full
+                         and _pct_full[x["date"]] is not None])
+        _fwd: dict[str, float | None] = {}
+        for _n in FWD_HORIZONS:
+            _vals = [_r_nav(nav_main, _pos.get(x["date"].replace("-", "")), _n)
+                     for x in days]
+            _vals = [v for v in _vals if v is not None]
+            _fwd[str(_n)] = (round(float((pd.Series(_vals) > 0).mean() * 100), 1)
+                             if _vals else None)
+        return {
+            "count": len(days),
+            "by_year": [{"year": y, "n": c,
+                         "share": round(c / len(days) * 100, 1) if days else 0.0}
+                        for y, c in sorted(_by.items())],
+            "pct_median": round(float(_pv.median()), 1) if len(_pv) else None,
+            "pct_n": len(_pv),
+            "low_share": round(float((_pv <= 20).mean() * 100), 1) if len(_pv) else None,
+            "high_share": round(float((_pv >= 80).mean() * 100), 1) if len(_pv) else None,
+            "fwd": _fwd,
+        }
+
+    threshold_compare = {
+        "absolute": _thr_summary(support_days),
+        "relative": _thr_summary(alt_days),
+        "ratio": REL_SUPPORT_RATIO,
+        "note": ("固定 100 亿门槛在成交额逐年放大后越变越松：2023 年它处于当年净流入 "
+                 "98 分位，2026 年只在 84 分位。相对口径把每年的量级拉齐；"
+                 "两套年度占比若明显不同，说明「按年行为模式变化」的结论不稳。"),
+    }
+    _abs, _rel_t = threshold_compare["absolute"], threshold_compare["relative"]
+    _gap = (abs((_abs["pct_median"] or 0) - (_rel_t["pct_median"] or 0))
+            if _abs["pct_median"] is not None and _rel_t["pct_median"] is not None
+            else None)
+    threshold_compare["pct_median_gap"] = (round(_gap, 1) if _gap is not None else None)
+    if _gap is not None and _gap >= 20:
+        threshold_compare["verdict"] = (
+            f"两套门槛给出的托底时估值位置相差 {_gap:.0f}pp（"
+            f"{_abs['pct_median']:.1f}% → {_rel_t['pct_median']:.1f}%）。"
+            "「国家队不只在低估值出手 / 2025–26 转向中高位维稳」这类年度模式结论"
+            "对门槛口径高度敏感，不能当成行为变化，更可能是固定金额门槛在成交额"
+            "放大后逐年变松造成的。")
+    else:
+        threshold_compare["verdict"] = (
+            "两套门槛给出的估值位置接近，年度模式结论对口径不敏感，可以保留。")
 
     f_today, f_prev = _top3(active), _top3(cmp_prev)
     focus = {
@@ -1812,6 +1890,7 @@ def build_dashboard(db: Session) -> dict:
         "etf_detail": etf_detail,
         "focus": focus,
         "valuation": valuation,
+        "threshold_compare": threshold_compare,
         "elasticity": elasticity,
         "minute": {
             "labels": LABELS,

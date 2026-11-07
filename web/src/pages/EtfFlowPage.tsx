@@ -266,7 +266,7 @@ export default function EtfFlowPage() {
       />
       <SupportCard support={support} meta={meta} colors={colors} mode={mode} />
       <ForwardCard forward={support.forward} colors={colors} />
-      <ValuationCard v={valuation} colors={colors} />
+      <ValuationCard v={valuation} t={data?.threshold_compare} colors={colors} />
 
       {/* ═══ 四、日度资金全景 ═══ */}
       <SectionTitle
@@ -1031,9 +1031,10 @@ function ForwardCard({
 
 /* ── 估值 × 资金流 ──────────────────────────────────────────────── */
 function ValuationCard({
-  v, colors,
+  v, t, colors,
 }: {
   v: EtfFlowDashboard["valuation"] | undefined;
+  t: EtfFlowDashboard["threshold_compare"];
   colors: ReturnType<typeof useTheme>["colors"];
 }) {
   const opt = useMemo<EChartsOption>(() => {
@@ -1143,6 +1144,75 @@ function ValuationCard({
         tag={`全 A 股 PE(TTM) 中位数 · 滚动 5 年分位 · ${v.as_of}`}
         colors={colors}
       />
+
+      {t && (
+        <div style={{
+          margin: "2px 0 12px", padding: "9px 11px",
+          background: "rgba(185,119,14,0.06)",
+          border: `1px solid ${colors.border}`,
+          borderLeft: "3px solid #b9770e", borderRadius: 8,
+        }}>
+          <div style={{ fontSize: 11.5, fontWeight: 600, color: colors.text, marginBottom: 5 }}>
+            门槛口径对照 · 100 亿是固定金额，但全池成交额三年涨了 3.2 倍
+          </div>
+          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11 }}>
+            <thead>
+              <tr style={{ color: colors.axis, fontSize: 10.5 }}>
+                <th style={{ textAlign: "left", padding: "2px 8px 4px 0", fontWeight: 500 }}>口径</th>
+                <th style={{ textAlign: "right", padding: "2px 8px 4px", fontWeight: 500 }}>天数</th>
+                <th style={{ textAlign: "right", padding: "2px 8px 4px", fontWeight: 500 }}>估值分位中位</th>
+                <th style={{ textAlign: "right", padding: "2px 8px 4px", fontWeight: 500 }}>≤20% 占比</th>
+                <th style={{ textAlign: "right", padding: "2px 8px 4px", fontWeight: 500 }}>≥80% 占比</th>
+                <th style={{ textAlign: "right", padding: "2px 8px 4px", fontWeight: 500 }}>T+20 胜率</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                { label: "绝对 · 净流入 > 100 亿", d: t.absolute, main: true },
+                { label: `相对 · 净流入/20日成交额中位 > ${t.ratio}`, d: t.relative, main: false },
+              ].map((r, i) => (
+                <tr key={i} style={{ borderTop: `1px solid ${colors.border}` }}>
+                  <td style={{
+                    padding: "4px 8px 4px 0",
+                    color: r.main ? colors.text : colors.muted,
+                    fontWeight: r.main ? 700 : 400,
+                  }}>
+                    {r.label}{r.main && <span style={{ color: colors.accent, fontSize: 10, marginLeft: 5 }}>主</span>}
+                  </td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", color: colors.text,
+                               fontVariantNumeric: "tabular-nums" }}>{r.d.count}</td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", fontWeight: 600,
+                               color: "#b9770e", fontVariantNumeric: "tabular-nums" }}>
+                    {r.d.pct_median == null ? "—" : `${r.d.pct_median.toFixed(1)}%`}
+                  </td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", color: colors.muted,
+                               fontVariantNumeric: "tabular-nums" }}>
+                    {r.d.low_share == null ? "—" : `${r.d.low_share.toFixed(1)}%`}
+                  </td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", color: colors.muted,
+                               fontVariantNumeric: "tabular-nums" }}>
+                    {r.d.high_share == null ? "—" : `${r.d.high_share.toFixed(1)}%`}
+                  </td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", color: colors.muted,
+                               fontVariantNumeric: "tabular-nums" }}>
+                    {r.d.fwd["20"] == null ? "—" : `${r.d.fwd["20"].toFixed(1)}%`}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{ marginTop: 6, fontSize: 10.5, color: colors.axis, lineHeight: 1.65 }}>
+            2026 年占比 {t.absolute.by_year.find((y) => y.year === "2026")?.share ?? 0}%
+            → {t.relative.by_year.find((y) => y.year === "2026")?.share ?? 0}%
+            ｜ 2024 年 {t.absolute.by_year.find((y) => y.year === "2024")?.share ?? 0}%
+            → {t.relative.by_year.find((y) => y.year === "2024")?.share ?? 0}%
+            <br />{t.note}
+          </div>
+          <div style={{ marginTop: 6, fontSize: 11, fontWeight: 600, color: "#b9770e", lineHeight: 1.65 }}>
+            ⚠️ {t.verdict}
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, margin: "2px 0 12px" }}>
         {blocks.map((b) => (
