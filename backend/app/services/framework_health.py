@@ -129,7 +129,14 @@ def _check_orchestrator(db) -> dict[str, Any]:
         items.append(_item("流水线状态", OK if not running else WARN,
                            "空闲" if not running else f"运行中 · {orch.STATE.get('step')}"))
 
-        run = db.execute(select(ResearchRun).order_by(ResearchRun.id.desc()).limit(1)).scalar_one_or_none()
+        # 排除 CANCELLED：容器重复启动会导致同一时点被触发多次，多余的那些已人工取消。
+        # 若不排除，体检会长期显示「最近 run #309 CANCELLED/FAILED」，看着像出事（2026-11-07）。
+        run = db.execute(
+            select(ResearchRun)
+            .where(ResearchRun.status != "CANCELLED")
+            .order_by(ResearchRun.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
         if run:
             bad = run.status not in ("SUCCESS", "FAILED")
             items.append(_item("最近 run", WARN if bad else OK,
