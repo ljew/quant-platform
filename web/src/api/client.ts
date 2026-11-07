@@ -160,6 +160,8 @@ export const api = {
     post<NewsEventReport>("/factor/news/event-test", { extreme_pct, horizon, source }),
   /** 每小时热点简报（一手快讯 → LLM 筛选解读） */
   hotBriefLatest: () => get<HotBrief>("/factor/hot-brief/latest"),
+  /** 今日累计：各轮条目合并去重 + 最新综述（首页用这个） */
+  hotBriefToday: () => get<HotBrief>("/factor/hot-brief/today"),
   hotBriefList: (limit = 24) => get<HotBrief[]>("/factor/hot-brief/list?limit=" + limit),
   /** 社交关注度（雪球 A 股热股 / 微博热搜）；只有热度、无正文，不做多空打分 */
   factorSocialHeat: (days = 30) =>
@@ -400,6 +402,8 @@ export interface HotBriefItem {
   /** 完整来源清单（source_label 超过 2 个时会压缩，这里是全量） */
   source_all?: string[];
   sources?: HotBriefSource[];
+  /** 今日累计视图里：该条首次被报出的时间（HH:MM） */
+  first_seen?: string;
 }
 
 /** 本轮喂给模型的原始输入（用于回溯「这条是从哪看到的」） */
@@ -425,6 +429,12 @@ export interface HotBrief {
   /** 本轮原始输入快照（标题/站点/链接），可回溯原文 */
   inputs?: HotBriefInput[];
   mainline?: string;
+  /** 今日综述（350~1000 字，分政策/产业/海外/资金四段） */
+  summary?: string;
+  /** 今日累计视图专有 */
+  n_briefs?: number;
+  date?: string;
+  source_split?: Record<string, number>;
   model?: string;
   error?: string;
 }

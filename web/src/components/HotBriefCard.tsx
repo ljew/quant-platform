@@ -1,19 +1,24 @@
 /**
- * 热点简报卡片（每小时 :02 自动生成）。
+ * 热点简报卡片（每小时 :02 生成，展示「今日累计」而不是单轮增量）。
  *
- * 首页「今日观点」与「因子实验室」共用，抽成组件是因为来源标注、跨轮去重
- * 这些口径必须一致 —— 两处各写一份 JSX 迟早会漂移。
+ * 为什么用 /today 而不是 /latest：
+ *   每轮只报「本小时新增」，若卡片只显示最新一轮，就会出现 —— 这一小时全是
+ *   DeepSeek 搜索条目、下一小时全是财联社快讯，用户看到的是「一会儿有一会儿没有」。
+ *   今日累计把两边合并去重摆在一起，并标出每条首次出现时间。
  *
- * 每条主题右侧的来源标签：
- *   灰色「财联社电报」= 平台自采一手快讯
- *   蓝色「DeepSeek · 站点」= DeepSeek 网页搜索，可点开原文
+ * 三块内容：
+ *   ① 综述   —— 350~1000 字，分政策/产业/海外/资金四段（每轮重写并覆盖当日整体）
+ *   ② 今日主题 —— 各轮合并去重后的条目，带来源标签与首次出现时间
+ *   ③ 原始输入 —— 本轮喂给模型的全部条目，● 采用 / ○ 丢弃
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Card } from "./ui";
 import { api, HotBrief, HotBriefInput, HotBriefItem } from "../api/client";
 import { useTheme } from "../theme";
 
-/** 单条来源标签（可点击）。抽出来是为了在窄列里也不挤。 */
+const ITEMS_PREVIEW = 8;
+
+/** 单条来源标签（可点击）。 */
 function SourceTag({ item }: { item: HotBriefItem }) {
   const { colors } = useTheme();
   const isSearch = (item.source_kind || "").includes("搜索");
@@ -117,13 +122,15 @@ export default function HotBriefCard({
   const { colors } = useTheme();
   const [brief, setBrief] = useState<HotBrief | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showAllItems, setShowAllItems] = useState(false);
+  const [summaryOpen, setSummaryOpen] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
     api
-      .hotBriefLatest()
-      // 后端无数据时返回 {}，不是 null
-      .then((d) => setBrief(d && d.id ? d : null))
+      .hotBriefToday()
+      // 后端无数据时返回 {}
+      .then((d) => setBrief(d && (d.n_items || d.summary) ? d : null))
       .catch(() => setBrief(null))
       .finally(() => setLoading(false));
   }, []);
@@ -133,12 +140,26 @@ export default function HotBriefCard({
   }, [load]);
 
   const items = brief?.items || [];
+  const paragraphs = useMemo(
+    () => (brief?.summary || "").split(/\n+/).map((s) => s.trim()).filter(Boolean),
+    [brief?.summary],
+  );
+  const shownItems = showAllItems ? items : items.slice(0, ITEMS_PREVIEW);
+  const split = brief?.source_split || {};
+  // 必须把「未标注」也算进来，否则 12+3 对不上总数 38，看着像丢数据。
+  // 这些是加来源标注功能之前生成的旧条目，次日自然消失。
+  const splitText = ["快讯", "搜索", "混合", "未标注"]
+    .filter((k) => (split[k] || 0) > 0)
+    .map((k) => `${k} ${split[k]}`)
+    .join(" · ");
+
   const meta = brief ? (
     <span style={{ fontSize: 11.5, color: colors.muted, fontWeight: 400 }}>
-      {brief.created_at?.slice(5, 16).replace("T", " ")}
-      {" · "}输入 {brief.n_input} 条
-      {brief.n_search ? `（快讯 ${brief.n_flash ?? 0} + 搜索 ${brief.n_search}）` : ""}
-      {" → "}保留 {brief.n_items} 条
+      {brief.date || ""}
+      {" · 共 "}
+      {brief.n_briefs ?? 1} 轮 · {brief.n_items} 条
+      {splitText ? `（${splitText}）` : ""}
+      {brief.created_at ? ` · 最新 ${brief.created_at.slice(11, 16)}` : ""}
     </span>
   ) : null;
 
@@ -172,80 +193,133 @@ export default function HotBriefCard({
       {brief?.mainline && (
         <div
           style={{
-            fontSize: dense ? 12 : 12.5,
+            fontSize: dense ? 12.5 : 13,
             lineHeight: 1.7,
             padding: "8px 10px",
             borderRadius: 6,
             background: colors.bg,
             border: `1px solid ${colors.border}`,
             marginBottom: 10,
+            fontWeight: 500,
           }}
         >
-          <span style={{ fontWeight: 600, marginRight: 6 }}>主线</span>
+          <span style={{ fontWeight: 700, marginRight: 6, color: colors.accent }}>主线</span>
           {brief.mainline}
         </div>
       )}
 
+      {/* —— 综述（默认展示前两段，可展开全文）—— */}
+      {paragraphs.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 12, color: colors.muted, marginBottom: 4 }}>
+            今日综述
+            <span style={{ marginLeft: 6, opacity: 0.8 }}>
+              （{paragraphs.length} 段 · {brief?.summary?.length ?? 0} 字，每轮重写）
+            </span>
+          </div>
+          <div style={{ fontSize: 12.5, lineHeight: 1.85 }}>
+            {(summaryOpen ? paragraphs : paragraphs.slice(0, 2)).map((p, i) => (
+              <p key={i} style={{ margin: "0 0 8px" }}>{p}</p>
+            ))}
+          </div>
+          {paragraphs.length > 2 && (
+            <button
+              onClick={() => setSummaryOpen((v) => !v)}
+              style={{
+                border: 0, background: "transparent", color: colors.accent,
+                cursor: "pointer", fontSize: 11.5, padding: 0,
+              }}
+            >
+              {summaryOpen ? "收起 ▴" : `展开全文（还有 ${paragraphs.length - 2} 段）▾`}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* —— 今日主题（各轮合并去重）—— */}
       {items.length > 0 && (
-        <div
-          style={{
-            display: columns === 2 ? "grid" : "flex",
-            gridTemplateColumns: columns === 2 ? "1fr 1fr" : undefined,
-            flexDirection: columns === 2 ? undefined : "column",
-            gap: dense ? 7 : 9,
-          }}
-        >
-          {items.map((it, i) => {
-            const up = it.direction === "bullish";
-            const tone = up
-              ? colors.up
-              : it.direction === "bearish"
-                ? colors.down
-                : colors.muted;
-            return (
-              <div
-                key={i}
-                style={{ display: "flex", gap: 9, alignItems: "flex-start", minWidth: 0 }}
-              >
-                <Badge
-                  text={`${up ? "多" : it.direction === "bearish" ? "空" : "中"} ${it.strength}/5`}
-                  color={tone}
-                  soft
-                />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div
-                    style={{
-                      fontSize: dense ? 12 : 12.5,
-                      fontWeight: 600,
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      flexWrap: "wrap",
-                    }}
-                  >
-                    <span>{it.theme}</span>
-                    <SourceTag item={it} />
-                  </div>
-                  <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 2 }}>
-                    {it.sectors?.length ? <>板块 {it.sectors.join("/")}　</> : null}
-                    {it.tickers?.length ? <>个股 {it.tickers.join("/")}　</> : null}
-                    {it.horizon}
-                  </div>
-                  <div
-                    style={{
-                      fontSize: 11.5,
-                      color: colors.text,
-                      opacity: 0.85,
-                      marginTop: 2,
-                    }}
-                  >
-                    {it.why}
+        <>
+          <div style={{ fontSize: 12, color: colors.muted, margin: "2px 0 6px" }}>
+            今日主题 · {items.length} 条（按首次出现倒序）
+          </div>
+          <div
+            style={{
+              display: columns === 2 ? "grid" : "flex",
+              gridTemplateColumns: columns === 2 ? "1fr 1fr" : undefined,
+              flexDirection: columns === 2 ? undefined : "column",
+              gap: dense ? 7 : 9,
+            }}
+          >
+            {shownItems.map((it, i) => {
+              const up = it.direction === "bullish";
+              const tone = up
+                ? colors.up
+                : it.direction === "bearish"
+                  ? colors.down
+                  : colors.muted;
+              return (
+                <div
+                  key={i}
+                  style={{ display: "flex", gap: 9, alignItems: "flex-start", minWidth: 0 }}
+                >
+                  <Badge
+                    text={`${up ? "多" : it.direction === "bearish" ? "空" : "中"} ${it.strength}/5`}
+                    color={tone}
+                    soft
+                  />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div
+                      style={{
+                        fontSize: dense ? 12 : 12.5,
+                        fontWeight: 600,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <span>{it.theme}</span>
+                      <SourceTag item={it} />
+                      {it.first_seen && (
+                        <span style={{ fontSize: 10.5, color: colors.muted, fontWeight: 400 }}>
+                          {it.first_seen.slice(11, 16)}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 2 }}>
+                      {it.sectors?.length ? <>板块 {it.sectors.join("/")}　</> : null}
+                      {it.tickers?.length ? <>个股 {it.tickers.join("/")}　</> : null}
+                      {it.horizon}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 11.5,
+                        color: colors.text,
+                        opacity: 0.85,
+                        marginTop: 2,
+                      }}
+                    >
+                      {it.why}
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+          {items.length > ITEMS_PREVIEW && (
+            <button
+              onClick={() => setShowAllItems((v) => !v)}
+              style={{
+                marginTop: 8, border: 0, background: "transparent", color: colors.accent,
+                cursor: "pointer", fontSize: 11.5, padding: 0,
+              }}
+            >
+              {showAllItems
+                ? "收起 ▴"
+                : `显示全部 ${items.length} 条（还有 ${items.length - ITEMS_PREVIEW} 条）▾`}
+            </button>
+          )}
+        </>
       )}
 
       {!!brief?.inputs?.length && (
@@ -257,7 +331,8 @@ export default function HotBriefCard({
 
       <div style={{ marginTop: 9, fontSize: 11, color: colors.muted, lineHeight: 1.6 }}>
         输入 = 财联社一手快讯（时效）+ DeepSeek 网页搜索（覆盖广度），模型只做筛选与判断；
-        已与上一条简报做过跨轮去重，本轮只报新增变化。
+        每小时 :02 增量生成，本卡片展示今日累计（跨轮去重），因此 DeepSeek 的条目
+        不会因为「上一轮报过」而从页面上消失。
         {columns === 1 && (
           <>
             {" "}来源标签：灰色「财联社电报」= 一手快讯，蓝色「DeepSeek · 站点」= 网页搜索（可点开原文）。

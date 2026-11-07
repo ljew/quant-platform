@@ -29,7 +29,7 @@ import json
 import logging
 import os
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as dtime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -75,10 +75,20 @@ USER_TEMPLATE = """下面是两个来源的资讯。
 - src: 这条来自哪些输入条目，用输入的编号，例如 "F3"、"S2"、"F1,S2"。
   合并了多个来源就把编号都写上，用英文逗号分隔。**必须填真实编号，不要编造。**
 
-另外给 mainline：100 字以内，说清当前市场在交易什么逻辑（不是罗列，是判断）。
+另外给两个整体判断：
+
+- mainline：一句话主线，**60 字以内**，说清「现在市场在交易什么」。
+- summary：**今日综述**，**350~600 字**，分 3~5 个自然段，依次覆盖：
+  ① 政策与宏观（货币 / 财政 / 监管，有数字就写数字）
+  ② 产业与板块（哪些方向在动、驱动是什么、持续性如何）
+  ③ 海外与外部（只写能传导到 A 股的，传不到的一律不提）
+  ④ 资金面与风险（成交、两融、北向等可见口径，以及最该盯的变量）
+  要求：写判断，不写复述；不要罗列条目清单（上面 items 已有）；
+  不要写「综上所述」「值得关注」这类空话；
+  **不要因为本轮没有新条目就写「无新增」—— 综述覆盖的是今日整体，不是本小时增量**。
 
 只输出 JSON，不要任何解释、不要 markdown 代码块：
-{{"items": [...], "mainline": "..."}}
+{{"items": [...], "mainline": "...", "summary": "..."}}
 """
 
 SEARCH_BLOCK = """
@@ -87,15 +97,15 @@ SEARCH_BLOCK = """
 """
 
 RECENT_BLOCK = """
-【三】上一条简报（{prev_time}）已经报过这些主题
+【三】今日已经报过的主题（前面各轮累计，共 {n_prev} 条）
 {themes}
 
 除非出现**实质新增信息**（新数字、新进展、方向反转），否则不要重复输出上面的主题。
-本条只报真正的新增变化。
+items 只报本轮真正的新增变化。
 
-🔴 **如果本轮没有任何需要新增的内容，items 必须返回空数组 []**，
-并在 mainline 里写「本轮无实质新增」。不要为了填满条目而重复上条主题、
-或把无关内容降级硬塞进来 —— 空结果是有价值的结论。
+🔴 如果本轮没有任何需要新增的内容，items 必须返回空数组 []。
+不要为了填满条目而重复上面的主题、或把无关内容降级硬塞进来 —— 空结果是有价值的结论。
+但 summary 仍要正常写（它覆盖今日整体，不受 items 是否为空影响）。
 """
 
 
@@ -282,7 +292,7 @@ def _resolve_src(raw, ref_map: dict[str, dict]) -> dict:
 
 
 def _parse(text: str, ref_map: dict[str, dict] | None = None,
-           ) -> tuple[list[dict], str]:
+           ) -> tuple[list[dict], str, str]:
     raw = _strip_fence(text)
     i, j = raw.find("{"), raw.rfind("}")
     if i >= 0 and j > i:
@@ -290,7 +300,7 @@ def _parse(text: str, ref_map: dict[str, dict] | None = None,
     try:
         d = json.loads(raw)
     except Exception:  # noqa: BLE001
-        return [], ""
+        return [], "", ""
     items = d.get("items") or []
     if not isinstance(items, list):
         items = []
@@ -313,32 +323,42 @@ def _parse(text: str, ref_map: dict[str, dict] | None = None,
         }
         row.update(_resolve_src(it.get("src"), ref_map or {}))
         clean.append(row)
-    return clean, str(d.get("mainline") or "")[:300]
+    # 综述给足长度：350~600 字是目标，上限放到 1600 字符防截断
+    return clean, str(d.get("mainline") or "")[:200], str(d.get("summary") or "")[:1600]
 
 
-def _recent_themes(db: Session, limit: int = 12) -> tuple[list[str], str]:
-    """上一份有内容的简报报过哪些主题。用于让本轮只报“新增变化”。
+def _today_rows(db: Session) -> list[HotBrief]:
+    """今天（自然日）已经生成的所有简报，按 id 升序。"""
+    start = datetime.combine(datetime.now().date(), dtime.min)
+    return list(db.execute(
+        select(HotBrief).where(HotBrief.created_at >= start).order_by(HotBrief.id)
+    ).scalars().all())
 
-    没有这一步的话，网页搜索在同一交易日内结果高度重复（同一篇「国常会」文章
-    会连续几小时都排在前列），模型就会每小时把同一条再报一遍。
+
+def _today_themes(db: Session, limit: int = 40) -> tuple[list[str], int]:
+    """今日前面各轮已经报过的主题（跨轮累计）。
+
+    ⚠️ 2026-11-07 踩过的坑：原来只跟「上一条」比，于是搜索类条目和快讯类条目
+    会轮流出现 —— 第 1 轮全是搜索、第 2 轮全是快讯（搜索被压掉）、第 3 轮
+    搜索条目因为「上一条里没有」又全部复活。表现为「DeepSeek 的内容一会儿有
+    一会儿没有」。必须跟**今日全量**比，而不是上一轮。
     """
-    row = db.execute(
-        select(HotBrief).where(HotBrief.n_items > 0).order_by(HotBrief.id.desc()).limit(1)
-    ).scalar_one_or_none()
-    if row is None:
-        return [], ""
-    try:
-        items = json.loads(row.items_json or "[]")
-    except Exception:  # noqa: BLE001
-        items = []
-    themes = [str(i.get("theme") or "") for i in items if i.get("theme")][:limit]
-    ts = row.created_at.strftime("%m-%d %H:%M") if row.created_at else ""
-    return themes, ts
+    themes: list[str] = []
+    for row in _today_rows(db):
+        try:
+            items = json.loads(row.items_json or "[]")
+        except Exception:  # noqa: BLE001
+            items = []
+        for it in items:
+            t = str(it.get("theme") or "")
+            if t and not any(_too_similar(t, x) for x in themes):
+                themes.append(t)
+    return themes[:limit], len(themes)
 
 
 def _build_prompt(flash: list[dict], search: list[dict], minutes: int,
                   recent: list[str] | None = None,
-                  recent_at: str = "") -> str:
+                  n_prev: int = 0) -> str:
     flash_corpus = "\n".join(
         f"[F{i}] {x['title']}｜{x['body']}" for i, x in enumerate(flash, 1)
     ) or "（本轮无新快讯）"
@@ -353,7 +373,7 @@ def _build_prompt(flash: list[dict], search: list[dict], minutes: int,
         search_block = ""
     if recent:
         recent_block = RECENT_BLOCK.format(
-            prev_time=recent_at or "上一次",
+            n_prev=n_prev,
             themes="\n".join(f"- {t}" for t in recent),
         )
     else:
@@ -393,14 +413,14 @@ def run_brief(db: Session, minutes: int = 60,
         rec.window_start = datetime.fromtimestamp(flash[0]["ts"])
         rec.window_end = datetime.fromtimestamp(flash[-1]["ts"])
 
-    recent, recent_at = _recent_themes(db)
-    prompt = _build_prompt(flash, search, minutes, recent=recent, recent_at=recent_at)
+    recent, n_prev = _today_themes(db)
+    prompt = _build_prompt(flash, search, minutes, recent=recent, n_prev=n_prev)
 
     try:
         text = chat(cfg, [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
-        ], temperature=0.3, max_tokens=2000)
+        ], temperature=0.3, max_tokens=2800)
     except LLMUnavailable as e:
         rec.error = f"大模型不可用：{e}"
         db.add(rec)
@@ -412,30 +432,101 @@ def run_brief(db: Session, minutes: int = 60,
         db.commit()
         return {"ok": False, "error": rec.error, "id": rec.id}
 
-    items, mainline = _parse(text, _ref_map(flash, search))
-    # 代码兜底去重：与上条简报主题高度相似的丢掉（提示词约束不住时这里收口）
+    items, mainline, summary = _parse(text, _ref_map(flash, search))
+    # 代码兜底去重：与**今日累计**主题高度相似的丢掉（提示词约束不住时这里收口）。
+    # 只跟「上一轮」比是不够的 —— 会让搜索类和快讯类条目轮流复活（见 _today_themes 注释）。
     if items and recent:
         kept = [it for it in items
                 if not any(_too_similar(it["theme"], prev) for prev in recent)]
         if len(kept) != len(items):
-            logger.info("跨轮去重：%d 条 → %d 条（与上条主题重复）", len(items), len(kept))
+            logger.info("跨轮去重：%d 条 → %d 条（与今日已报主题重复）", len(items), len(kept))
         items = kept
     rec.items_json = json.dumps(items, ensure_ascii=False)
     rec.mainline = mainline
+    rec.summary = summary
     rec.n_items = len(items)
-    if not items:
-        # 两种可能：模型没吐 JSON（真失败）；或本轮确实无新增（正常）。
-        # 后者不该记成错误，否则监控里会天天告警。
-        rec.error = "" if mainline else "模型未返回可解析条目"
+    if not items and not summary:
+        # 两种可能：模型没吐 JSON（真失败）；或本轮确实无新增但综述也空（异常）。
+        rec.error = "" if mainline else "模型未返回可解析内容"
     db.add(rec)
     db.commit()
     # ok 的语义是「这次运行成功」，不是「有产出」。本轮无实质新增是正常结论 ——
     # 若把空结果当失败，调度器会在 :02/:05 反复重试同一小时、还天天告警。
     # 真正的失败只有两种：模型没吐出可解析 JSON（mainline 为空），或调用抛异常。
-    ran_ok = bool(items) or bool(mainline)
+    ran_ok = bool(items) or bool(mainline) or bool(summary)
     return {"ok": ran_ok, "id": rec.id, "n_input": rec.n_input,
             "n_flash": rec.n_flash, "n_search": rec.n_search,
-            "n_items": len(items), "mainline": mainline, "error": rec.error}
+            "n_items": len(items), "mainline": mainline,
+            "summary_len": len(summary), "error": rec.error}
+
+
+def today_brief(db: Session) -> dict:
+    """今日累计视图：把今天各轮的条目合并去重，附最新综述。
+
+    为什么需要它：一轮只报「本小时新增」，卡片若只显示最新一轮，
+    就会一会儿全是 DeepSeek 搜索条目、一会儿全是财联社快讯 —— 用户看到的是
+    「DeepSeek 的内容看不到」。今日累计把两边都摆出来，并标出每条首次出现时间。
+    """
+    rows = _today_rows(db)
+    if not rows:
+        return {}
+
+    merged: list[dict] = []
+    seen: list[str] = []
+    for r in rows:
+        try:
+            items = json.loads(r.items_json or "[]")
+        except Exception:  # noqa: BLE001
+            items = []
+        for it in items:
+            t = str(it.get("theme") or "")
+            if not t or any(_too_similar(t, x) for x in seen):
+                continue
+            seen.append(t)
+            row = dict(it)
+            row["first_seen"] = (r.created_at.isoformat(timespec="minutes")
+                                 if r.created_at else "")
+            merged.append(row)
+    merged.sort(key=lambda x: (x.get("first_seen") or ""), reverse=True)
+
+    last = rows[-1]
+    summary = next((x.summary for x in reversed(rows) if x.summary), "")
+    mainline = next((x.mainline for x in reversed(rows) if x.mainline), "")
+    try:
+        inputs = json.loads(last.inputs_json or "[]")
+    except Exception:  # noqa: BLE001
+        inputs = []
+
+    # 「未标注」是加来源功能之前生成的旧条目（source_kind 为空），单独计数，
+    # 否则四个数字加起来对不上总数，看着像丢数据。
+    split = {"快讯": 0, "搜索": 0, "混合": 0, "未标注": 0}
+    for it in merged:
+        k = it.get("source_kind") or ""
+        if "+" in k:
+            split["混合"] += 1
+        elif "搜索" in k:
+            split["搜索"] += 1
+        elif "快讯" in k:
+            split["快讯"] += 1
+        else:
+            split["未标注"] += 1
+
+    return {
+        "date": last.created_at.date().isoformat() if last.created_at else "",
+        "created_at": last.created_at.isoformat(timespec="seconds") if last.created_at else None,
+        "n_briefs": len(rows),
+        "mainline": mainline,
+        "summary": summary,
+        "items": merged,
+        "n_items": len(merged),
+        "source_split": split,
+        "inputs": inputs,
+        "n_input": last.n_input,
+        "n_flash": last.n_flash,
+        "n_search": last.n_search,
+        "model": last.model,
+        "error": "" if merged or summary else (last.error or ""),
+    }
 
 
 def latest_brief(db: Session) -> dict | None:
@@ -475,6 +566,7 @@ def _to_dict(r: HotBrief) -> dict:
         "items": items,
         "inputs": inputs,
         "mainline": r.mainline,
+        "summary": r.summary,
         "model": r.model,
         "error": r.error,
     }

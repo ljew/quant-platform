@@ -11,7 +11,9 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
+
+from sqlalchemy import select
 
 logger = logging.getLogger("hot_brief_scheduler")
 
@@ -30,6 +32,29 @@ _sched_thread: threading.Thread | None = None
 def get_status() -> dict:
     return {**_status, "slot_minute": SLOT_MINUTE,
             "done_today": sorted(k for k in _done if k.startswith(datetime.now().strftime("%Y-%m-%d")))}
+
+
+def _seed_done_from_db() -> set[str]:
+    """用库里已有的简报补齐 _done，避免「容器一重启就重跑当前小时」。
+
+    2026-11-07 实测：11:07~11:10 容器被外部反复重启（RestartCount=0，是手动
+    restart 事件），每次重启 `_done` 清空 → 同一个小时连续生成 3 份简报，
+    白烧 3 次 LLM + DeepSeek 搜索配额。改成从 DB 恢复后，重启不再重复。
+    """
+    from app.database import SessionLocal
+    from app.models import HotBrief
+
+    db = SessionLocal()
+    try:
+        since = datetime.now() - timedelta(days=1)
+        rows = db.execute(
+            select(HotBrief.created_at).where(HotBrief.created_at >= since)
+        ).scalars().all()
+    except Exception:  # noqa: BLE001
+        return set()
+    finally:
+        db.close()
+    return {f"{r:%Y-%m-%d}#{r.hour:02d}" for r in rows if r}
 
 
 def _run_once() -> tuple[bool, str]:
@@ -88,6 +113,12 @@ def start_hot_brief_scheduler(enabled: bool | None = None) -> threading.Thread:
         enabled = os.getenv("QUANT_HOT_BRIEF", "1") not in ("0", "", "false", "False")
     with _lock:
         _status["enabled"] = enabled
+    seeded = _seed_done_from_db()
+    if seeded:
+        with _lock:
+            _done.update(seeded)
+        logger.info("沿用库中已生成的简报，跳过 %d 个已完成小时", len(seeded))
+
     t = threading.Thread(target=_loop, args=(enabled,), daemon=True, name="hot-brief")
     t.start()
     _sched_thread = t

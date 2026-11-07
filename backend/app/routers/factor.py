@@ -450,6 +450,14 @@ def hot_brief_latest(db: Session = Depends(get_db)):
     return latest_brief(db) or {}
 
 
+@router.get("/hot-brief/today")
+def hot_brief_today(db: Session = Depends(get_db)):
+    """今日累计：各轮条目合并去重 + 最新综述（首页用这个，而不是只看最新一轮）。"""
+    from app.services.hot_brief import today_brief
+
+    return today_brief(db) or {}
+
+
 @router.get("/hot-brief/list")
 def hot_brief_list(limit: int = 24, db: Session = Depends(get_db)):
     from app.services.hot_brief import list_briefs

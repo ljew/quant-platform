@@ -601,7 +601,10 @@ class HotBrief(Base):
     # 不存正文，只存可回溯的定位信息：2026-11-07 之前只存模型输出，
     # 想核对「这条是从哪看到的」只能翻日志，而日志里根本没有。
     inputs_json: Mapped[str] = mapped_column(Text, default="[]")
-    mainline: Mapped[str] = mapped_column(Text, default="")       # 模型给的主线判断
+    mainline: Mapped[str] = mapped_column(Text, default="")       # 一句话主线（≤60 字）
+    # 今日综述：350~600 字、分政策/产业/海外/资金四段。每轮重写并覆盖当日整体，
+    # 不是只总结本小时 —— 老刘 2026-11-07 反馈「首页总结太简单，要全面一点」。
+    summary: Mapped[str] = mapped_column(Text, default="")
     model: Mapped[str] = mapped_column(String(40), default="")
     error: Mapped[str] = mapped_column(Text, default="")
 
