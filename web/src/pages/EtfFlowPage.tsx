@@ -225,11 +225,10 @@ export default function EtfFlowPage() {
       {/* ═══ 二、盘中分钟观测 ═══ */}
       <SectionTitle
         id="sec-minute" num="02" title="盘中分钟观测"
-        sub="20 只 ETF 每分钟成交额加总，与上证综指同屏对照 · 仅观察"
+        sub="20 只 ETF 分钟量能、累计成交与上证综指同屏双轴对照 · 仅观察"
         colors={colors}
       />
       <MinuteCard meta={meta} minute={minute} colors={colors} mode={mode} />
-      <CumCard meta={meta} minute={minute} colors={colors} mode={mode} />
       <TailCard tail={minute.tail} asOf={meta.as_of} colors={colors} />
       <ElasticityCard e={elasticity} colors={colors} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
@@ -276,6 +275,8 @@ export default function EtfFlowPage() {
       />
       <DailyCard daily={daily} colors={colors} mode={mode} />
       <CategoryCard category={category} colors={colors} />
+
+      <ConsistencyCard data={data} colors={colors} />
 
       {/* ═══ 口径说明 ═══ */}
       <div style={{ ...cardStyle(colors), fontSize: 12, color: colors.muted, lineHeight: 1.8 }}>
@@ -1889,7 +1890,16 @@ function NsiCard({
   );
 }
 
-/* ── 分钟成交额 × 指数 ──────────────────────────────────────────── */
+/* ── 分钟成交额 × 上证综指 × 累计成交（同屏双轴）─────────────────── */
+/**
+ * 原来「综指 + 分钟柱」和「累计成交同期对比」是两张卡，看「某一分钟放量 →
+ * 指数有没有反应 → 全天量能是不是偏大」要在两屏之间来回对时间轴。
+ * 现在合成一张：上格左轴综指、右轴累计成交额（当日 / 上一日 / 20 日均），
+ * 下格仍是分钟柱，两格 x 轴联动，一次悬停把同一分钟的六个读数全给出来。
+ *
+ * 双轴不是为了好看，是量纲不同：指数点位 3600 上下、累计成交额 0→800 亿，
+ * 共用一个轴必然有一条被压平。右轴固定从 0 起，保留「累计」的语义。
+ */
 function MinuteCard({
   meta, minute, colors, mode,
 }: {
@@ -1914,10 +1924,29 @@ function MinuteCard({
     const hot = amt.map((v, i) =>
       v != null && v >= 5 && minute.avg20_amount[i] > 0.5
       && v / minute.avg20_amount[i] > 2.6);
+    // 采样起点：这之前没有分钟数据，累计曲线是「接」上去的，不是从 0 涨上来的。
+    const partial = meta.partial_from != null;
+    const startLbl = partial ? minute.labels[meta.partial_from as number] : null;
+    // 昨收必须显式纳入左轴范围。ECharts 的 scale 只按 series 数据算，低开日
+    // 昨收高于当日全部点位（11-06：昨收 3689.91、日内最高 3657）时，
+    // 那条虚线会被静默裁掉 —— 而说明里恰恰要求「看蓝线与昨收的相对位置」。
+    const pxVals = minute.today_index.filter((v): v is number => v != null);
+    const pc = minute.prev_close;
+    const pxOk = pxVals.length > 0 && pc != null;
+    const lo = pxOk ? Math.min(...pxVals, pc as number) : 0;
+    const hi = pxOk ? Math.max(...pxVals, pc as number) : 1;
+    const pad = Math.max(2, (hi - lo) * 0.12);
+    const idxMin = Math.floor((lo - pad) / 5) * 5;
+    const idxMax = Math.ceil((hi + pad) / 5) * 5;
     return {
+      legend: {
+        top: 0, left: 52, right: 8, itemWidth: 14, itemHeight: 2, itemGap: 10,
+        textStyle: { color: colors.muted, fontSize: 10.5 },
+        data: ["上证综指", "当日累计", "上一日同期", "20日均累计", "分钟成交额", "20日同期均量"],
+      },
       grid: [
-        { left: 54, right: 56, top: 30, height: 150 },
-        { left: 54, right: 56, top: 212, height: 132 },
+        { left: 54, right: 62, top: 42, height: 180 },
+        { left: 54, right: 62, top: 266, height: 132 },
       ],
       tooltip: {
         trigger: "axis",
@@ -1929,9 +1958,14 @@ function MinuteCard({
           const a = minute.today_amount[i];
           const avg = minute.avg20_amount[i];
           const mult = a != null && avg > 0 ? (a / avg).toFixed(1) : "—";
-          return `${labels[i]}<br/>上证 <b>${f2(minute.today_index[i])}</b>`
-            + `<br/>本分钟成交 <b>${f1(a)}</b> 亿（均量 ${mult}×）`
-            + `<br/>累计 <b>${f1(minute.today_cum[i])}</b> 亿`;
+          const px = minute.today_index[i];
+          const pc = minute.prev_close;
+          const rel = px != null && pc
+            ? `${((px / pc - 1) * 100).toFixed(2)}%` : "—";
+          return `${meta.as_of || ""} ${labels[i]}<br/>`
+            + `上证 <b>${f2(px)}</b>（较昨收 ${rel}）<br/>`
+            + `本分钟成交 <b>${f1(a)}</b> 亿（同期均量 ${mult}×）<br/>`
+            + `累计 <b>${f1(minute.today_cum[i])}</b> 亿 ｜ 上一日 ${f1(minute.prev_cum[i])} ｜ 20日均 ${f1(minute.avg20_cum[i])}`;
         },
       },
       axisPointer: { link: [{ xAxisIndex: "all" }] },
@@ -1951,12 +1985,18 @@ function MinuteCard({
         },
       ],
       yAxis: [
-        {
-          gridIndex: 0, scale: true,
-          axisLabel: { color: colors.axis, fontSize: 10 },
+        { // 上格左轴：指数点位（含昨收，低开日也要看得见基准线）
+          gridIndex: 0, position: "left",
+          ...(pxOk ? { min: idxMin, max: idxMax } : { scale: true }),
+          axisLabel: { color: colors.accent, fontSize: 10 },
           splitLine: { lineStyle: { color: colors.border } },
         },
-        {
+        { // 上格右轴：累计成交额（亿元），从 0 起
+          gridIndex: 0, min: 0, position: "right",
+          axisLabel: { color: colors.up, fontSize: 10 },
+          splitLine: { show: false },
+        },
+        { // 下格：单分钟成交额（亿元）
           gridIndex: 1, min: 0, max: yMax,
           axisLabel: { color: colors.axis, fontSize: 10 },
           splitLine: { lineStyle: { color: colors.border } },
@@ -1979,12 +2019,47 @@ function MinuteCard({
           markLine: {
             silent: true, symbol: "none",
             lineStyle: { color: colors.muted, width: 1, type: [5, 4] },
-            label: { formatter: `昨收 ${f2(minute.prev_close)}`, color: colors.muted, fontSize: 10 },
+            // 标签放左端：默认落在终点（右侧）会压住右轴的累计成交额刻度
+            label: {
+              formatter: `昨收 ${f2(minute.prev_close)}`, color: colors.muted,
+              fontSize: 10, position: "insideStartTop",
+            },
             data: [{ yAxis: minute.prev_close ?? 0 }],
           },
         },
         {
-          name: "分钟成交额", type: "bar", xAxisIndex: 1, yAxisIndex: 1,
+          name: "当日累计", type: "line", data: minute.today_cum,
+          xAxisIndex: 0, yAxisIndex: 1, showSymbol: false, connectNulls: true,
+          smooth: true, smoothMonotone: "x",
+          lineStyle: { color: colors.up, width: 2.2 }, itemStyle: { color: colors.up },
+          // 采样模式下不铺面积：只有尾部一小段时，面积会变成一根从 0 拉到 700 多的
+          // 竖条，看起来像「一分钟内涨了 700 亿」
+          markLine: partial ? {
+            silent: true, symbol: "none", animation: false,
+            lineStyle: { color: colors.axis, type: "dashed", width: 1, opacity: 0.85 },
+            label: { show: false },
+            data: [{ xAxis: startLbl as string }],
+          } : undefined,
+          // 不挂 endLabel：末端标签会正好压住右轴「800」刻度。
+          // 累计末值已由卡片顶部读数行（761.4 亿）与 tooltip 给出，无需在图里重复。
+
+        },
+        {
+          name: "上一日同期", type: "line", data: minute.prev_cum,
+          xAxisIndex: 0, yAxisIndex: 1, showSymbol: false,
+          smooth: true, smoothMonotone: "x",
+          lineStyle: { color: colors.muted, width: 1.3, type: [6, 4] },
+          itemStyle: { color: colors.muted },
+        },
+        {
+          name: "20日均累计", type: "line", data: minute.avg20_cum,
+          xAxisIndex: 0, yAxisIndex: 1, showSymbol: false,
+          smooth: true, smoothMonotone: "x",
+          lineStyle: { color: colors.axis, width: 1.2, opacity: 0.65 },
+          itemStyle: { color: colors.axis },
+        },
+        {
+          name: "分钟成交额", type: "bar", xAxisIndex: 1, yAxisIndex: 2,
           barWidth: "72%",
           data: amt.map((v, i) => ({
             value: v == null ? null : Math.min(v, yMax),
@@ -1996,25 +2071,49 @@ function MinuteCard({
           })),
         },
         {
-          name: "20 日同期均量", type: "line", data: minute.avg20_amount,
-          xAxisIndex: 1, yAxisIndex: 1, showSymbol: false,
+          name: "20日同期均量", type: "line", data: minute.avg20_amount,
+          xAxisIndex: 1, yAxisIndex: 2, showSymbol: false,
           lineStyle: { color: colors.muted, width: 1 },
         },
       ],
     };
-  }, [minute, colors]);
+  }, [minute, colors, meta.as_of, meta.partial_from]);
 
+  const n = minute.count || 0;
+  const dayTag = meta.as_of ? `${meta.as_of} · ` : "";
   const tag = meta.partial_from != null
-    ? `采样自 ${minute.labels[meta.partial_from]}，此前无数据`
-    : meta.count ? `${minute.labels[0]} – ${minute.labels[meta.count - 1]}`
+    ? `${dayTag}采样自 ${minute.labels[meta.partial_from]}，此前无数据`
+    : meta.count ? `${dayTag}${minute.labels[0]}–${minute.labels[meta.count - 1]}`
       : (meta.is_today ? "今日暂无分钟数据" : "等待盘中数据");
   // 柱子序列必须与分钟轴等长。后端曾把日度序列覆盖进这个字段，
   // 结果 ECharts 收不到合法数值，整片柱子静默消失、只剩坐标轴。
   const barsOk = minute.today_amount.length >= (minute.count || 0) && minute.count > 0;
+  const lastCum = minute.today_cum[n - 1] ?? null;
+  const avgCum = minute.avg20_cum[n - 1] ?? null;
+  const ratio = lastCum != null && avgCum ? lastCum / avgCum : null;
+  const pxLast = minute.today_index[n - 1] ?? null;
+  const pc = minute.prev_close;
+  const pxChg = pxLast != null && pc ? (pxLast / pc - 1) * 100 : null;
 
   return (
     <div style={cardStyle(colors)}>
-      <CardHead title="分钟成交额 × 上证综指" tag={tag} colors={colors} />
+      <CardHead title="分钟成交额 × 上证综指 × 累计成交" tag={tag} colors={colors} />
+      {/* 一行读数把三张图的关键末值钉住，避免「图看着涨、结论卡却说跌」的误读 */}
+      {n > 0 && (
+        <div style={{
+          display: "flex", flexWrap: "wrap", gap: "4px 18px", margin: "2px 0 6px",
+          fontSize: 11.5, color: colors.muted, fontVariantNumeric: "tabular-nums",
+        }}>
+          <span>累计成交 <b style={{ color: colors.up }}>{f1(lastCum)} 亿</b></span>
+          <span>20 日同期均值 <b style={{ color: colors.text }}>{f1(avgCum)} 亿</b>
+            {ratio != null && <>（<b style={{ color: colors.text }}>{ratio.toFixed(2)}×</b>）</>}
+          </span>
+          <span>上证 <b style={{ color: colors.accent }}>{f2(pxLast)}</b>
+            {pxChg != null && <>（较昨收 <b style={{ color: pxChg >= 0 ? colors.up : colors.down }}>{pxChg >= 0 ? "+" : ""}{pxChg.toFixed(2)}%</b>）</>}
+          </span>
+          <span>昨收 {f2(pc)}</span>
+        </div>
+      )}
       {minute.count === 0 ? (
         <Empty colors={colors}>
           暂无分钟数据 —— 交易时段内服务会自动逐分钟采集；
@@ -2025,124 +2124,24 @@ function MinuteCard({
           分钟成交额序列长度异常（{minute.today_amount.length} 条 / 应有 {minute.count} 条），
           柱状图已停用以免画出空图。
         </Empty>
-      ) : <EChart option={opt} height={372} />}
+      ) : <EChart option={opt} height={440} />}
       <Note colors={colors}>
-        下半图每一根柱子 = 20 只重点 ETF 该分钟在二级市场的真实成交额之和，灰线是过去 20 天同一分钟的均量；
-        上半图蓝线是上证综指同步点位，虚线是昨收。它回答的是「今天资金有没有在动」——柱子突然拔高、又伴随指数向上，
-        往往是资金进场；柱子放量但指数不动或下跌，则更像托底或对倒。
-        深红色标记的是成交额 ≥ 5 亿且超过 20 日同期均量 2.6 倍的时刻（加绝对量门槛是为了避免均量趋近 0 时把噪声算成脉冲）。
-        09:31 含集合竞价，量级常是其余分钟的十几倍，图上按轴上界截断并在柱顶标出真实值；悬停任意柱子可看原始数值。
-      </Note>
-    </div>
-  );
-}
-
-/* ── 累计成交额同期对比 ─────────────────────────────────────────── */
-function CumCard({
-  meta, minute, colors, mode,
-}: {
-  meta: EtfFlowDashboard["meta"];
-  minute: EtfFlowDashboard["minute"];
-  colors: ReturnType<typeof useTheme>["colors"];
-  mode: string;
-}) {
-  const opt = useMemo<EChartsOption>(() => {
-    const n = minute.count || 0;
-    const labels = minute.labels.slice(0, n);
-    // 采样起点：这之前没有分钟数据，曲线是「接」上去的而不是从 0 涨上来的。
-    // 不标出来的话，会误读成「14:51 那一分钟成交了 700 多亿」。
-    const partial = meta.partial_from != null;
-    const startLbl = partial ? minute.labels[meta.partial_from as number] : null;
-    return {
-      grid: { left: 54, right: 76, top: 34, bottom: 30 },
-      legend: {
-        top: 2, right: 6, itemWidth: 14, itemHeight: 2, itemGap: 14,
-        textStyle: { color: colors.muted, fontSize: 11 },
-      },
-      tooltip: {
-        trigger: "axis",
-        backgroundColor: colors.card, borderColor: colors.border,
-        textStyle: { color: colors.text, fontSize: 12 },
-      },
-      xAxis: {
-        type: "category", data: labels, boundaryGap: false,
-        axisLabel: {
-          color: colors.axis, fontSize: 10,
-          interval: (i: number, v: string) => i === 0 || v.endsWith(":00") || v.endsWith(":30"),
-        },
-        axisLine: { lineStyle: { color: colors.border } }, axisTick: { show: false },
-      },
-      yAxis: {
-        type: "value",
-        axisLabel: { color: colors.axis, fontSize: 10 },
-        splitLine: { lineStyle: { color: colors.border } },
-      },
-      series: [
-        {
-          name: "当日累计", type: "line", data: minute.today_cum, showSymbol: false,
-          connectNulls: true, smooth: true, smoothMonotone: "x",
-          lineStyle: { color: colors.up, width: 2.2 },
-          itemStyle: { color: colors.up },
-          // 采样模式下不铺面积：只有尾部一小段时，面积会变成一根从 0 拉到 700 多的
-          // 竖条，看起来像「一分钟内涨了 700 亿」，反而误导
-          areaStyle: partial ? undefined : {
-            color: {
-              type: "linear", x: 0, y: 0, x2: 0, y2: 1,
-              colorStops: [
-                { offset: 0, color: `${rgba(colors.up,0.15)}` },
-                { offset: 1, color: `${rgba(colors.up,0)}` },
-              ],
-            },
-          },
-          markLine: partial ? {
-            silent: true, symbol: "none", animation: false,
-            lineStyle: { color: colors.axis, type: "dashed", width: 1, opacity: 0.85 },
-            // 不写字：位置在右上角，会和图例撞在一起；含义由卡片 tag「采样自 14:51」
-            // 和下方说明承担，虚线只负责标出「数据从这一格开始」
-            label: { show: false },
-            data: [{ xAxis: startLbl as string }],
-          } : undefined,
-          endLabel: {
-            show: true, formatter: `${f1(minute.today_cum[n - 1])}`,
-            color: colors.up, fontSize: 10.5, offset: [4, 0],
-          },
-        },
-        {
-          name: "上一交易日同期", type: "line", data: minute.prev_cum, showSymbol: false,
-          smooth: true, smoothMonotone: "x",
-          lineStyle: { color: colors.muted, width: 1.3, type: [6, 4] },
-          itemStyle: { color: colors.muted },
-        },
-        {
-          name: "20 日同期均值", type: "line", data: minute.avg20_cum, showSymbol: false,
-          smooth: true, smoothMonotone: "x",
-          lineStyle: { color: colors.axis, width: 1.2, opacity: 0.55 },
-          itemStyle: { color: colors.axis },
-        },
-      ],
-    };
-  }, [minute, colors]);
-
-  return (
-    <div style={cardStyle(colors)}>
-      <CardHead
-        title="累计成交额 · 同期对比"
-        tag={meta.partial_from != null ? `采样自 ${minute.labels[meta.partial_from]}` : `截至 ${meta.last_minute}`}
-        colors={colors}
-      />
-      {minute.count === 0 ? (
-        <Empty colors={colors}>暂无数据</Empty>
-      ) : <EChart option={opt} height={286} />}
-      <Note colors={colors}>
+        <strong>上格双轴</strong>：左轴蓝色是上证综指同步点位，虚线是<strong>昨收</strong>；右轴红色是
+        20 只重点 ETF 成交额从开盘逐分钟累加的当日累计值，深灰虚线是上一交易日同期、浅灰是近 20 个交易日同期均值。
+        它回答「今天整体算不算放量」——红线骑在均值线上是放量，一直在下方是缩量。
+        <strong>判断涨跌只看蓝线与昨收虚线的相对位置</strong>：低开后蓝线一路上行，也可能全天仍是下跌
+        （例如低开 −1.79%、收 −1.10%），别把「线在往上走」读成「指数翻红」；悬停时会直接给出较昨收的百分比。
         {meta.partial_from != null && (
           <span style={{ color: colors.axis }}>
-            今天服务是从 {minute.labels[meta.partial_from]} 才开始采样的，所以红线只覆盖右侧那一小段；
-            起点的高度是那一刻的<strong>真实累计成交额</strong>，之后逐分钟累加，不是从 0 涨上来的。{" "}
+            {" "}今天服务从 {minute.labels[meta.partial_from]} 才开始采样，红线只覆盖右侧一小段，
+            起点高度是那一刻的<strong>真实累计成交额</strong>，不是从 0 涨上来的。
           </span>
         )}
-        把上一张的分钟成交额从开盘一路累加，得到「到这一刻为止今天一共成交了多少」。红线是当日，深灰虚线是上一交易日，
-        浅灰是近 20 个交易日的同期平均。它回答的是「今天整体算不算放量」——曲线明显骑在均值线之上说明全天量能偏大，
-        反过来一直在均值线下就是缩量。看的是总量节奏，不是某一分钟的脉冲。
+        {" "}<strong>下格</strong>每根柱子 = 该分钟 20 只 ETF 的真实成交额之和，灰线是过去 20 天同一分钟的均量；
+        深红色标记 ≥ 5 亿且超过同期均量 2.6 倍的脉冲（绝对量门槛用来挡住均量趋近 0 时的噪声）。
+        柱放量 + 蓝线向昨收靠拢，更像资金进场；柱放量但指数不动或继续走低，更像托底或对倒。
+        09:31 含集合竞价，量级常是其余分钟的十几倍，图上按轴上界截断并在柱顶标真实值，悬停可看原始数值。
+        上下两格 x 轴联动，一次悬停给全读数。
       </Note>
     </div>
   );
@@ -2528,6 +2527,50 @@ function CategoryCard({
     return g;
   }, [category.dates]);
 
+  // 后端给按日汇总；万一命中 60 秒缓存里的旧结构，直接从 matrix 兜底算，
+  // 保证「每天总结」不会因为前后端发版顺序不同而整块消失。
+  const nDays = category.dates.length;
+  const dayTotal = category.day_total?.length === nDays
+    ? category.day_total
+    : category.dates.map((_, i) => category.matrix.reduce((s, r) => s + (r[i] ?? 0), 0));
+  const dayIn = category.day_in?.length === nDays
+    ? category.day_in
+    : category.dates.map((_, i) => category.matrix.filter((r) => (r[i] ?? 0) > 0.05).length);
+  const dayOut = category.day_out?.length === nDays
+    ? category.day_out
+    : category.dates.map((_, i) => category.matrix.filter((r) => (r[i] ?? 0) < -0.05).length);
+  const dayLeader = category.day_leader?.length === nDays
+    ? category.day_leader
+    : category.dates.map((_, i) => {
+      let k = 0;
+      category.matrix.forEach((r, j) => {
+        if (Math.abs(r[i] ?? 0) > Math.abs(category.matrix[k]?.[i] ?? 0)) k = j;
+      });
+      return { name: category.labels[k] ?? "—", value: category.matrix[k]?.[i] ?? 0 };
+    });
+  // 日合计的量级（百亿）远大于单类别（几亿），不能共用 HMAX=26 的色阶，
+  // 否则整行都是最深色。按区间最大日合计单独归一。
+  const maxDay = Math.max(1, ...dayTotal.map((v) => Math.abs(v)));
+  const heatSum = (v: number) => (Math.abs(v) < 0.05
+    ? "transparent"
+    : (v > 0 ? rgba(colors.up, 0.06 + 0.40 * Math.min(1, Math.abs(v) / maxDay))
+      : rgba(colors.down, 0.06 + 0.40 * Math.min(1, Math.abs(v) / maxDay))));
+  /** 「每一天的一句话」：表头悬停、总结行悬停、顶部摘要条共用同一套口径。 */
+  const brief = (i: number) => {
+    const t = dayTotal[i] ?? 0;
+    const ld = dayLeader[i];
+    return `${category.dates[i]}：全市场 12 类合计 ${sgn(t)}${f1(t)} 亿（${t >= 0 ? "净申购" : "净赎回"}），`
+      + `${dayIn[i] ?? 0} 类流入 / ${dayOut[i] ?? 0} 类流出，`
+      + `主力 ${ld?.name ?? "—"} ${sgn(ld?.value ?? 0)}${f1(ld?.value ?? 0)} 亿`;
+  };
+  const last = nDays - 1;
+  const lTot = dayTotal[last] ?? 0;
+  const lLead = dayLeader[last];
+  const rangeTotal = dayTotal.reduce((s, v) => s + (v ?? 0), 0);
+  const rangeDays = category.range_days || nDays;
+  const lag = category.lag ?? null;
+  const nCat = category.labels.length || 1;
+
   if (!category.labels.length) {
     return (
       <div style={cardStyle(colors)}>
@@ -2541,14 +2584,44 @@ function CategoryCard({
     <div style={cardStyle(colors)}>
       <CardHead
         title="宽基 ETF 分指数净申赎矩阵"
-        tag={`最近 ${category.dates.length} 个交易日 · 单位：亿元`}
+        tag={`最近 ${nDays} 个交易日 · 单位：亿元`}
         colors={colors}
       />
+      {/* 每日总结：最新日置顶一句话，不必先读懂热力表 */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: "4px 14px", flexWrap: "wrap",
+        margin: "6px 0 4px", padding: "8px 10px", borderRadius: 6,
+        background: colors.tableStripe, border: `1px solid ${colors.border}`,
+        fontSize: 12, fontVariantNumeric: "tabular-nums",
+      }}>
+        <span style={{ color: colors.muted }}>最新日 <b style={{ color: colors.text }}>{category.dates[last]}</b></span>
+        <span>全市场宽基合计&nbsp;
+          <b style={{ color: lTot >= 0 ? colors.up : colors.down, fontSize: 14 }}>
+            {sgn(lTot)}{f1(lTot)} 亿
+          </b>
+          <span style={{ color: colors.muted }}>（{lTot >= 0 ? "净申购" : "净赎回"}）</span>
+        </span>
+        <span style={{ color: colors.muted }}>
+          {dayIn[last] ?? 0}/{nCat} 类流入 · 主力 {lLead?.name ?? "—"}&nbsp;
+          <b style={{ color: (lLead?.value ?? 0) >= 0 ? colors.up : colors.down }}>
+            {sgn(lLead?.value ?? 0)}{f1(lLead?.value ?? 0)} 亿
+          </b>
+        </span>
+        <span style={{ marginLeft: "auto", color: colors.axis, fontSize: 11 }}>
+          悬停任意日期可看当日完整摘要
+        </span>
+      </div>
+      {lag && (
+        <div style={{ margin: "4px 0 6px", fontSize: 11.5, color: colors.axis, lineHeight: 1.6 }}>
+          ⚠️ 份额 T+1：矩阵最新日 {lag.matrix_last}，看板数据日 {lag.as_of}。
+          最近一天的申赎要等次日份额公布才可见，这里不是漏数。
+        </div>
+      )}
       <div style={{ overflowX: "auto", marginTop: 8 }}>
         <table style={{ borderCollapse: "separate", borderSpacing: 0, width: "100%", fontSize: 11.5 }}>
           <thead>
             <tr>
-              <th style={{ width: 96 }} />
+              <th style={{ width: 104 }} />
               {groups.map((g, i) => (
                 <th key={i} colSpan={g.n} style={{
                   fontSize: 10, color: colors.axis, fontWeight: 500,
@@ -2557,22 +2630,76 @@ function CategoryCard({
                   {Number(g.m.slice(5))}月
                 </th>
               ))}
-              <th style={{ width: 62 }} />
+              <th style={{ width: 72 }} />
               <th style={{ width: 62 }} />
             </tr>
             <tr>
-              <th />
-              {category.dates.map((d) => (
-                <th key={d} style={{
-                  fontSize: 10, color: colors.axis, fontWeight: 500,
+              <th style={{ fontSize: 10, color: colors.axis, fontWeight: 500, textAlign: "left" }}>日期 / 分类</th>
+              {category.dates.map((d, i) => (
+                <th key={d} title={brief(i)} style={{
+                  fontSize: 10, color: colors.axis, fontWeight: 500, cursor: "help",
                   paddingBottom: 4, fontVariantNumeric: "tabular-nums",
                 }}>{d.slice(8)}</th>
               ))}
-              <th style={{ fontSize: 10, color: colors.axis, fontWeight: 500, textAlign: "left", paddingLeft: 8 }}>月合计</th>
+              <th title={`最近 ${rangeDays} 个交易日累计，不是自然月`} style={{
+                fontSize: 10, color: colors.axis, fontWeight: 500, textAlign: "left",
+                paddingLeft: 8, cursor: "help",
+              }}>区间合计</th>
               <th style={{ fontSize: 10, color: colors.axis, fontWeight: 500, textAlign: "right", paddingRight: 2 }}>规模</th>
             </tr>
           </thead>
           <tbody>
+            {/* 总结行 1：每天全市场 12 类加总 */}
+            <tr>
+              <th style={{
+                textAlign: "left", fontSize: 11.5, fontWeight: 700, color: colors.text,
+                paddingRight: 8, borderRight: `1px solid ${colors.border}`, whiteSpace: "nowrap",
+              }}>
+                全市场日合计
+                <div style={{ fontSize: 9.5, fontWeight: 400, color: colors.muted }}>12 类加总</div>
+              </th>
+              {category.dates.map((d, i) => {
+                const v = dayTotal[i] ?? 0;
+                return (
+                  <td key={d} title={brief(i)} style={{
+                    background: heatSum(v), textAlign: "center", height: 28, minWidth: 38,
+                    cursor: "help", fontVariantNumeric: "tabular-nums", fontSize: 11, fontWeight: 700,
+                    color: Math.abs(v) < 0.05 ? colors.muted : v > 0 ? colors.up : colors.down,
+                    borderBottom: `1px solid ${colors.border}`,
+                  }}>{sgn(v)}{f1(v)}</td>
+                );
+              })}
+              <td style={{
+                textAlign: "left", paddingLeft: 8, fontWeight: 700, fontSize: 11.5,
+                fontVariantNumeric: "tabular-nums",
+                color: rangeTotal >= 0 ? colors.up : colors.down,
+                borderLeft: `1px solid ${colors.border}`,
+              }}>{sgn(rangeTotal)}{f1(rangeTotal)}</td>
+              <td />
+            </tr>
+            {/* 总结行 2：当天有几类在净申购（广度），比单看总额更能识别「普涨 vs 一只独大」 */}
+            <tr>
+              <th style={{
+                textAlign: "left", fontSize: 11.5, fontWeight: 500, color: colors.muted,
+                paddingRight: 8, borderRight: `1px solid ${colors.border}`, whiteSpace: "nowrap",
+              }}>净申购类数</th>
+              {category.dates.map((d, i) => {
+                const inn = dayIn[i] ?? 0;
+                const out = dayOut[i] ?? 0;
+                return (
+                  <td key={d} title={brief(i)} style={{
+                    textAlign: "center", height: 24, cursor: "help", fontSize: 10.5,
+                    fontVariantNumeric: "tabular-nums",
+                    color: inn > out ? colors.up : inn < out ? colors.down : colors.muted,
+                  }}>{inn}/{nCat}</td>
+                );
+              })}
+              <td style={{ textAlign: "left", paddingLeft: 8, color: colors.muted, borderLeft: `1px solid ${colors.border}` }}>—</td>
+              <td />
+            </tr>
+            <tr>
+              <td colSpan={nDays + 3} style={{ height: 5, borderBottom: `1px solid ${colors.border}` }} />
+            </tr>
             {category.labels.map((name, r) => {
               const tot = category.month_total[r];
               return (
@@ -2624,10 +2751,163 @@ function CategoryCard({
         <span style={{ marginLeft: "auto", color: colors.axis }}>颜色深浅 = 金额大小，非涨跌</span>
       </div>
       <Note colors={colors}>
-        把全市场所有宽基 ETF 按跟踪指数分成 12 类，看每一类每天净申购还是净赎回。它回答的是
-        「钱在宽基内部往哪个方向搬家」——某天沪深300 大幅净申购、同时中证1000 净赎回，说明资金从中小盘切向大盘；
-        反之则是在博弹性。红色是钱进来、绿色是钱出去，颜色越深代表当天变动越大。单日大额往往是脉冲，
-        连续多日同向才值得跟。
+        把全市场所有宽基 ETF 按跟踪指数分成 {nCat} 类，看每一类每天净申购还是净赎回。
+        <strong>表格最前面两行是「每天一句话」</strong>：第一行是当天 {nCat} 类加总（全市场日合计），
+        第二行是当天有多少类在净申购（广度）——总额大但只有 1–2 类流入，和 10 类一起流入，含义完全不同；
+        鼠标停在任意日期表头或格子，会给出这一天的方向、广度与贡献最大的指数。
+        右侧「区间合计」是最近 {rangeDays} 个交易日累计，<strong>不是自然月</strong>（22 个交易日通常跨 2–3 个月）。
+        <span style={{ color: colors.axis }}>
+          {" "}口径提醒：这里是全市场 {nCat} 类宽基，顶部 KPI 的「当日净流入」是 20 只重点 ETF，
+          两者不是同一个池子，日合计天然会多出几十亿，<strong>不能互相验算</strong>；份额 T+1 公布，
+          矩阵最新日通常比看板数据日落后一天。
+        </span>
+        {" "}红色是钱进来、绿色是钱出去，颜色越深代表当天变动越大。单日大额往往是脉冲，连续多日同向才值得跟。
+      </Note>
+    </div>
+  );
+}
+
+/* ── 数据勾稽自检 ───────────────────────────────────────────────── */
+/**
+ * 这一屏十几张图共用同一批底层数据，但各图画的是不同切片。改过口径之后，
+ * 最容易出现的不是「报错」而是「两张图各自都对、放一起互相打架」。
+ * 这里把能在本页内部验算的关系逐条摆出来，每次刷新自动重算：
+ *   pass = 数值对得上 ／ info = 设计上就该有差异 ／ warn = 真的对不上。
+ */
+type CkState = "pass" | "info" | "warn";
+interface Ck { name: string; a: string; b: string; state: CkState; note: string }
+
+function ConsistencyCard({
+  data, colors,
+}: {
+  data: EtfFlowDashboard;
+  colors: ReturnType<typeof useTheme>["colors"];
+}) {
+  const checks = useMemo<Ck[]>(() => {
+    const { meta, minute, daily, category, etf_detail, nsi, support, summary } = data;
+    const out: Ck[] = [];
+    const add = (name: string, a: string, b: string, state: CkState, note: string) =>
+      out.push({ name, a, b, state, note });
+    const near = (x: number | null | undefined, y: number | null | undefined, eps: number) =>
+      x != null && y != null && Math.abs(x - y) <= eps;
+
+    const n = meta.count || 0;
+    const cumLast = minute.today_cum[n - 1] ?? null;
+    const amtSum = minute.today_amount.slice(0, n)
+      .reduce<number>((s, v) => s + (v ?? 0), 0);
+    const i = daily.dates.indexOf(meta.as_of);
+    const dAmt = i >= 0 ? daily.turnover[i] : null;
+    const dIdx = i >= 0 ? daily.index[i] : null;
+    const dPrev = i > 0 ? daily.index[i - 1] : null;
+    const idxLast = minute.today_index[n - 1] ?? null;
+    const avgCum = minute.avg20_cum[n - 1] ?? null;
+
+    add("分钟累计 ↔ 日线成交额", `${f1(cumLast)} 亿`, `${f1(dAmt)} 亿`,
+      near(cumLast, dAmt, 1.0) ? "pass" : "warn",
+      "同一天：分钟线逐笔累加 vs 日线汇总，日线只保留 1 位小数");
+
+    const partial = meta.partial_from != null;
+    add("分钟柱求和 ↔ 累计末值", `${f1(amtSum)} 亿`, `${f1(cumLast)} 亿`,
+      partial ? "info" : (near(amtSum, cumLast, 0.5) ? "pass" : "warn"),
+      partial ? "采样起点前的成交额不在可见柱里，累计末值本来就更大"
+        : "下格每根柱子之和应等于上格红线末值");
+
+    add("综指末值 ↔ 日线收盘", f2(idxLast), f2(dIdx),
+      near(idxLast, dIdx, 0.5) ? "pass" : "warn", "上格蓝线末点应等于当日上证收盘");
+
+    add("昨收虚线 ↔ 前一日收盘", f2(minute.prev_close), f2(dPrev),
+      near(minute.prev_close, dPrev, 0.5) ? "pass" : "warn",
+      "涨跌基准线；低开后蓝线上行也可能全天收跌，判断要看这条线");
+
+    const sm = summary.metrics.find((x) => x.label.includes("成交额"));
+    const mm = sm?.sub.match(/([\d.]+)\s*倍/);
+    const shown = mm ? parseFloat(mm[1]) : null;
+    const calc = cumLast != null && avgCum ? cumLast / avgCum : null;
+    add("量能倍数 ↔ 结论卡", calc != null ? `${calc.toFixed(2)}×` : "—",
+      shown != null ? `${shown.toFixed(2)}×` : "—",
+      calc != null && shown != null && Math.abs(calc - shown) <= 0.02 ? "pass" : "info",
+      "当日累计 ÷ 20 日同期均值累计，结论卡按 20 只全池口径显示");
+
+    const detSum = etf_detail.reduce((s, x) => s + (x.amount ?? 0), 0);
+    add("单只明细合计 ↔ 全天成交额", `${f1(detSum)} 亿`, `${f1(dAmt)} 亿`,
+      near(detSum, dAmt, 1.5) ? "pass" : "warn",
+      `20 只各四舍五入到 0.1 亿，允许 ≤1.5 亿累计误差（当前 ${etf_detail.length} 只）`);
+
+    const cDays = category.dates.length;
+    const structOk = category.matrix.length === category.labels.length
+      && category.matrix.every((r) => r.length === cDays)
+      && category.month_total.every((v, k) =>
+        Math.abs(v - category.matrix[k].reduce((s, x) => s + x, 0)) < 0.3);
+    add("矩阵结构与行合计", `${category.matrix.length} 行 × ${cDays} 列`,
+      structOk ? "行合计一致" : "不一致", structOk ? "pass" : "warn",
+      "每行长度应等于日期数，右侧区间合计应等于该行逐日加总");
+
+    const catLast = category.dates[cDays - 1] ?? "";
+    add("矩阵最新日 ↔ 看板数据日", catLast || "—", meta.as_of || "—",
+      catLast === meta.as_of ? "pass" : "info",
+      catLast === meta.as_of ? "份额已补齐"
+        : "份额 T+1 公布，矩阵落后一个交易日是预期行为，不是缺数");
+
+    const j = daily.dates.indexOf(catLast);
+    const flow20 = j >= 0 ? daily.net_inflow[j] : null;
+    const catTotal = category.day_total?.[cDays - 1]
+      ?? category.matrix.reduce((s, r) => s + (r[cDays - 1] ?? 0), 0);
+    add("分类日合计 ↔ 20 只净流入", `${f1(catTotal)} 亿`, `${f1(flow20)} 亿`,
+      "info", "不同池：全市场 12 类宽基 vs 20 只重点 ETF，差额是池外产品，不能互相验算");
+
+    add("NSI 数据日 ↔ 看板数据日", nsi.as_of || "—", meta.as_of || "—",
+      nsi.as_of === meta.as_of ? "pass" : "warn",
+      "顶部信号卡与观察层必须落在同一天，否则「信号 vs 观察」对照无意义");
+
+    add("托底卡成交额 ↔ 日线成交额", `${f1(support.today_turnover)} 亿`, `${f1(dAmt)} 亿`,
+      near(support.today_turnover, dAmt, 1.0) ? "pass" : "warn",
+      "与顶部 KPI 共用同一个数，避免出现「KPI 761 亿 / 分位图 757 亿」");
+
+    return out;
+  }, [data]);
+
+  const nPass = checks.filter((c) => c.state === "pass").length;
+  const nInfo = checks.filter((c) => c.state === "info").length;
+  const nWarn = checks.filter((c) => c.state === "warn").length;
+  const tone = (s: CkState) => s === "pass" ? colors.accent : s === "warn" ? colors.up : colors.axis;
+  const mark = (s: CkState) => s === "pass" ? "✓" : s === "warn" ? "⚠" : "·";
+
+  return (
+    <div style={cardStyle(colors)}>
+      <CardHead
+        title="数据勾稽自检"
+        tag={`${nPass} 项一致 · ${nInfo} 项预期差异${nWarn ? ` · ${nWarn} 项异常` : ""}`}
+        colors={colors}
+      />
+      <div style={{ overflowX: "auto", marginTop: 6 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11.5 }}>
+          <thead>
+            <tr style={{ color: colors.axis, fontSize: 10.5 }}>
+              <th style={{ textAlign: "left", width: 34, paddingBottom: 4 }} />
+              <th style={{ textAlign: "left", width: 190, paddingBottom: 4, fontWeight: 500 }}>勾稽关系</th>
+              <th style={{ textAlign: "right", width: 96, paddingBottom: 4, fontWeight: 500 }}>读数 A</th>
+              <th style={{ textAlign: "right", width: 96, paddingBottom: 4, fontWeight: 500 }}>读数 B</th>
+              <th style={{ textAlign: "left", paddingLeft: 12, paddingBottom: 4, fontWeight: 500 }}>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            {checks.map((c) => (
+              <tr key={c.name} style={{ borderTop: `1px solid ${colors.border}` }}>
+                <td style={{ color: tone(c.state), fontWeight: 700, fontSize: 12 }}>{mark(c.state)}</td>
+                <td style={{ color: colors.text, padding: "5px 0" }}>{c.name}</td>
+                <td style={{ textAlign: "right", color: colors.text, fontVariantNumeric: "tabular-nums" }}>{c.a}</td>
+                <td style={{ textAlign: "right", color: colors.text, fontVariantNumeric: "tabular-nums" }}>{c.b}</td>
+                <td style={{ paddingLeft: 12, color: colors.muted, lineHeight: 1.5 }}>{c.note}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <Note colors={colors}>
+        <strong>「预期差异」不是错误</strong>：份额 T+1、全市场 12 类与 20 只重点 ETF 不同池、
+        采样起点前的成交额不可见——这些都会让两个读数天然不相等，强行对齐反而是伪造。
+        ✓ 表示同一数据日内部的算术关系成立；⚠ 才需要查数据链路。
+        自检只验证<strong>页面内部一致性</strong>，不验证上游行情源本身是否正确，也不构成信号。
       </Note>
     </div>
   );

@@ -1358,8 +1358,18 @@ export interface EtfFlowCategory {
   scale: number[];
   dates: string[];
   matrix: number[][];
+  /** 字段名沿用历史叫法，实际是「最近 range_days 个交易日合计」，通常跨自然月 */
   month_total: number[];
   turnover: number[];
+  range_days?: number;
+  /** 按日汇总：前端在矩阵最前面用它们做「每天一句话」 */
+  day_total?: number[];
+  day_in?: number[];
+  day_out?: number[];
+  day_leader?: { name: string; value: number }[];
+  /** 份额 T+1：矩阵最新日常比看板 as_of 落后一个交易日 */
+  lag?: { matrix_last: string; as_of: string } | null;
+  scope?: string;
 }
 
 export interface EtfFlowSummaryMetric {

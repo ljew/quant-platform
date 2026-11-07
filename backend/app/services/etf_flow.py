@@ -1634,6 +1634,35 @@ def build_dashboard(db: Session) -> dict:
             c_scale.append(int(round(float(last["scale"].iloc[0]))) if len(last) else 0)
             c_turn.append(round(float(sub["turnover"].tail(CAT_MONTH_DAYS).sum()), 1))
 
+    # ── 分类矩阵的「每一天总结」──
+    # 矩阵只有行合计（每个指数跨日累计），缺的是**按日**这一维：哪天整体进钱、
+    # 几类在申购、谁是当天主力。前端把它放在表格最前面一行 + 表头悬停摘要。
+    # 口径提醒：这里是全市场宽基按跟踪指数分的 12 类，与顶部 KPI 的 20 只重点
+    # ETF 不是同一个池子，日合计天然会多出几十亿。不给 scope 的话，用户看到
+    # 「日合计 100 亿 / KPI +41 亿」会以为算错了。
+    c_day_total: list[float] = []
+    c_day_in: list[int] = []
+    c_day_out: list[int] = []
+    c_day_leader: list[dict] = []
+    for i in range(len(c_dates)):
+        col = [row[i] for row in c_mat]
+        c_day_total.append(round(sum(col), 1))
+        c_day_in.append(sum(1 for v in col if v > 0.05))
+        c_day_out.append(sum(1 for v in col if v < -0.05))
+        if col and c_names:
+            k = max(range(len(col)), key=lambda j: abs(col[j]))
+            c_day_leader.append({"name": c_names[k], "value": round(col[k], 1)})
+        else:
+            c_day_leader.append({"name": "", "value": 0.0})
+
+    # 份额 T+1 才公布，矩阵最新日通常比看板 as_of 落后一个交易日。
+    # 这不是缺口，是数据本身的发布节奏，但必须在 UI 上讲清楚。
+    c_lag = None
+    if c_dates and active:
+        a_iso = f"{active[:4]}-{active[4:6]}-{active[6:]}"
+        if c_dates[-1] < a_iso:
+            c_lag = {"matrix_last": c_dates[-1], "as_of": a_iso}
+
     # ── 全天预估 ──
     tot_avg = sum(avg20)
     est = 0.0
@@ -2053,8 +2082,17 @@ def build_dashboard(db: Session) -> dict:
             "scale": c_scale,
             "dates": c_dates,
             "matrix": c_mat,
+            # 字段名沿用 month_total 以免前端大改，但语义是「最近 range_days
+            # 个交易日的合计」，通常跨月（22 个交易日 ≈ 1 个多月）。
             "month_total": c_total,
             "turnover": c_turn,
+            "range_days": len(c_dates),
+            "day_total": c_day_total,
+            "day_in": c_day_in,
+            "day_out": c_day_out,
+            "day_leader": c_day_leader,
+            "lag": c_lag,
+            "scope": "全市场宽基 ETF 按跟踪指数分 12 类，与顶部 20 只重点 ETF 不是同一池",
         },
     }
 
