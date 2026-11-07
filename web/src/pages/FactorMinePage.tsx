@@ -4,7 +4,7 @@ import LlmConfigModal from "../components/LlmConfigModal";
 import { Badge, Btn, Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
 import {
   api, AiExplainResult, AiGenerateResult, AiStatus,
-  FactorMineReport, FactorMineSummary, GpMineResult, NewsEventReport,
+  FactorMineReport, FactorMineSummary, GpMineResult, HotBrief, NewsEventReport,
 } from "../api/client";
 import { useTheme, ThemeColors } from "../theme";
 
@@ -37,6 +37,7 @@ export default function FactorMinePage() {
   // 数据源：both=合并（默认，样本最多）/ news=东财新闻 / mp=公众号语料
   const [newsSource, setNewsSource] = useState<"news" | "mp" | "both">("both");
   // 社交关注度（雪球/微博）：只有热度、没正文，所以只展示不参与打分
+  const [hotBrief, setHotBrief] = useState<HotBrief | null>(null);
   const [socialHeat, setSocialHeat] = useState<
     { date: string; source: string; n_items: number; n_finance: number; heat_total: number; heat_top10: number }[]
   >([]);
@@ -169,6 +170,7 @@ export default function FactorMinePage() {
 
   useEffect(() => {
     api.factorSocialHeat(7).then(setSocialHeat).catch(() => {});
+    api.hotBriefLatest().then((d) => setHotBrief(d && d.items && d.items.length ? d : null)).catch(() => {});
   }, []);
 
   const runNewsTest = async () => {
@@ -189,6 +191,55 @@ export default function FactorMinePage() {
         desc="在这里造新因子（表达式 / GP 挖掘 / AI 生成）· 造好了去「研究卡」上岗：登记 → 候选 → 启用"
         actions={<Btn onClick={() => setShowFns(!showFns)} kind="ghost" small>函数参考</Btn>}
       />
+
+      {/* —— 每小时热点简报（一手快讯 → LLM 筛选）—— */}
+      {hotBrief && (
+        <div style={{ marginBottom: 16 }}>
+          <Card
+            title="热点简报（每小时自动更新）"
+            colors={colors}
+            extra={<span style={{ fontSize: 11.5, color: colors.muted }}>
+              {hotBrief.created_at?.slice(5, 16).replace("T", " ")} · 输入 {hotBrief.n_input} 条 → 保留 {hotBrief.n_items} 条
+            </span>}
+          >
+            {hotBrief.mainline && (
+              <div style={{
+                fontSize: 12.5, lineHeight: 1.7, padding: "8px 10px", borderRadius: 6,
+                background: colors.bg, border: `1px solid ${colors.border}`, marginBottom: 10,
+              }}>
+                <span style={{ fontWeight: 600, marginRight: 6 }}>主线</span>
+                {hotBrief.mainline}
+              </div>
+            )}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {(hotBrief.items || []).map((it, i) => {
+                const up = it.direction === "bullish";
+                const tone = up ? colors.up : it.direction === "bearish" ? colors.down : colors.muted;
+                return (
+                  <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                    <Badge text={`${up ? "多" : it.direction === "bearish" ? "空" : "中"} ${it.strength}/5`}
+                           color={tone} soft />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 600 }}>{it.theme}</div>
+                      <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 2 }}>
+                        {it.sectors.length > 0 && <>板块 {it.sectors.join("/")}　</>}
+                        {it.tickers.length > 0 && <>个股 {it.tickers.join("/")}　</>}
+                        {it.horizon}
+                      </div>
+                      <div style={{ fontSize: 11.5, color: colors.text, opacity: 0.85, marginTop: 2 }}>
+                        {it.why}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ marginTop: 8, fontSize: 11, color: colors.muted }}>
+              输入为平台自采一手快讯（财联社），模型只做筛选与判断；DeepSeek API 无联网能力。
+            </div>
+          </Card>
+        </div>
+      )}
 
       {/* —— 新闻情绪择时（市场级 · 非结构化数据）—— */}
       <div style={{ marginBottom: 16 }}>

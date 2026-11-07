@@ -539,6 +539,35 @@ class NewsMarketDaily(Base):
         return f"<NewsMarketDaily {self.date} senti={self.net_sentiment}>"
 
 
+class HotBrief(Base):
+    """每小时热点简报（非结构化资讯 → LLM 筛选解读）。
+
+    输入不是「让模型上网搜」，而是平台自己采的一手快讯（财联社电报时效最强），
+    再让模型按「对 A 股有没有实质影响」筛选判断。理由：
+    DeepSeek API 的 tools 只支持 function（2026-11-07 实测，传 web_search 报 422），
+    没有联网能力；而且模型搜到的是二手转载，比财联社一手快讯慢且不可追溯。
+
+    `items_json` 存结构化条目（theme/direction/sectors/tickers/horizon/why/strength），
+    原文快照留在 bronze，需要回溯时按 window 时间取。
+    """
+
+    __tablename__ = "hot_brief"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
+    window_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    window_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    n_input: Mapped[int] = mapped_column(Integer, default=0)      # 输入资讯条数
+    n_items: Mapped[int] = mapped_column(Integer, default=0)      # 模型保留条数
+    items_json: Mapped[str] = mapped_column(Text, default="[]")
+    mainline: Mapped[str] = mapped_column(Text, default="")       # 模型给的主线判断
+    model: Mapped[str] = mapped_column(String(40), default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+
+    def __repr__(self):
+        return f"<HotBrief {self.created_at:%m-%d %H:%M} n={self.n_items}>"
+
+
 class SocialHeatDaily(Base):
     """社交关注度日频（雪球 A 股热股 / 微博热搜）。
 

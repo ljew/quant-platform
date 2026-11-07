@@ -440,3 +440,26 @@ def social_heat(db: Session = Depends(get_db), days: int = 30):
          "n_finance": r.n_finance, "heat_total": r.heat_total, "heat_top10": r.heat_top10}
         for r in rows
     ]
+
+# ───────── 每小时热点简报（非结构化资讯 → LLM 解读）─────────
+@router.get("/hot-brief/latest")
+def hot_brief_latest(db: Session = Depends(get_db)):
+    """最新一份简报（只返回有内容的）。"""
+    from app.services.hot_brief import latest_brief
+
+    return latest_brief(db) or {}
+
+
+@router.get("/hot-brief/list")
+def hot_brief_list(limit: int = 24, db: Session = Depends(get_db)):
+    from app.services.hot_brief import list_briefs
+
+    return list_briefs(db, limit)
+
+
+@router.post("/hot-brief/run")
+def hot_brief_run(minutes: int = 60, db: Session = Depends(get_db)):
+    """手动触发一次（调试用；调度器每小时 :02 自动跑）。"""
+    from app.services.hot_brief import run_brief
+
+    return run_brief(db, minutes=minutes)

@@ -158,6 +158,9 @@ export const api = {
   /** 极端情绪日 → 未来 N 日指数收益检验。source 支持 news / mp / both 合并 */
   factorNewsTest: (extreme_pct: number, horizon: number, source: "news" | "mp" | "both" = "both") =>
     post<NewsEventReport>("/factor/news/event-test", { extreme_pct, horizon, source }),
+  /** 每小时热点简报（一手快讯 → LLM 筛选解读） */
+  hotBriefLatest: () => get<HotBrief>("/factor/hot-brief/latest"),
+  hotBriefList: (limit = 24) => get<HotBrief[]>("/factor/hot-brief/list?limit=" + limit),
   /** 社交关注度（雪球 A 股热股 / 微博热搜）；只有热度、无正文，不做多空打分 */
   factorSocialHeat: (days = 30) =>
     get<{ date: string; source: string; n_items: number; n_finance: number; heat_total: number; heat_top10: number }[]>(`/factor/social/heat?days=${days}`),
@@ -373,6 +376,30 @@ export interface HealthReport {
 }
 
 // —— GP 自动挖掘类型 ——
+/** 每小时热点简报条目 */
+export interface HotBriefItem {
+  theme: string;
+  direction: "bullish" | "bearish" | "neutral" | string;
+  sectors: string[];
+  tickers: string[];
+  horizon: string;
+  why: string;
+  strength: number;
+}
+
+export interface HotBrief {
+  id?: number;
+  created_at?: string;
+  window_start?: string;
+  window_end?: string;
+  n_input?: number;
+  n_items?: number;
+  items?: HotBriefItem[];
+  mainline?: string;
+  model?: string;
+  error?: string;
+}
+
 /** 新闻情绪择时检验（市场级 · 非结构化数据）。2026-09-18 下线，2026-11-07 恢复。 */
 export interface NewsEventReport {
   ok: boolean;

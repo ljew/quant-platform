@@ -78,7 +78,7 @@ def on_startup():
         "%(asctime)s %(levelname)s %(name)s: %(message)s"))
     for _name in ("data_scheduler", "wechat_scheduler",
                   "app.services.auto_research", "app.core.nsi_scheduler",
-                  "etf_flow_scheduler"):
+                  "etf_flow_scheduler", "hot_brief_scheduler"):
         _lg = logging.getLogger(_name)
         if not _lg.handlers:
             _lg.addHandler(_h)
@@ -113,6 +113,15 @@ def on_startup():
     except Exception as _e:  # noqa: BLE001
         # 公众号是附加模块，起不来不能拖垮主服务
         logging.getLogger(__name__).warning("公众号调度器启动失败：%s", _e)
+
+    # 每小时热点简报：一手快讯（财联社）→ LLM 筛选解读 → hot_brief 表。
+    # DeepSeek API 无联网能力（tools 只支持 function，2026-11-07 实测 422），
+    # 所以输入用平台自采资讯，模型只负责筛选与判断。
+    try:
+        from app.core.hot_brief_scheduler import start_hot_brief_scheduler
+        start_hot_brief_scheduler()
+    except Exception as _e:  # noqa: BLE001
+        logging.getLogger(__name__).warning("热点简报调度器启动失败：%s", _e)
 
     # ETF 资金流看板（观察口径，非信号）：盘中每分钟采样 + 15:05–20:00 反复补官方分钟线
     # + 19:30 日更 + 次日 08:30 补份额。
