@@ -397,15 +397,18 @@ def registry_toggle(rid: int, db: Session = Depends(get_db)):
 class NewsTestPayload(BaseModel):
     extreme_pct: float = Field(0.10, ge=0.02, le=0.3)
     horizon: int = Field(5, ge=1, le=60)
+    # news=东财新闻/公告、mp=公众号语料、both=合并（默认：用户 2026-11-07 要求把公众号纳入）
+    source: str = Field("both", description="news / mp / both")
 
 
 @router.get("/news/daily")
-def news_daily(db: Session = Depends(get_db), limit: int = 500):
-    """市场新闻情绪时序（倒序）。"""
-    from app.models import NewsMarketDaily
+def news_daily(db: Session = Depends(get_db), limit: int = 500, source: str = "news"):
+    """情绪时序（倒序）。source=news(东财) / mp(公众号)。"""
+    from app.models import MpSentimentDaily, NewsMarketDaily
 
+    model = MpSentimentDaily if source == "mp" else NewsMarketDaily
     rows = db.execute(
-        select(NewsMarketDaily).order_by(NewsMarketDaily.date.desc()).limit(min(limit, 1500))
+        select(model).order_by(model.date.desc()).limit(min(limit, 1500))
     ).scalars().all()
     return [
         {"date": r.date.isoformat(), "n_articles": r.n_articles, "n_finance": r.n_finance,
@@ -416,5 +419,6 @@ def news_daily(db: Session = Depends(get_db), limit: int = 500):
 
 @router.post("/news/event-test")
 def news_event(payload: NewsTestPayload, db: Session = Depends(get_db)):
-    """极端新闻情绪日 → 未来 N 日指数收益检验（择时有效性）。"""
-    return news_event_test(db, extreme_pct=payload.extreme_pct, horizon=payload.horizon)
+    """极端情绪日 → 未来 N 日指数收益检验（择时有效性）。"""
+    return news_event_test(db, extreme_pct=payload.extreme_pct, horizon=payload.horizon,
+                           source=payload.source)

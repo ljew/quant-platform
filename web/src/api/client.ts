@@ -152,12 +152,12 @@ export const api = {
   // GP 自动挖掘
   factorGpDirections: () => get<{ key: string; note: string }[]>("/factor/gp/directions"),
   factorGpMine: (payload: Record<string, unknown>) => post<GpMineResult>("/factor/gp/mine", payload),
-  /** 市场新闻情绪时序（非结构化管道） */
-  factorNewsDaily: (limit = 500) =>
-    get<{ date: string; n_articles: number; n_finance: number; bull: number; bear: number; net_sentiment: number | null }[]>(`/factor/news/daily?limit=${limit}`),
-  /** 极端情绪日 → 未来 N 日指数收益检验 */
-  factorNewsTest: (extreme_pct: number, horizon: number) =>
-    post<NewsEventReport>("/factor/news/event-test", { extreme_pct, horizon }),
+  /** 情绪时序（非结构化管道）。source: news=东财新闻 / mp=公众号语料 */
+  factorNewsDaily: (limit = 500, source: "news" | "mp" = "news") =>
+    get<{ date: string; n_articles: number; n_finance: number; bull: number; bear: number; net_sentiment: number | null }[]>(`/factor/news/daily?limit=${limit}&source=${source}`),
+  /** 极端情绪日 → 未来 N 日指数收益检验。source 支持 news / mp / both 合并 */
+  factorNewsTest: (extreme_pct: number, horizon: number, source: "news" | "mp" | "both" = "both") =>
+    post<NewsEventReport>("/factor/news/event-test", { extreme_pct, horizon, source }),
   // AI 因子生成（自然语言 ↔ 表达式）
   factorAiStatus: () => get<AiStatus>("/factor/ai/status"),
   factorAiGenerate: (text: string, max_retry = 3) =>

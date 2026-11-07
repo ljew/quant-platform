@@ -51,7 +51,10 @@ sources:
     enabled: true
     description: 公众号财经语料（文本管道输入）
     params:
-      db_path: /Users/happyljew/Desktop/kimiwork/Xiaoan_0811_bak/wechat-monitor/knowledge.db
+      # 留空 = 自动跟随 settings.wechat_data_dir（容器 /data/wechat、本机 data/wechat）。
+      # 2026-11-07 之前这里写死旧 Xiaoan 项目路径，容器内不存在 → step 静默 return 0，
+      # 公众号语料从未进入情绪管道。显式填路径仍优先。
+      db_path: ""
       body_chars: 4000
 
   eastmoney_news:

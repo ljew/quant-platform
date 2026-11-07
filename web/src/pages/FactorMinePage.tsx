@@ -34,6 +34,10 @@ export default function FactorMinePage() {
   const [newsHorizon, setNewsHorizon] = useState(5);
   const [newsTesting, setNewsTesting] = useState(false);
   const [newsReport, setNewsReport] = useState<NewsEventReport | null>(null);
+  // 数据源：both=合并（默认，样本最多）/ news=东财新闻 / mp=公众号语料
+  const [newsSource, setNewsSource] = useState<"news" | "mp" | "both">("both");
+  // both 没有单一时序，图表退化为公众号
+  const chartSource: "news" | "mp" = newsSource === "news" ? "news" : "mp";
   // AI 自然语言生成（生成后需人工确认，不自动挖掘）
   const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
   const [aiText, setAiText] = useState("");
@@ -66,7 +70,6 @@ export default function FactorMinePage() {
   useEffect(() => {
     api.factorFunctions().then(setFns).catch(() => {});
     api.factorGpDirections().then(setGpDirs).catch(() => {});
-    api.factorNewsDaily(600).then(setNewsSeries).catch(() => {});
     loadAiStatus();
     loadHistory();
   }, [loadAiStatus, loadHistory]);
@@ -156,10 +159,14 @@ export default function FactorMinePage() {
     }
   };
 
+  useEffect(() => {
+    api.factorNewsDaily(600, chartSource).then(setNewsSeries).catch(() => {});
+  }, [chartSource]);
+
   const runNewsTest = async () => {
     setNewsTesting(true);
     try {
-      setNewsReport(await api.factorNewsTest(0.10, newsHorizon));
+      setNewsReport(await api.factorNewsTest(0.10, newsHorizon, newsSource));
     } catch (e) {
       setError(`情绪检验失败: ${(e as Error).message}`);
     } finally {
@@ -180,11 +187,18 @@ export default function FactorMinePage() {
         <Card
           title="新闻情绪择时（市场级 · 非结构化数据）"
           colors={colors}
-          extra={<span style={{ fontSize: 11.5, color: colors.muted }}>词典法打分 · 每日新闻聚合</span>}
+          extra={<span style={{ fontSize: 11.5, color: colors.muted }}>词典法打分 · 新闻 + 公众号语料</span>}
         >
           <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8 }}>
             <span style={{ fontSize: 12.5 }}>净情绪 时序（正=多空词频偏多）</span>
             <span style={{ flex: 1 }} />
+            <label style={{ fontSize: 12, color: colors.muted }}>数据源
+              <select value={newsSource} onChange={(e) => setNewsSource(e.target.value as "news" | "mp" | "both")} style={{ ...inputStyle(colors), width: 118, marginLeft: 6 }}>
+                <option value="both">合并（样本最多）</option>
+                <option value="mp">公众号语料</option>
+                <option value="news">东财新闻</option>
+              </select>
+            </label>
             <label style={{ fontSize: 12, color: colors.muted }}>未来收益窗口
               <select value={newsHorizon} onChange={(e) => setNewsHorizon(Number(e.target.value))} style={{ ...inputStyle(colors), width: 76, marginLeft: 6 }}>
                 {[1, 5, 10, 20].map((h) => <option key={h} value={h}>{h} 日</option>)}

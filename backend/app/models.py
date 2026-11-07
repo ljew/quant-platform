@@ -539,6 +539,29 @@ class NewsMarketDaily(Base):
         return f"<NewsMarketDaily {self.date} senti={self.net_sentiment}>"
 
 
+class MpSentimentDaily(Base):
+    """公众号文章情绪日频聚合（非结构化 · 公众号语料）。
+
+    为什么要独立一张表：`news_market_daily` 被两个 step 写，口径不同 ——
+    东财新闻是**累加**（增量去重后 +=），而公众号的 gold 步骤是**覆盖**（重算）。
+    塞进同一张表会互相冲掉（公众号每天 30~60 篇，覆盖会把东财 100~500 篇冲没）。
+    分表后 `news_event_test(source="news"|"mp"|"both")` 可按需组合。
+    """
+
+    __tablename__ = "mp_sentiment_daily"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    date: Mapped[date] = mapped_column(Date, unique=True)
+    n_articles: Mapped[int] = mapped_column(Integer, default=0)
+    n_finance: Mapped[int] = mapped_column(Integer, default=0)
+    bull_score: Mapped[int] = mapped_column(Integer, default=0)
+    bear_score: Mapped[int] = mapped_column(Integer, default=0)
+    net_sentiment: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    def __repr__(self):
+        return f"<MpSentimentDaily {self.date} senti={self.net_sentiment}>"
+
+
 class NewsStockDaily(Base):
     """个股新闻情绪日频因子（文章内公司简称匹配 + 多空词典计分）。"""
 

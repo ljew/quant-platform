@@ -18,7 +18,7 @@ from app.datahub.ns_vars import TEXT_FACTOR_ENABLED
 from app.datahub.registry import write_bronze
 from app.datahub.source_config import get_source
 from app.database import SessionLocal, init_db
-from app.models import (FactorDaily, KlineDaily, NewsMarketDaily, NewsStockDaily,
+from app.models import (FactorDaily, KlineDaily, MpSentimentDaily, NewsMarketDaily, NewsStockDaily,
                         PipelineRun, PipelineStepLog, Stock, IndexKlineDaily,
                         FactorRegistry, FactorMinedDaily)
 
@@ -129,7 +129,15 @@ def step_extract_wechat_articles(db) -> int:
         return 0
     db_path = src.get("params", {}).get("db_path", "")
     body_chars = int(src.get("params", {}).get("body_chars", 4000))
+    # 配置里留空/失效时，跟随 settings.wechat_data_dir（容器 /data/wechat、本机 data/wechat）。
+    # 2026-11-07 之前 sources.yaml 写死的是旧 Xiaoan 项目路径，容器内不存在 →
+    # 本步骤静默 return 0，**公众号语料从未进入情绪管道**（用户反馈「加上公众号内容」的根因）。
     if not db_path or not os.path.exists(db_path):
+        from app.config import settings
+
+        cand = os.path.join(settings.wechat_data_dir, "knowledge.db")
+        db_path = cand if os.path.exists(cand) else ""
+    if not db_path:
         return 0
     import sqlite3
 
@@ -322,13 +330,17 @@ def step_score_sentiment(db) -> int:
     for d_str, r in day.iterrows():
         d2 = datetime.strptime(d_str, "%Y-%m-%d").date()
         senti = (r.bull - r.bear) / max(r.bull + r.bear, 1)
-        row = db.execute(select(NewsMarketDaily).where(NewsMarketDaily.date == d2)).scalar()
+        # ⚠️ 写 **公众号专属表** mp_sentiment_daily，不再动 news_market_daily。
+        # 2026-11-07 之前这里直接覆盖 news_market_daily 的 bull/bear —— 而东财新闻那个
+        # step 是累加，两者互相冲：公众号每天 30~60 篇会把东财 100~500 篇的结果抹掉。
+        row = db.execute(select(MpSentimentDaily).where(MpSentimentDaily.date == d2)).scalar()
         if row is None:
-            db.add(NewsMarketDaily(date=d2, n_articles=int(r.n_finance),
-                                   n_finance=int(r.n_finance), bull_score=int(r.bull),
-                                   bear_score=int(r.bear), net_sentiment=round(senti, 5)))
+            db.add(MpSentimentDaily(date=d2, n_articles=int(r.n_finance),
+                                    n_finance=int(r.n_finance), bull_score=int(r.bull),
+                                    bear_score=int(r.bear), net_sentiment=round(senti, 5)))
         else:
-            row.n_finance = max(int(row.n_finance or 0), int(r.n_finance))
+            row.n_articles = int(r.n_finance)
+            row.n_finance = int(r.n_finance)
             row.bull_score = int(r.bull)
             row.bear_score = int(r.bear)
             row.net_sentiment = round(senti, 5)
