@@ -823,6 +823,54 @@ def _nsi_window(nsi: dict) -> dict:
     }
 
 
+def _intraday_tier(db: Session, syms: list[str], base: float | None,
+                   bands: list[dict] | None, elp: float | None,
+                   now: datetime, base_rate: float | None) -> dict | None:
+    """盘中：用实时采样的一档累计成交额 + 日内节奏外推全天，给出**预估**档位。
+
+    为什么必须有：`build_elasticity.as_of` 来自日线最新日（19:30 才入库），
+    盘中与页面展示日对不上，原来 `tier_ctx` 会是 None，结论卡退回 20 只口径
+    （与净申购相关 −0.05，已被证伪）。盘中恰恰是最需要一档判据的时段。
+
+    诚实性约束：份额 T+1 才公布，盘中不给「净申购」；
+    倍数按全池的日内节奏外推，只是估算，所有文案都标「盘中预估」。
+    """
+    if not syms or not base or not elp or elp <= 0.02 or not bands:
+        return None
+    day0 = datetime.combine(now.date(), dtime(0, 0))
+    latest = db.scalar(select(func.max(EtfQuoteIntraday.sample_time))
+                       .where(EtfQuoteIntraday.sample_time >= day0))
+    if not latest:
+        return None
+    rows = db.execute(select(EtfQuoteIntraday.symbol, EtfQuoteIntraday.cum_amount)
+                      .where(EtfQuoteIntraday.sample_time == latest,
+                             EtfQuoteIntraday.symbol.in_(syms))).all()
+    live = sum(float(r.cum_amount or 0) for r in rows)
+    # 一档成员没采全就别外推，否则 base 对不上会算出假缩量
+    if live <= 0 or len(rows) < max(2, len(syms) // 2):
+        return None
+    est_amt = live / elp
+    mult = est_amt / base
+    from app.services import etf_elasticity as _ee
+    hit = None
+    for lo, hi, label, verdict in _ee.BANDS:
+        if lo <= mult < hi:
+            hit = next((b for b in bands if b["label"] == label), None)
+            band_label, band_verdict = label, verdict
+            break
+    else:
+        return None
+    return {
+        "mult": round(mult, 2), "verdict": band_verdict,
+        "prob": hit["big"] if hit else None,
+        "amount": round(est_amt, 1), "base": round(base, 1),
+        "base_rate": base_rate, "count": len(syms), "net": None,
+        "estimated": True, "as_of_time": latest.strftime("%H:%M"),
+        "live_amount": round(live, 1), "coverage": round(elp * 100, 0),
+        "band": band_label,
+    }
+
+
 def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
                    sup_n, as_of, is_live, tail_mult=None, tail_today=None,
                    tier=None, avail=None) -> dict:
@@ -873,15 +921,21 @@ def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
     band_word = {"高度疑似": "达到国家队量级", "疑似入场": "明显放量",
                  "有异动": "略有异动", "无异动": "接近常态"}.get(t_verdict or "", "缩量")
     if t_mult is not None:
-        vol = (f"一档 {t_count} 只（主力通道）成交 {t.get('amount', 0):.0f} 亿，"
-               f"为 20 日中位 {t.get('base', 0):.0f} 亿的 {t_mult:.2f} 倍")
-        if disabled:
-            vol += "（判据停用，不给档位）"
+        if t.get("estimated"):
+            vol = (f"一档 {t_count} 只（主力通道）盘中 {t.get('as_of_time', '')} 累计 "
+                   f"{t.get('live_amount', 0):.0f} 亿，按日内节奏（已过 {t.get('coverage', 0):.0f}%）"
+                   f"外推全天约 {t.get('amount', 0):.0f} 亿，为 20 日中位 "
+                   f"{t.get('base', 0):.0f} 亿的 {t_mult:.2f} 倍，{band_word}【盘中预估】")
         else:
-            vol += f"，{band_word}"
-            if t_prob is not None:
-                vol += (f"；历史同档仅 {t_prob:.1f}% 出现国家队级净申购"
-                        f"（基准 {t.get('base_rate') or 0:.1f}%）")
+            vol = (f"一档 {t_count} 只（主力通道）成交 {t.get('amount', 0):.0f} 亿，"
+                   f"为 20 日中位 {t.get('base', 0):.0f} 亿的 {t_mult:.2f} 倍")
+            if disabled:
+                vol += "（判据停用，不给档位）"
+            else:
+                vol += f"，{band_word}"
+                if t_prob is not None:
+                    vol += (f"；历史同档仅 {t_prob:.1f}% 出现国家队级净申购"
+                            f"（基准 {t.get('base_rate') or 0:.1f}%）")
         vol += f"。全池 20 只 {turnover:.0f} 亿（{mult:.2f}×）"
     else:
         if heavy:
@@ -966,6 +1020,8 @@ def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
     if disabled:
         head = "本日一档判据不可用：仅展示量能与资金原始数据，不给档位结论"
         tone = "calm"
+    elif t.get("estimated"):
+        head += "（盘中预估，份额待公布）"
 
     # —— NSI 交叉验证 ——
     pts = [{"tag": "量能", "text": vol}, {"tag": "方向", "text": dirn}]
@@ -1030,6 +1086,9 @@ def _build_summary(turnover, avg_turn, quantile, net_in, chg, nsi,
         caveat = "⚠️ " + str(_av.get("note") or "判据停用。") + " " + caveat
     elif degraded:
         caveat = "⚠️ 判据降级，历史概率仅供参考，不作独立依据。" + caveat
+    if t.get("estimated"):
+        caveat = ("盘中量能是按日内节奏外推的预估值，收盘后会被官方全天数据替换；"
+                  "份额 T+1 才公布，本段不含净申购判断。" + caveat)
 
     return {
         "as_of": as_of,
@@ -1853,6 +1912,14 @@ def build_dashboard(db: Session) -> dict:
             "base": _j.get("base"), "base_rate": _j.get("base_rate"),
             "count": elasticity.get("tier1_count"), "net": _j.get("net"),
         }
+    elif live_now and tier1_syms and elasticity.get("available"):
+        # 盘中当日日线还没入库，as_of 对不上，但不能因此退回 20 只口径。
+        # 用实时采样的一档累计成交额 + 全池日内节奏外推全天，给预估档位。
+        _elp = (sum(avg20[:cnt]) / sum(avg20)) if cnt and sum(avg20) > 0 else None
+        _j = elasticity.get("judge") or {}
+        tier_ctx = _intraday_tier(db, tier1_syms, _j.get("base"),
+                                  elasticity.get("bands"), _elp, now,
+                                  _j.get("base_rate"))
 
     summary = _build_summary(
         t_turn, avg_turn20, q_t, t_net, t_chg, nsi_data,

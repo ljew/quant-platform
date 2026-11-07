@@ -245,6 +245,96 @@ def _bands(day: pd.DataFrame) -> list[dict]:
     return out
 
 
+# PIT 结果只随「最新交易日 / 面板行数 / 分层参数」变化，按日缓存即可。
+# 逐日重跑 800+ 天 × 20 只 × 3 窗口的 OLS 不能放在每次 dashboard 请求里。
+_PIT_CACHE: dict = {}
+
+
+def _ols_fast(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+    """与 _ols 数学等价但避开 np.polyfit 的开销（PIT 要跑几万次）。"""
+    ok = np.isfinite(x) & np.isfinite(y)
+    x, y = x[ok], y[ok]
+    if len(x) < 8:
+        return np.nan, np.nan
+    xc, yc = x - x.mean(), y - y.mean()
+    den = float((xc * xc).sum())
+    if den <= 0:
+        return np.nan, np.nan
+    cross = float((xc * yc).sum())
+    sy = float((yc * yc).sum())
+    return cross / den, (cross * cross / (den * sy) if sy > 0 else np.nan)
+
+
+def _pit_bands(df: pd.DataFrame, t1_today: list[str]) -> tuple[list[dict], dict]:
+    """用 point-in-time 逐日名单重算分档概率，消除前视偏差。
+
+    旧口径的做法是：拿**今天**挑出的 6 只一档，回溯全部历史算命中率。
+    但一档名单是被行情挑出来的，历史上中位只有 3 只、与今天名单平均只重合
+    2 只 —— 等于用未来信息挑样本，lift 被系统性高估。
+
+    这里对每个历史交易日 t，只用截至 t 的数据重跑 21/60/120 日多数票，
+    得到当天的名单 S_t；再用 S_t 回溯 20 日（不含当日）算放量倍数与净申购。
+    这样每个观测点都不含未来信息。
+    """
+    key = (str(df["d"].max()), int(len(df)), tuple(TIER_WINDOWS),
+           TIER_VOTES, B_TIER, R2_TIER, BASE_WIN, BIG_NET,
+           tuple(sorted(t1_today)))
+    if _PIT_CACHE.get("key") == key:
+        return _PIT_CACHE["bands"], _PIT_CACHE["meta"]
+
+    A = df.pivot_table(index="d", columns="symbol", values="amt").sort_index()
+    N = df.pivot_table(index="d", columns="symbol", values="net").sort_index()
+    A = A.reindex(columns=N.columns)
+    cols = list(A.columns)
+    AA, NN = A.to_numpy(float), N.to_numpy(float)
+    T, ns = AA.shape
+    start = max(TIER_WINDOWS)
+    t1set = {cols.index(s) for s in t1_today if s in cols}
+    rows: list[dict] = []
+    counts: list[int] = []
+    overlaps: list[int] = []
+
+    for t in range(start, T):
+        hits = np.zeros(ns, dtype=int)
+        for w in TIER_WINDOWS:
+            xa, ya = AA[t - w + 1:t + 1], NN[t - w + 1:t + 1]
+            for j in range(ns):
+                b, r2 = _ols_fast(xa[:, j], ya[:, j])
+                if np.isfinite(b) and b >= B_TIER and np.isfinite(r2) and r2 >= R2_TIER:
+                    hits[j] += 1
+        S = np.where(hits >= TIER_VOTES)[0]
+        if not len(S):
+            continue
+        h = AA[t - BASE_WIN:t][:, S].sum(axis=1)
+        h = h[np.isfinite(h)]
+        if len(h) < max(5, BASE_WIN // 2):
+            continue
+        med = float(np.median(h))
+        if med <= 0:
+            continue
+        amt = float(np.nansum(AA[t, S]))
+        net = float(np.nansum(NN[t, S]))
+        rows.append({"mult": amt / med, "net": net})
+        counts.append(len(S))
+        overlaps.append(len(set(S) & t1set))
+
+    pday = pd.DataFrame(rows)
+    bands = _bands(pday) if len(pday) else []
+    meta = {
+        "valid_days": int(len(pday)),
+        "total_days": int(max(0, T - start)),
+        "coverage": round(len(pday) / max(1, T - start) * 100, 1),
+        "tier1_median": round(float(np.median(counts)), 1) if counts else None,
+        "overlap_mean": round(float(np.mean(overlaps)), 2) if overlaps else None,
+        "same_list_share": (round(float(np.mean([o == len(t1set) for o in overlaps])) * 100, 1)
+                            if overlaps and t1set else None),
+        "base_rate": (round(float((pday["net"] > BIG_NET).mean() * 100), 2)
+                      if len(pday) else None),
+    }
+    _PIT_CACHE.update({"key": key, "bands": bands, "meta": meta})
+    return bands, meta
+
+
 def build_elasticity(db: Session) -> dict:
     """组装分层、当前判据、分档历史与符号检查。"""
     if db.scalar(select(func.count()).select_from(EtfDailyBar)) == 0:
@@ -297,7 +387,10 @@ def build_elasticity(db: Session) -> dict:
 
     last = day.iloc[-1]
     mult = None if pd.isna(last["mult"]) else round(float(last["mult"]), 2)
-    band = next((b for b in _bands(day) if mult is not None and (
+    # 主表改用 PIT 口径；固定名单回溯全历史的结果只留作对照，暴露选择偏差有多大。
+    bands_sample = _bands(day)
+    pit_bands, pit_meta = _pit_bands(df, t1)
+    band = next((b for b in pit_bands if mult is not None and (
         (b["label"] == "<0.8×" and mult < 0.8)
         or (b["label"] == "0.8–1.0×" and 0.8 <= mult < 1.0)
         or (b["label"] == "1.0–1.3×" and 1.0 <= mult < 1.3)
@@ -305,7 +398,7 @@ def build_elasticity(db: Session) -> dict:
         or (b["label"] == "1.6–2.2×" and 1.6 <= mult < 2.2)
         or (b["label"] == ">2.2×" and mult >= 2.2))), None)
 
-    base_rate = round(float((day_ok["net"] > BIG_NET).mean() * 100), 1) if len(day_ok) else None
+    base_rate = pit_meta["base_rate"]
 
     # ── 符号检查：年度弹性 vs 近 60 日弹性 ──
     # 一档 5 只在 2026 年同时存在两种状态：全年净赎回（b 为负）、近两月净申购（b≈1）。
@@ -401,7 +494,10 @@ def build_elasticity(db: Session) -> dict:
             "lift": band["lift"] if band else None,
             "base_rate": base_rate,
         },
-        "bands": _bands(day),
+        "bands": pit_bands,
+        "bands_sample": bands_sample,
+        "basis": "point_in_time",
+        "pit": pit_meta,
         "recent": recent,
         "trend": trend,
         "sign_flag": sign_flag,

@@ -1264,7 +1264,16 @@ export interface EtfElasticity {
     net: number | null; band: string | null; verdict: string | null;
     prob: number | null; lift: number | null; base_rate: number | null;
   };
+  /** 主表口径：point_in_time = 逐日重选名单，无前视偏差 */
+  basis?: "point_in_time" | "sample";
   bands?: EtfElasticityBand[];
+  /** 对照：用今天名单回溯全历史的样本内口径，用来暴露选择偏差 */
+  bands_sample?: EtfElasticityBand[];
+  pit?: {
+    valid_days: number; total_days: number; coverage: number;
+    tier1_median: number | null; overlap_mean: number | null;
+    same_list_share: number | null; base_rate: number | null;
+  };
   recent?: EtfElasticityDay[];
   /** 近 250 日「一档合计」的滚动 60 日弹性轨迹 */
   trend?: { date: string; b: number }[];

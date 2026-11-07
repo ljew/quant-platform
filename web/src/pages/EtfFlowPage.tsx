@@ -1275,6 +1275,9 @@ function ElasticityCard({
   const avDisabled = avState === "disabled";
   const avDegraded = avState === "degraded";
   const curBand = (e?.bands ?? []).find((b) => b.label === j?.band);
+  const pitTop = (e?.bands ?? []).find((b) => b.label === ">2.2×");
+  const sampleTop = (e?.bands_sample ?? []).find((b) => b.label === ">2.2×");
+  const pit = e?.pit;
 
   const opt = useMemo<EChartsOption>(() => {
     const pts = e?.recent ?? [];
@@ -1399,7 +1402,7 @@ function ElasticityCard({
     <div style={cardStyle(colors)}>
       <CardHead
         title="一档弹性判据 · 成交额能否反推申购"
-        tag={`${e.as_of ?? ""} · 一档 ${tier1.length} 只 / 二档 ${tier2n} 只 · 占全池成交额 ${e.tier1_share ?? "—"}%`}
+        tag={`${e.as_of ?? ""} · 一档 ${tier1.length} 只 / 二档 ${tier2n} 只 · 占全池成交额 ${e.tier1_share ?? "—"}% · PIT 口径`}
         colors={colors}
       />
 
@@ -1526,9 +1529,19 @@ function ElasticityCard({
       </div>
 
       <div style={{ fontSize: 10.5, color: colors.axis, marginTop: 6, lineHeight: 1.65 }}>
-        95% 区间为 Wilson 区间；0 次命中的档位写成「&lt;上界」而不是 0%。
-        分档概率是<b style={{ color: colors.muted }}>样本内统计</b>——用当前一档名单回溯全部历史，
-        含选择偏差，只作相对排序，不可当实时命中率。
+        本表是 <b style={{ color: colors.muted }}>point-in-time 口径</b>：每个历史交易日只用截至当天的数据
+        重选一档名单再算倍数，不含未来信息。有效 {pit?.valid_days ?? "—"} / {pit?.total_days ?? "—"} 天
+        （覆盖 {pit?.coverage ?? "—"}%，其余日子选不满一档或历史窗口不足，直接跳过）；
+        当时一档只数中位 {pit?.tier1_median ?? "—"} 只，与今天名单平均重合 {pit?.overlap_mean ?? "—"} 只。
+        <br />
+        95% 区间为 Wilson 区间；0 次命中写成「&lt;上界」而不是 0%。
+        {sampleTop && pitTop && (
+          <span> 对照：拿<b>今天名单回溯全历史</b>的样本内口径会给出 {sampleTop.big?.toFixed(1)}% /
+            {sampleTop.lift?.toFixed(1)}×，PIT 口径只有 {pitTop.big?.toFixed(1)}% /
+            {pitTop.lift?.toFixed(1)}× —— 选择偏差把 lift 高估了
+            {sampleTop.lift && pitTop.lift
+              ? ` ${(sampleTop.lift / pitTop.lift).toFixed(1)} 倍` : "不少"}。</span>
+        )}
         {avDisabled && <b style={{ color: colors.down }}> 判据已停用，本表不参与今日结论。</b>}
       </div>
 
