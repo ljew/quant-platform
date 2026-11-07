@@ -10,7 +10,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { Badge, Card } from "./ui";
-import { api, HotBrief, HotBriefItem } from "../api/client";
+import { api, HotBrief, HotBriefInput, HotBriefItem } from "../api/client";
 import { useTheme } from "../theme";
 
 /** 单条来源标签（可点击）。抽出来是为了在窄列里也不挤。 */
@@ -41,6 +41,68 @@ function SourceTag({ item }: { item: HotBriefItem }) {
     </a>
   ) : (
     <span title={tip} style={pill}>{label}</span>
+  );
+}
+
+/** 快讯带具体时刻，搜索只有日期 —— 分开格式化，别统一成一种含糊写法。 */
+function fmtInputTime(x: HotBriefInput): string {
+  if (!x.ts) return "";
+  const d = new Date(x.ts * 1000);
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  return x.kind === "快讯"
+    ? `${p2(d.getHours())}:${p2(d.getMinutes())}`
+    : `${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+}
+
+/** 可展开的「本轮原始输入」。● 表示被模型采用，○ 表示看过但丢弃。 */
+function InputsPanel({ inputs, cited }: { inputs: HotBriefInput[]; cited: Set<string> }) {
+  const { colors } = useTheme();
+  const [open, setOpen] = useState(false);
+  const used = inputs.filter((x) => cited.has(x.ref)).length;
+
+  return (
+    <div style={{ marginTop: 10, borderTop: `1px solid ${colors.border}`, paddingTop: 8 }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          border: 0, background: "transparent", color: colors.accent, cursor: "pointer",
+          fontSize: 11.5, padding: 0,
+        }}
+      >
+        {open ? "▾" : "▸"} 本轮原始输入 {inputs.length} 条（已采用 {used} 条，其余被丢弃）
+      </button>
+      {open && (
+        <div style={{ marginTop: 6, maxHeight: 260, overflowY: "auto" }}>
+          {inputs.map((x) => {
+            const on = cited.has(x.ref);
+            const row = (
+              <div style={{ display: "flex", gap: 8, alignItems: "baseline",
+                            padding: "3px 0", fontSize: 11.5, opacity: on ? 1 : 0.55 }}>
+                <span style={{ color: on ? colors.accent : colors.muted, width: 8 }}>
+                  {on ? "●" : "○"}
+                </span>
+                <span style={{ color: colors.muted, width: 26, flexShrink: 0 }}>{x.ref}</span>
+                <span style={{ color: colors.muted, width: 40, flexShrink: 0 }}>
+                  {fmtInputTime(x)}
+                </span>
+                <span style={{ flex: 1, minWidth: 0, color: colors.text }}>
+                  {x.title}{x.url ? " ↗" : ""}
+                </span>
+                <span style={{ color: colors.muted, flexShrink: 0 }}>{x.site}</span>
+              </div>
+            );
+            return x.url ? (
+              <a key={x.ref} href={x.url} target="_blank" rel="noreferrer"
+                 style={{ textDecoration: "none", display: "block" }} title={x.title}>
+                {row}
+              </a>
+            ) : (
+              <div key={x.ref} title={x.title}>{row}</div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -184,6 +246,13 @@ export default function HotBriefCard({
             );
           })}
         </div>
+      )}
+
+      {!!brief?.inputs?.length && (
+        <InputsPanel
+          inputs={brief.inputs}
+          cited={new Set(items.flatMap((it) => it.source_refs || []))}
+        />
       )}
 
       <div style={{ marginTop: 9, fontSize: 11, color: colors.muted, lineHeight: 1.6 }}>

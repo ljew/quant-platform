@@ -566,6 +566,10 @@ class HotBrief(Base):
     n_search: Mapped[int] = mapped_column(Integer, default=0)     # 其中：DeepSeek 网页搜索
     n_items: Mapped[int] = mapped_column(Integer, default=0)      # 模型保留条数
     items_json: Mapped[str] = mapped_column(Text, default="[]")
+    # 本轮喂给模型的**原始输入快照**（编号/来源/时间/标题/链接）。
+    # 不存正文，只存可回溯的定位信息：2026-11-07 之前只存模型输出，
+    # 想核对「这条是从哪看到的」只能翻日志，而日志里根本没有。
+    inputs_json: Mapped[str] = mapped_column(Text, default="[]")
     mainline: Mapped[str] = mapped_column(Text, default="")       # 模型给的主线判断
     model: Mapped[str] = mapped_column(String(40), default="")
     error: Mapped[str] = mapped_column(Text, default="")

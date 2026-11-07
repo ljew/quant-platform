@@ -213,6 +213,25 @@ def _too_similar(a: str, b: str, thresh: float = 0.32) -> bool:
     return len(x & y) / len(x | y) >= thresh
 
 
+def _inputs_snapshot(flash: list[dict], search: list[dict]) -> list[dict]:
+    """本轮输入的定位信息（编号/类型/时间/标题/站点/链接）。
+
+    不存正文 —— 目的是「能找回原文」，存标题 + 链接 + 时间即可。
+    56 条约 5KB，一天 24 轮 ≈ 120KB，可接受。
+    """
+    out: list[dict] = []
+    for i, x in enumerate(flash, 1):
+        out.append({"ref": f"F{i}", "kind": "快讯", "ts": int(x.get("ts") or 0),
+                    "title": str(x.get("title") or "")[:140],
+                    "site": "财联社电报", "url": ""})
+    for i, x in enumerate(search, 1):
+        out.append({"ref": f"S{i}", "kind": "搜索", "ts": int(x.get("ts") or 0),
+                    "title": str(x.get("title") or "")[:140],
+                    "site": str(x.get("site") or "网页"),
+                    "url": str(x.get("url") or "")})
+    return out
+
+
 def _ref_map(flash: list[dict], search: list[dict]) -> dict[str, dict]:
     """输入编号 → 人类可读来源。F=财联社快讯，S=DeepSeek 搜索。
 
@@ -354,7 +373,9 @@ def run_brief(db: Session, minutes: int = 60,
     flash, search = inputs["flash"], inputs["search"]
     rec = HotBrief(created_at=datetime.now(), n_input=len(flash) + len(search),
                    n_flash=len(flash), n_search=len(search),
-                   n_items=0, items_json="[]", model="")
+                   n_items=0, items_json="[]",
+                   inputs_json=json.dumps(_inputs_snapshot(flash, search), ensure_ascii=False),
+                   model="")
     if not flash and not search:
         rec.error = "窗口内没有任何资讯（快讯与搜索均为空）"
         db.add(rec)
@@ -438,6 +459,10 @@ def _to_dict(r: HotBrief) -> dict:
         items = json.loads(r.items_json or "[]")
     except Exception:  # noqa: BLE001
         items = []
+    try:
+        inputs = json.loads(r.inputs_json or "[]")
+    except Exception:  # noqa: BLE001
+        inputs = []
     return {
         "id": r.id,
         "created_at": r.created_at.isoformat(timespec="seconds") if r.created_at else None,
@@ -448,6 +473,7 @@ def _to_dict(r: HotBrief) -> dict:
         "n_search": r.n_search,
         "n_items": r.n_items,
         "items": items,
+        "inputs": inputs,
         "mainline": r.mainline,
         "model": r.model,
         "error": r.error,

@@ -402,6 +402,16 @@ export interface HotBriefItem {
   sources?: HotBriefSource[];
 }
 
+/** 本轮喂给模型的原始输入（用于回溯「这条是从哪看到的」） */
+export interface HotBriefInput {
+  ref: string;      // F1 / S2
+  kind: string;     // 快讯 / 搜索
+  ts: number;       // unix 秒；搜索可能为 0
+  title: string;
+  site: string;
+  url: string;
+}
+
 export interface HotBrief {
   id?: number;
   created_at?: string;
@@ -412,6 +422,8 @@ export interface HotBrief {
   n_search?: number;
   n_items?: number;
   items?: HotBriefItem[];
+  /** 本轮原始输入快照（标题/站点/链接），可回溯原文 */
+  inputs?: HotBriefInput[];
   mainline?: string;
   model?: string;
   error?: string;

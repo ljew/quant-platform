@@ -110,7 +110,8 @@ def _migrate_sqlite() -> None:
     # research_runs 表：人工闸门倒计时（2026-09-30 P2）
     research_runs_expected = {"gate_deadline": "TIMESTAMP"}
     # hot_brief 表：输入来源拆分（2026-11-07 接入 DeepSeek 搜索后区分快讯/搜索）
-    hot_brief_expected = {"n_flash": "INTEGER DEFAULT 0", "n_search": "INTEGER DEFAULT 0"}
+    hot_brief_expected = {"n_flash": "INTEGER DEFAULT 0", "n_search": "INTEGER DEFAULT 0",
+                          "inputs_json": "TEXT DEFAULT '[]'"}
     try:
         with engine.connect() as conn:
             for table, expected in (
