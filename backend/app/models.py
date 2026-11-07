@@ -605,6 +605,10 @@ class HotBrief(Base):
     # 今日综述：350~600 字、分政策/产业/海外/资金四段。每轮重写并覆盖当日整体，
     # 不是只总结本小时 —— 老刘 2026-11-07 反馈「首页总结太简单，要全面一点」。
     summary: Mapped[str] = mapped_column(Text, default="")
+    # 今日合并后的主题列表（LLM 去重，带 first_seen）。
+    # 每轮生成时重算：字符相似度判不出「暴雪黄色预警覆盖东北华北」和
+    # 「京津冀暴雪与强冷空气」是同一件事（Jaccard 仅 0.05），必须靠语义。
+    today_items_json: Mapped[str] = mapped_column(Text, default="[]")
     model: Mapped[str] = mapped_column(String(40), default="")
     error: Mapped[str] = mapped_column(Text, default="")
 

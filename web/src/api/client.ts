@@ -444,6 +444,10 @@ export interface HotBrief {
   summary?: string;
   /** 今日累计视图专有 */
   n_briefs?: number;
+  /** 最近一轮（本小时）真正新报的条目 */
+  latest_items?: HotBriefItem[];
+  latest_at?: string;
+  n_latest?: number;
   date?: string;
   source_split?: Record<string, number>;
   model?: string;
@@ -1373,12 +1377,33 @@ export interface EtfFlowDetailItem {
   enough: boolean;
 }
 
+/** 托底门槛口径对照：固定 100 亿 vs 随成交额缩放的相对门槛 */
+export interface EtfFlowThresholdSummary {
+  count: number;
+  by_year: { year: string; n: number; share: number }[];
+  pct_median: number | null;
+  pct_n: number;
+  low_share: number | null;
+  high_share: number | null;
+  fwd: Record<string, number | null>;
+}
+
+export interface EtfFlowThresholdCompare {
+  absolute: EtfFlowThresholdSummary;
+  relative: EtfFlowThresholdSummary;
+  ratio: number;
+  note: string;
+  verdict: string;
+  pct_median_gap: number | null;
+}
+
 export interface EtfFlowDashboard {
   meta: EtfFlowMeta;
   summary: EtfFlowSummary;
   etf_detail: EtfFlowDetailItem[];
   focus: EtfFlowFocus;
   valuation: EtfFlowValuation;
+  threshold_compare?: EtfFlowThresholdCompare;
   elasticity: EtfElasticity;
   nsi: EtfFlowNsi;
   minute: EtfFlowMinute;

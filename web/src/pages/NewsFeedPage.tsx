@@ -28,6 +28,7 @@ const SOURCE_COLOR: Record<string, string> = {
   eastmoney: "#b9770e",
   sina: "#8e44ad",
   tushare: "#16688a",
+  deepseek: "#4d5bd0",
   wechat: "#1a8a48",
   guba: "#5d6d7e",
 };

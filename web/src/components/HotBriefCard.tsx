@@ -1,22 +1,61 @@
 /**
- * 热点简报卡片（每小时 :02 生成，展示「今日累计」而不是单轮增量）。
+ * 热点简报卡片（每小时 :02 增量生成，展示「本小时新增 + 今日累计」）。
  *
- * 为什么用 /today 而不是 /latest：
- *   每轮只报「本小时新增」，若卡片只显示最新一轮，就会出现 —— 这一小时全是
- *   DeepSeek 搜索条目、下一小时全是财联社快讯，用户看到的是「一会儿有一会儿没有」。
- *   今日累计把两边合并去重摆在一起，并标出每条首次出现时间。
+ * 三块：
+ *   ① 本小时新增 —— 最近一轮真正新报的条目。老刘的预期是「每小时看这一小时的新消息」，
+ *      所以它必须在最上面；若本轮确实没有新材料，明确写「无新增」而不是留白。
+ *   ② 今日综述   —— 350~1000 字，分政策/产业/海外/资金四段，每轮重写覆盖当日整体。
+ *   ③ 今日主题   —— 各轮合并 + LLM 语义去重后的清单，带来源与首次出现时间。
  *
- * 三块内容：
- *   ① 综述   —— 350~1000 字，分政策/产业/海外/资金四段（每轮重写并覆盖当日整体）
- *   ② 今日主题 —— 各轮合并去重后的条目，带来源标签与首次出现时间
- *   ③ 原始输入 —— 本轮喂给模型的全部条目，● 采用 / ○ 丢弃
+ * 关键词高亮只做视觉锚点：政策/产业/市场词用主色，数字用浅底，**不用红绿**——
+ * 同一个数字在不同语境下多空相反，上色会误导。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Card } from "./ui";
 import { api, HotBrief, HotBriefInput, HotBriefItem } from "../api/client";
-import { useTheme } from "../theme";
+import { ThemeColors, useTheme } from "../theme";
 
 const ITEMS_PREVIEW = 8;
+
+/** 综述高亮词表：政策与监管 / 产业 / 市场口径。 */
+const HL_KEYWORDS = [
+  "国常会", "政治局", "证监会", "央行", "发改委", "工信部", "商务部", "财政部",
+  "降准", "降息", "再贷款", "逆回购", "MLF", "LPR", "专项债", "财政", "监管",
+  "立案", "反倾销", "关税", "制裁", "回购", "增持", "减持", "中标",
+  "半导体", "算力", "人工智能", "新能源", "光伏", "储能", "军工",
+  "黄金", "原油", "煤炭", "化工", "医药", "地产", "汽车", "机器人", "信创",
+  "成交额", "两融", "北向", "估值", "股息", "ETF", "涨停", "跌停", "换手",
+];
+
+const KW_RE = new RegExp(`(${HL_KEYWORDS.join("|")})`, "g");
+const NUM_RE = /(\d[\d,]*(?:\.\d+)?(?:万亿|亿|万|个百分点|个基点|bp|%|美元|盎司|吨|家|项|倍|点)?)/g;
+
+function highlight(text: string, colors: ThemeColors): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  text.split(KW_RE).forEach((chunk, i) => {
+    if (!chunk) return;
+    if (HL_KEYWORDS.includes(chunk)) {
+      out.push(
+        <span key={`k${i}`} style={{ color: colors.accent, fontWeight: 600 }}>{chunk}</span>,
+      );
+      return;
+    }
+    chunk.split(NUM_RE).forEach((p, j) => {
+      if (!p) return;
+      if (/^\d/.test(p)) {
+        out.push(
+          <span key={`n${i}-${j}`} style={{
+            fontWeight: 600, background: `${colors.accent}16`,
+            padding: "0 1px", borderRadius: 2,
+          }}>{p}</span>,
+        );
+      } else {
+        out.push(<span key={`t${i}-${j}`}>{p}</span>);
+      }
+    });
+  });
+  return out;
+}
 
 /** 单条来源标签（可点击）。 */
 function SourceTag({ item }: { item: HotBriefItem }) {
@@ -46,6 +85,44 @@ function SourceTag({ item }: { item: HotBriefItem }) {
     </a>
   ) : (
     <span title={tip} style={pill}>{label}</span>
+  );
+}
+
+/** 一条主题（方向徽标 + 主题 + 来源 + 时间 + 板块/个股 + 影响路径）。 */
+function ItemRow({ it, dense }: { it: HotBriefItem; dense: boolean }) {
+  const { colors } = useTheme();
+  const up = it.direction === "bullish";
+  const tone = up ? colors.up : it.direction === "bearish" ? colors.down : colors.muted;
+  return (
+    <div style={{ display: "flex", gap: 9, alignItems: "flex-start", minWidth: 0 }}>
+      <Badge
+        text={`${up ? "多" : it.direction === "bearish" ? "空" : "中"} ${it.strength}/5`}
+        color={tone}
+        soft
+      />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          fontSize: dense ? 12 : 12.5, fontWeight: 600,
+          display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap",
+        }}>
+          <span>{it.theme}</span>
+          <SourceTag item={it} />
+          {it.first_seen && (
+            <span style={{ fontSize: 10.5, color: colors.muted, fontWeight: 400 }}>
+              {it.first_seen.slice(11, 16)}
+            </span>
+          )}
+        </div>
+        <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 2 }}>
+          {it.sectors?.length ? <>板块 {it.sectors.join("/")}　</> : null}
+          {it.tickers?.length ? <>个股 {it.tickers.join("/")}　</> : null}
+          {it.horizon}
+        </div>
+        <div style={{ fontSize: 11.5, color: colors.text, opacity: 0.85, marginTop: 2 }}>
+          {it.why}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -129,7 +206,6 @@ export default function HotBriefCard({
     setLoading(true);
     api
       .hotBriefToday()
-      // 后端无数据时返回 {}
       .then((d) => setBrief(d && (d.n_items || d.summary) ? d : null))
       .catch(() => setBrief(null))
       .finally(() => setLoading(false));
@@ -140,14 +216,13 @@ export default function HotBriefCard({
   }, [load]);
 
   const items = brief?.items || [];
+  const latest = brief?.latest_items || [];
   const paragraphs = useMemo(
     () => (brief?.summary || "").split(/\n+/).map((s) => s.trim()).filter(Boolean),
     [brief?.summary],
   );
   const shownItems = showAllItems ? items : items.slice(0, ITEMS_PREVIEW);
   const split = brief?.source_split || {};
-  // 必须把「未标注」也算进来，否则 12+3 对不上总数 38，看着像丢数据。
-  // 这些是加来源标注功能之前生成的旧条目，次日自然消失。
   const splitText = ["快讯", "搜索", "混合", "未标注"]
     .filter((k) => (split[k] || 0) > 0)
     .map((k) => `${k} ${split[k]}`)
@@ -155,9 +230,7 @@ export default function HotBriefCard({
 
   const meta = brief ? (
     <span style={{ fontSize: 11.5, color: colors.muted, fontWeight: 400 }}>
-      {brief.date || ""}
-      {" · 共 "}
-      {brief.n_briefs ?? 1} 轮 · {brief.n_items} 条
+      {brief.date || ""} · 共 {brief.n_briefs ?? 1} 轮 · 今日 {brief.n_items} 条
       {splitText ? `（${splitText}）` : ""}
       {brief.created_at ? ` · 最新 ${brief.created_at.slice(11, 16)}` : ""}
     </span>
@@ -204,11 +277,35 @@ export default function HotBriefCard({
           }}
         >
           <span style={{ fontWeight: 700, marginRight: 6, color: colors.accent }}>主线</span>
-          {brief.mainline}
+          {highlight(brief.mainline, colors)}
         </div>
       )}
 
-      {/* —— 综述（默认展示前两段，可展开全文）—— */}
+      {/* —— ① 本小时新增 —— */}
+      {brief && (
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 12, color: colors.muted, marginBottom: 5 }}>
+            本小时新增
+            <span style={{ marginLeft: 6 }}>
+              （{brief.latest_at || "—"} 更新 · {brief.n_latest ?? latest.length} 条）
+            </span>
+          </div>
+          {latest.length > 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: dense ? 7 : 9 }}>
+              {latest.map((it, i) => <ItemRow key={i} it={it} dense={dense} />)}
+            </div>
+          ) : (
+            <div style={{
+              fontSize: 12, color: colors.muted, padding: "6px 10px",
+              border: `1px dashed ${colors.border}`, borderRadius: 6,
+            }}>
+              本轮无新增主题 —— 快讯与搜索都没有新材料，下方综述与今日主题仍会更新。
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* —— ② 今日综述 —— */}
       {paragraphs.length > 0 && (
         <div style={{ marginBottom: 10 }}>
           <div style={{ fontSize: 12, color: colors.muted, marginBottom: 4 }}>
@@ -219,7 +316,7 @@ export default function HotBriefCard({
           </div>
           <div style={{ fontSize: 12.5, lineHeight: 1.85 }}>
             {(summaryOpen ? paragraphs : paragraphs.slice(0, 2)).map((p, i) => (
-              <p key={i} style={{ margin: "0 0 8px" }}>{p}</p>
+              <p key={i} style={{ margin: "0 0 8px" }}>{highlight(p, colors)}</p>
             ))}
           </div>
           {paragraphs.length > 2 && (
@@ -236,11 +333,11 @@ export default function HotBriefCard({
         </div>
       )}
 
-      {/* —— 今日主题（各轮合并去重）—— */}
+      {/* —— ③ 今日主题（已 LLM 去重）—— */}
       {items.length > 0 && (
         <>
           <div style={{ fontSize: 12, color: colors.muted, margin: "2px 0 6px" }}>
-            今日主题 · {items.length} 条（按首次出现倒序）
+            今日主题 · {items.length} 条（已合并同一事件，按首次出现倒序）
           </div>
           <div
             style={{
@@ -250,61 +347,7 @@ export default function HotBriefCard({
               gap: dense ? 7 : 9,
             }}
           >
-            {shownItems.map((it, i) => {
-              const up = it.direction === "bullish";
-              const tone = up
-                ? colors.up
-                : it.direction === "bearish"
-                  ? colors.down
-                  : colors.muted;
-              return (
-                <div
-                  key={i}
-                  style={{ display: "flex", gap: 9, alignItems: "flex-start", minWidth: 0 }}
-                >
-                  <Badge
-                    text={`${up ? "多" : it.direction === "bearish" ? "空" : "中"} ${it.strength}/5`}
-                    color={tone}
-                    soft
-                  />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div
-                      style={{
-                        fontSize: dense ? 12 : 12.5,
-                        fontWeight: 600,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 6,
-                        flexWrap: "wrap",
-                      }}
-                    >
-                      <span>{it.theme}</span>
-                      <SourceTag item={it} />
-                      {it.first_seen && (
-                        <span style={{ fontSize: 10.5, color: colors.muted, fontWeight: 400 }}>
-                          {it.first_seen.slice(11, 16)}
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 2 }}>
-                      {it.sectors?.length ? <>板块 {it.sectors.join("/")}　</> : null}
-                      {it.tickers?.length ? <>个股 {it.tickers.join("/")}　</> : null}
-                      {it.horizon}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 11.5,
-                        color: colors.text,
-                        opacity: 0.85,
-                        marginTop: 2,
-                      }}
-                    >
-                      {it.why}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+            {shownItems.map((it, i) => <ItemRow key={i} it={it} dense={dense} />)}
           </div>
           {items.length > ITEMS_PREVIEW && (
             <button
@@ -325,14 +368,13 @@ export default function HotBriefCard({
       {!!brief?.inputs?.length && (
         <InputsPanel
           inputs={brief.inputs}
-          cited={new Set(items.flatMap((it) => it.source_refs || []))}
+          cited={new Set([...items, ...latest].flatMap((it) => it.source_refs || []))}
         />
       )}
 
       <div style={{ marginTop: 9, fontSize: 11, color: colors.muted, lineHeight: 1.6 }}>
         输入 = 财联社一手快讯（时效）+ DeepSeek 网页搜索（覆盖广度），模型只做筛选与判断；
-        每小时 :02 增量生成，本卡片展示今日累计（跨轮去重），因此 DeepSeek 的条目
-        不会因为「上一轮报过」而从页面上消失。
+        每小时 :02 生成一轮，「本小时新增」是这一轮的新条目，「今日主题」是全天合并去重后的全貌。
         {columns === 1 && (
           <>
             {" "}来源标签：灰色「财联社电报」= 一手快讯，蓝色「DeepSeek · 站点」= 网页搜索（可点开原文）。

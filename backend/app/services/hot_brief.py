@@ -109,6 +109,26 @@ items 只报本轮真正的新增变化。
 """
 
 
+MERGE_PROMPT = """下面是今日已收录的 A 股主题（编号 + 主题 + 影响路径）。
+其中若干条是同一件事的不同说法（不同来源标题不一样）。请挑出应当保留的编号。
+
+判断标准：
+- 同一政策 / 同一事件 / 同一批经济数据 → 只留信息最全的一条
+  例：「暴雪黄色预警覆盖东北华北」「京津冀暴雪与强冷空气」「强冷空气来袭气温创新低」
+      都是同一次冷空气过程，合并
+  例：「央行连续24个月增持黄金」「10月外储回升、黄金连增24月」是同一批数据，合并
+  例：「美制裁中企与中方严正关切」「美方制裁两家中国企业」是同一事件，合并
+- 不同对象、不同数据、不同政策措施 → 都保留
+  例：「国常会定调稳市机制」与「券商互换便利落地」相关但抓手不同，保留
+  例：「中央企业外资利用超1200亿美元」与「央企前三季进口同比增5.1%」是不同数据，保留
+- **宁可少合并，也不要把不同事件并掉**
+
+只输出 JSON：{{"keep": [编号...]}}（按原顺序，至少保留 1 个），不要解释。
+
+{items}
+"""
+
+
 def _noise_filter(text: str) -> bool:
     """粗筛掉明显无信息量的条目，减少 token 浪费。"""
     t = (text or "").strip()
@@ -291,6 +311,47 @@ def _resolve_src(raw, ref_map: dict[str, dict]) -> dict:
             "sources": sources}
 
 
+def _llm_merge(cfg: dict, items: list[dict]) -> list[dict]:
+    """用 LLM 把「同一件事的不同说法」合并掉，返回保留的条目。
+
+    为什么不用字符相似度：实测「暴雪黄色预警覆盖东北华北」vs「京津冀暴雪与强冷空气」
+    的字符二元组 Jaccard 只有 0.05，但显然是同一次冷空气过程；反过来
+    「国常会定调稳市」和「券商互换便利落地」字面也有一点重合，却是两件事。
+    这类判断只能靠语义。
+
+    失败/输出异常时**原样返回**（宁可重复，不要误删）。
+    """
+    from app.services.llm_config import chat
+
+    if len(items) <= 2:
+        return items
+    lines = [f"[{i}] {str(it.get('theme') or '')}｜{str(it.get('why') or '')[:50]}"
+             for i, it in enumerate(items, 1)]
+    try:
+        text = chat(cfg, [
+            {"role": "system", "content": "你是严谨的资讯去重助手，只输出 JSON。"},
+            {"role": "user", "content": MERGE_PROMPT.format(items="\n".join(lines))},
+        ], temperature=0.0, max_tokens=400)
+    except Exception as e:  # noqa: BLE001
+        logger.info("LLM 去重调用失败，保留全部：%s", str(e)[:60])
+        return items
+
+    raw = _strip_fence(text)
+    i, j = raw.find("{"), raw.rfind("}")
+    if i >= 0 and j > i:
+        raw = raw[i:j + 1]
+    try:
+        keep = json.loads(raw).get("keep") or []
+        idx = sorted({int(k) for k in keep if isinstance(k, (int, float, str))})
+        idx = [k for k in idx if 1 <= k <= len(items)]
+    except Exception:  # noqa: BLE001
+        return items
+    if not idx or len(idx) >= len(items):
+        return items
+    logger.info("今日合并去重：%d 条 → %d 条", len(items), len(idx))
+    return [items[k - 1] for k in idx]
+
+
 def _parse(text: str, ref_map: dict[str, dict] | None = None,
            ) -> tuple[list[dict], str, str]:
     raw = _strip_fence(text)
@@ -396,6 +457,22 @@ def run_brief(db: Session, minutes: int = 60,
                    n_items=0, items_json="[]",
                    inputs_json=json.dumps(_inputs_snapshot(flash, search), ensure_ascii=False),
                    model="")
+    # 让「全部资讯」页里也有 DeepSeek 这个分类：搜索结果本就是原始资讯，
+    # 之前只存在 hot_brief.inputs_json 里，无法按来源检索。
+    if search:
+        try:
+            from app.services import news_feed
+
+            news_feed.ingest(db, "deepseek", [
+                {"key": x.get("url") or x.get("title"), "title": x.get("title"),
+                 "summary": x.get("body"), "url": x.get("url"),
+                 "published_at": x.get("ts") or None,
+                 "extra": {"site": x.get("site")}}
+                for x in search
+            ])
+        except Exception as e:  # noqa: BLE001
+            logger.info("灌入 DeepSeek 结果失败：%s", str(e)[:60])
+
     if not flash and not search:
         rec.error = "窗口内没有任何资讯（快讯与搜索均为空）"
         db.add(rec)
@@ -441,7 +518,28 @@ def run_brief(db: Session, minutes: int = 60,
         if len(kept) != len(items):
             logger.info("跨轮去重：%d 条 → %d 条（与今日已报主题重复）", len(items), len(kept))
         items = kept
+    # —— 今日累计合并（LLM 语义去重）——
+    # 每轮把「今日已有」+「本轮新增」交给模型挑一遍，结果落到 today_items_json。
+    # 之所以在生成时就合并、而不是查询时现算：接口会被频繁调用，
+    # 每次调 LLM 既慢又费钱；生成一小时一次，正合适。
+    tag = datetime.now().isoformat(timespec="minutes")
+    prev_today = _latest_today_items(db)
+    fresh = []
+    for it in items:
+        if any(_too_similar(it["theme"], p.get("theme", "")) for p in prev_today):
+            continue
+        row = dict(it)
+        row["first_seen"] = tag
+        fresh.append(row)
+    merged = prev_today + fresh
+    if len(merged) > 2:
+        merged = _llm_merge(cfg, merged)
+    # 补齐 first_seen（模型只挑不删字段，但老数据可能没有）
+    for it in merged:
+        it.setdefault("first_seen", tag)
+
     rec.items_json = json.dumps(items, ensure_ascii=False)
+    rec.today_items_json = json.dumps(merged, ensure_ascii=False)
     rec.mainline = mainline
     rec.summary = summary
     rec.n_items = len(items)
@@ -450,6 +548,19 @@ def run_brief(db: Session, minutes: int = 60,
         rec.error = "" if mainline else "模型未返回可解析内容"
     db.add(rec)
     db.commit()
+    # 只保留最新一轮的 today_items_json：旧轮次的合并结果没人读（_latest_today_items
+    # 只取最后一个非空），留着白占空间 —— 25 条 × 24 轮/天 ≈ 340KB/天。
+    try:
+        start_today = datetime.combine(datetime.now().date(), dtime.min)
+        db.query(HotBrief).filter(
+            HotBrief.created_at >= start_today,
+            HotBrief.id != rec.id,
+            HotBrief.today_items_json != "[]",
+        ).update({HotBrief.today_items_json: "[]"}, synchronize_session=False)
+        db.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.info("清理旧轮次 today_items_json 失败：%s", str(e)[:60])
+
     # ok 的语义是「这次运行成功」，不是「有产出」。本轮无实质新增是正常结论 ——
     # 若把空结果当失败，调度器会在 :02/:05 反复重试同一小时、还天天告警。
     # 真正的失败只有两种：模型没吐出可解析 JSON（mainline 为空），或调用抛异常。
@@ -458,6 +569,18 @@ def run_brief(db: Session, minutes: int = 60,
             "n_flash": rec.n_flash, "n_search": rec.n_search,
             "n_items": len(items), "mainline": mainline,
             "summary_len": len(summary), "error": rec.error}
+
+
+def _latest_today_items(db: Session) -> list[dict]:
+    """今天最近一轮已合并好的主题列表（没有就返回空）。"""
+    for r in reversed(_today_rows(db)):
+        try:
+            rows = json.loads(r.today_items_json or "[]")
+        except Exception:  # noqa: BLE001
+            rows = []
+        if rows:
+            return rows
+    return []
 
 
 def today_brief(db: Session) -> dict:
@@ -471,22 +594,24 @@ def today_brief(db: Session) -> dict:
     if not rows:
         return {}
 
-    merged: list[dict] = []
-    seen: list[str] = []
-    for r in rows:
-        try:
-            items = json.loads(r.items_json or "[]")
-        except Exception:  # noqa: BLE001
-            items = []
-        for it in items:
-            t = str(it.get("theme") or "")
-            if not t or any(_too_similar(t, x) for x in seen):
-                continue
-            seen.append(t)
-            row = dict(it)
-            row["first_seen"] = (r.created_at.isoformat(timespec="minutes")
-                                 if r.created_at else "")
-            merged.append(row)
+    # 优先用生成时已做好的 LLM 语义合并结果；没有（老记录）才回退到字符去重。
+    merged = _latest_today_items(db)
+    if not merged:
+        seen: list[str] = []
+        for r in rows:
+            try:
+                items = json.loads(r.items_json or "[]")
+            except Exception:  # noqa: BLE001
+                items = []
+            for it in items:
+                t = str(it.get("theme") or "")
+                if not t or any(_too_similar(t, x) for x in seen):
+                    continue
+                seen.append(t)
+                row = dict(it)
+                row["first_seen"] = (r.created_at.isoformat(timespec="minutes")
+                                     if r.created_at else "")
+                merged.append(row)
     merged.sort(key=lambda x: (x.get("first_seen") or ""), reverse=True)
 
     last = rows[-1]
@@ -511,10 +636,20 @@ def today_brief(db: Session) -> dict:
         else:
             split["未标注"] += 1
 
+    try:
+        latest_items = json.loads(last.items_json or "[]")
+    except Exception:  # noqa: BLE001
+        latest_items = []
+
     return {
         "date": last.created_at.date().isoformat() if last.created_at else "",
         "created_at": last.created_at.isoformat(timespec="seconds") if last.created_at else None,
         "n_briefs": len(rows),
+        # 「本小时新增」= 最近一轮真正新报的条目。老刘的预期是「每小时看这一小时的新消息」，
+        # 之前只给累计视图，看不出哪些是本小时新出现的。
+        "latest_items": latest_items,
+        "latest_at": last.created_at.strftime("%H:%M") if last.created_at else "",
+        "n_latest": len(latest_items),
         "mainline": mainline,
         "summary": summary,
         "items": merged,

@@ -44,6 +44,8 @@ SOURCE_LABELS: dict[str, str] = {
     "cls": "财联社",
     "eastmoney": "东财",
     "sina": "新浪",
+    # 由热点简报灌入（每小时一次），不是独立采集器
+    "deepseek": "DeepSeek",
     "tushare": "tushare资讯",
     "wechat": "公众号",
     "guba": "股吧",
@@ -224,6 +226,18 @@ def _fetch_parquet(kind: str, source: str, limit: int = 600) -> list[dict]:
 
 
 # ───────────────────────── 同步 ─────────────────────────
+
+def ingest(db: Session, source: str, items: list[dict]) -> int:
+    """把已归一化的条目写进统一流，供其它模块灌数据（如热点简报灌 DeepSeek 搜索结果）。
+
+    items 元素字段：key / title / summary / url / published_at / symbols / extra
+    """
+    try:
+        return _insert(db, _rows(source, items))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("灌入 %s 到资讯流失败：%s", source, e)
+        return -1
+
 
 def sync_fast(db: Session) -> dict:
     """快源：财联社 / 东财 / 新浪。任何一路失败不影响其它。"""
