@@ -32,7 +32,7 @@ import json
 import logging
 import os
 import re
-from datetime import date, datetime, time as dtime, timedelta
+from datetime import datetime, time as dtime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -178,10 +178,14 @@ def collect_flash(minutes: int = 60, limit: int | None = None,
 
 
 def collect_search(queries: tuple[str, ...] | list[str] | None = None,
-                   per_query: int = 5) -> list[dict]:
+                   per_query: int = 5, minutes: int = 60) -> list[dict]:
     """DeepSeek 网页搜索补充（二手但覆盖面广）。
 
-    查询带 `after:{今天}` —— 简报是小时级的，只要当天的结果；
+    ⚠️ `after:` 必须跟着**取数窗口**走，不能写死「今天」。
+    2026-11-08 凌晨实测：`after:2026-11-08` 返回 0 条，`after:2026-11-07`
+    返回 3 条 —— 服务端确实按日期过滤，而 07:02 那轮（最需要隔夜要闻的一轮）
+    当天还几乎没有新闻，写死「今天」等于让搜索腿天天在早间空转。
+    改成用窗口起点：600 分钟的隔夜轮 → after:昨天，盘中 60 分钟 → after:今天。
     搜索语法由服务端原样透传（支持 site: / after: / lang: 等）。
     """
     from app.services import ds_search
@@ -189,12 +193,12 @@ def collect_search(queries: tuple[str, ...] | list[str] | None = None,
     if not ds_search.available():
         return []
     qs = queries or ds_search.DEFAULT_QUERIES
-    today = date.today().isoformat()
+    since = (datetime.now() - timedelta(minutes=max(minutes, 60))).date().isoformat()
     out: list[dict] = []
     seen: set[str] = set()
     for q in qs:
         hits = ds_search.search(
-            f"{q} after:{today}",
+            f"{q} after:{since}",
             count=per_query,
             ori_question="A 股今日热点资讯，用于量化投研简报",
         )
@@ -224,7 +228,8 @@ def collect_inputs(minutes: int = 60, limit: int | None = None,
     if use_search is None:
         use_search = os.getenv("QUANT_HOT_BRIEF_SEARCH", "1") != "0"
     flash = collect_flash(minutes=minutes, limit=limit)
-    search = collect_search() if use_search else []
+    # 搜索的 after: 也要跟着窗口走（见 collect_search 注释）
+    search = collect_search(minutes=minutes) if use_search else []
     return {"flash": flash, "search": search}
 
 
