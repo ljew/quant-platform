@@ -33,9 +33,21 @@
   th{background:var(--soft);color:#4b5563;font-weight:600;font-size:11px;white-space:nowrap}
   tbody tr:hover{background:#fafbfc}
   td.l,th.l{text-align:left}
+  /* v1.6 折行控制：短文本列一律不折行，只有长文本列允许换行 */
+  td{white-space:nowrap}
+  table.t-wrap td{white-space:normal}
+  table.t-wrap td:first-child{white-space:nowrap}
+  table.news td:nth-child(2),
+  table.news td:nth-child(4),
+  table.news td:nth-child(5),
+  table.news td:nth-child(6){white-space:nowrap}
+  table.t-wrap td.l{line-height:1.45}
+  /* 数值表：除首列外按内容收缩，避免数字被拉散 */
+  table.num td:not(:first-child),table.num th:not(:first-child){width:1%}
   .src{color:var(--muted);font-size:10.5px;margin:5px 0 0}
   .note{background:var(--infobg);border:1px solid var(--infoline);border-radius:7px;padding:7px 10px;font-size:11.5px;margin:7px 0}
   ul{margin:4px 0;padding-left:18px} li{margin:2px 0}
+  .tags{white-space:nowrap;display:inline-block}
   .tag{display:inline-block;background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;
     border-radius:4px;padding:0 4px;font-size:10px;margin-left:2px;vertical-align:1px}
   .tag.warn-tag{background:#fef3c7;color:#92400e;border-color:#fcd34d}
@@ -59,28 +71,40 @@
     <span class="chip">A股数据 <b>11-06 收盘</b></span>
     <span class="chip">海外数据 <b>美东 11-06 收盘</b></span>
     <span class="chip badge-rest"><b>休市</b> · 下一交易日 11-09 周一</span>
-    <span class="chip">模板 <b>v1.5</b></span>
+    <span class="chip">模板 <b>v1.6</b></span>
   </div>
 </header>
 
 <section>
-  <h2>1. 一分钟速览</h2>
+  <h2>1. 一分钟速览（含 A 股状态判定）</h2>
+  <h3>1.1 关键事实</h3>
   <ul>
-    <li><b>A 股 11-06 缩量普跌</b>：上证 3649.18（<span class="down">-1.10%</span>）、创业板 2465.23（<span class="down">-3.96%</span>）、科创综指 1496.36（<span class="down">-3.24%</span>），全A 4741 跌 / 758 涨；两市 1.658 万亿、缩量逾 4600 亿 <span class="tag">通达信✓</span><span class="tag">tushare✓</span></li>
+    <li><b>A 股 11-06 缩量普跌</b>：上证 3649.18（<span class="down">-1.10%</span>）、创业板 2465.23（<span class="down">-3.96%</span>）、科创综指 1496.36（<span class="down">-3.24%</span>），全A 4741 跌 / 758 涨；两市 1.658 万亿、缩量逾 4600 亿 <span class="tags"><span class="tag">通达信✓</span><span class="tag">tushare✓</span></span></li>
     <li><b>海外分化</b>：美东 11-06 纳指 <span class="up">+1.09%</span>（周线四连跌）、<b>费半 <span class="up">+4.21%</span></b>、标普 <span class="up">+0.31%</span>、道指 <span class="down">-0.46%</span>，<b>VIX 回落 9.02% 至 25.63</b>；欧洲三大股指全跌，DAX <span class="down">-1.92%</span></li>
     <li><b>跨资产最异常</b>：油价周跌 13%–14%、COMEX 黄金周涨 4.63%，油金同周反向</li>
     <li><b>资金逆势</b>：11-06 ETF 净流入 126.24 亿、两融 22709 亿（<span class="up">+0.29%</span>，2 日连增）；本周主力净流入电力设备 +73.48 亿居首、通信 -94.55 亿居流出首位</li>
     <li><b>周末数据</b>：10 月末外储 34052 亿美元（+49 亿）；黄金储备 7830 万盎司，连续 24 个月增持</li>
     <li><b>已知日程</b>：11-09 中国 10 月 CPI/PPI；11-10 中国 M2/社融 + 美国 10 月 CPI；11-11 美俄乌阿布扎比会晤</li>
   </ul>
-  <div class="sum"><b>小结</b>A 股缩量普跌、成长重挫，海外分化且欧亚偏弱，油金同周反向，跨资产未给出一致方向。</div>
+  <h3>1.2 A 股状态判定（事实层，11-06 收盘）</h3>
+  <table class="t-wrap">
+    <thead><tr><th class="l">维度</th><th class="l">读数</th><th class="l">判据 / 参照</th></tr></thead>
+    <tbody>
+      <tr><td class="l">宽度（上涨占比）</td><td class="l">758 / 5499 ≈ <b>13.8%</b></td><td class="l">极弱（&lt;20% 为普跌）</td></tr>
+      <tr><td class="l">量能</td><td class="l">1.658 万亿，缩量逾 4600 亿</td><td class="l">缩量下跌，非放量恐慌（20 日均 1.92 万亿）</td></tr>
+      <tr><td class="l">风格</td><td class="l">上证50 <span class="down">-0.84%</span> vs 创业板 <span class="down">-3.96%</span></td><td class="l">大盘抗跌、成长重挫</td></tr>
+      <tr><td class="l">资金</td><td class="l">ETF 净流入 126.24 亿；两融 22709 亿（<span class="up">+0.29%</span>，2 日连增）</td><td class="l">资金端逆势流入</td></tr>
+      <tr><td class="l">相对海外</td><td class="l">创业板 <span class="down">-3.96%</span> vs 费半 -12.25%、KOSPI -6.02%</td><td class="l">相对跌幅小于外围</td></tr>
+    </tbody>
+  </table>
+  <div class="sum"><b>小结</b>A 股缩量普跌、成长重挫而资金逆势流入，属分化非单向；海外分化、油金同周反向，跨资产未给一致方向。</div>
 </section>
 
 <section>
   <h2>2. 品种全景</h2>
 
-  <h3>2.1 股票 · 境内（11-06 收盘）<span class="tag">tushare✓</span><span class="tag">通达信✓</span></h3>
-  <table>
+  <h3>2.1 股票 · 境内（11-06 收盘）<span class="tags"><span class="tag">tushare✓</span><span class="tag">通达信✓</span></span></h3>
+  <table class="num">
     <thead><tr><th class="l">指数</th><th>收盘</th><th>涨跌幅</th><th>成交额*</th><th>20日</th><th>YTD</th></tr></thead>
     <tbody>
       <tr><td class="l">上证指数</td><td>3649.18</td><td class="down">-1.10%</td><td>7726 亿</td><td class="down">-4.32%</td><td class="down">-8.05%</td></tr>
@@ -101,7 +125,7 @@
   <div class="sum"><b>小结</b>大盘抗跌、成长重挫；年内北证50 -38%、创业板 -23% 对上证 -8%，风格分化贯穿全年。</div>
 
   <h3>2.2 股票 · 海外（美东 11-06 收盘 / 北京 11-07 凌晨）<span class="tag">新浪✓</span></h3>
-  <table>
+  <table class="num">
     <thead><tr><th class="l">市场</th><th>收盘</th><th>涨跌幅</th><th>当地收盘日</th></tr></thead>
     <tbody>
       <tr><td class="l">道琼斯</td><td>51285.73</td><td class="down">-0.46%</td><td>11-06</td></tr>
@@ -120,8 +144,8 @@
   美东 11-05 纳指 -5.52%、费半 -12.25%，为 2025-04-03 以来最大单日跌幅；11-06 仅部分修复，道指仍收跌。</p>
   <div class="sum"><b>小结</b>欧美分化、亚太重挫；费半反弹 4.21%、VIX 回落 9%，风险偏好边际修复但广度不足。</div>
 
-  <h3>2.3 债券与利率（11-06，口径分列）<span class="tag">中债✓</span><span class="tag">tushare✓</span></h3>
-  <table>
+  <h3>2.3 债券与利率（11-06，口径分列）<span class="tags"><span class="tag">中债✓</span><span class="tag">tushare✓</span></span></h3>
+  <table class="num">
     <thead><tr><th class="l">品种</th><th>值</th><th>变动</th><th class="l">口径</th></tr></thead>
     <tbody>
       <tr><td class="l">中债国债 3M</td><td>1.16%</td><td class="flat">持平</td><td class="l">中债收益率曲线</td></tr>
@@ -141,7 +165,7 @@
   <div class="sum"><b>小结</b>中债下行 2BP、美债上行 2–5BP，中美利差走阔，内外利率方向相反。</div>
 
   <h3>2.4 黄金 · 大宗 · 汇率（11-06 结算/收盘）</h3>
-  <table>
+  <table class="num">
     <thead><tr><th class="l">品种</th><th>收盘/现价</th><th>涨跌幅</th><th class="l">单位/口径</th></tr></thead>
     <tbody>
       <tr><td class="l">COMEX 黄金（12月）</td><td>4074.90</td><td class="down">-0.94%</td><td class="l">美元/盎司 结算</td></tr>
@@ -168,7 +192,7 @@
 
 <section>
   <h2>3. 上一交易日收盘 → 当前：发生了什么</h2>
-  <table>
+  <table class="t-wrap">
     <thead><tr><th class="l">时点（北京时间）</th><th class="l">事件 / 数据</th></tr></thead>
     <tbody>
       <tr><td class="l">11-06 09:30</td><td class="l">A 股低开：沪指低开 2.11%、创业板低开 4.99%，反映美东 11-05 暴跌</td></tr>
@@ -188,23 +212,8 @@
 </section>
 
 <section>
-  <h2>4. A 股状态判定（事实层，11-06 收盘）</h2>
-  <table>
-    <thead><tr><th class="l">维度</th><th class="l">读数</th><th class="l">判据 / 参照</th></tr></thead>
-    <tbody>
-      <tr><td class="l">宽度（上涨占比）</td><td class="l">758 / 5499 ≈ <b>13.8%</b></td><td class="l">极度偏弱（&lt;20% 为普跌）</td></tr>
-      <tr><td class="l">量能</td><td class="l">1.658 万亿，缩量 4600 亿+</td><td class="l">缩量下跌，非放量恐慌</td></tr>
-      <tr><td class="l">风格</td><td class="l">上证50 -0.84%，创业板 -3.96%</td><td class="l">大盘抗跌、成长重挫</td></tr>
-      <tr><td class="l">资金</td><td class="l">ETF 净流入 126.24 亿；两融 22709 亿（+0.29%，2 日连增）</td><td class="l">资金端逆势流入</td></tr>
-      <tr><td class="l">相对海外</td><td class="l">创业板 -3.96% vs 费半 -12.25%、KOSPI -6.02%</td><td class="l">相对跌幅小于外围</td></tr>
-    </tbody>
-  </table>
-  <div class="sum"><b>小结（本节结论）</b>缩量普跌 + 风格分化 + 资金逆势流入，属分化而非单向。</div>
-</section>
-
-<section>
-  <h2>5. 下一交易日（11-09 周一）观察点与情景触发</h2>
-  <table>
+  <h2>4. 下一交易日（11-09 周一）观察点与情景触发</h2>
+  <table class="t-wrap">
     <thead><tr><th>#</th><th class="l">观察点</th><th class="l">触发条件（可观测）</th><th class="l">若触发需核对什么</th></tr></thead>
     <tbody>
       <tr><td>1</td><td class="l">算力硬件链能否承接美东修复</td><td class="l">开盘 30 分钟内，元件/CPO/通信设备指数是否转正</td><td class="l">费半反弹幅度、A 股补涨或再背离</td></tr>
@@ -218,9 +227,9 @@
 </section>
 
 <section>
-  <h2>6. 资讯简述（20 条 · 配额 12–20 · 观点 3 条 · 按发布时间倒排）</h2>
+  <h2>5. 资讯简述（20 条 · 配额 12–20 · 观点 3 条 · 按发布时间倒排）</h2>
   <p class="src">覆盖窗口：2026-11-07 15:00 → 2026-11-08 12:50（周末休市期）<br><b>排序</b>：按发布时间从新到旧，编号 1 = 最新；同一时段内事实在前、观点在后。<b>合并</b>：外储与黄金储备为同一次发布，已并为第 13 条。</p>
-  <table>
+  <table class="t-wrap news">
     <thead><tr><th>#</th><th class="l">类别</th><th class="l">简述</th><th>属性</th><th class="l">时间</th><th class="l">来源</th></tr></thead>
     <tbody>
       <tr><td>1</td><td class="l">产业</td><td class="l">苹果在 arXiv 披露人形机器人自主控制系统 HALO，在宇树 G1 上验证，单项任务成功率 91%、组合任务 70%</td><td>事实</td><td class="l">11-08</td><td class="l">澎湃新闻</td></tr>
@@ -235,7 +244,7 @@
       <tr><td>10</td><td class="l">海外</td><td class="l">马斯克称 2027 年末 SpaceX 年化营收有望突破 5000 亿美元</td><td><span class="tag op">观点</span></td><td class="l">11-08</td><td class="l">陆家嘴财经早餐</td></tr>
       <tr><td>11</td><td class="l">海外</td><td class="l">高盛将本轮科技股下跌定性为 1998 年式流动性危机而非 2000 年泡沫破裂，并上调美国数据中心支出预测至 2026 年 800 亿、2027 年 1000 亿、2028 年 1250 亿美元</td><td><span class="tag op">观点</span></td><td class="l">11-08</td><td class="l">陆家嘴财经早餐</td></tr>
       <tr><td>12</td><td class="l">海外</td><td class="l">摩根士丹利：A 股情绪指标时隔逾一个月首次突破 22% 过度悲观阈值，建议以精选高质量超跌股为主</td><td><span class="tag op">观点</span></td><td class="l">11-08</td><td class="l">陆家嘴财经早餐</td></tr>
-      <tr><td>13</td><td class="l">宏观数据</td><td class="l">**10 月末外汇储备 34052 亿美元（+49 亿）、黄金储备 7830 万盎司（+83 万，连续 24 个月增持）** —— 两条原为同一发布，已合并</td><td>事实</td><td class="l">11-07</td><td class="l">外汇局/新华财经</td></tr>
+      <tr><td>13</td><td class="l">宏观数据</td><td class="l"><b>10 月末外汇储备 34052 亿美元（+49 亿）、黄金储备 7830 万盎司（+83 万，连续 24 个月增持）</b> —— 两条原为同一发布，已合并</td><td>事实</td><td class="l">11-07</td><td class="l">外汇局/新华财经</td></tr>
       <tr><td>14</td><td class="l">宏观政策</td><td class="l">商务部就美制裁中国企业答记者问：坚决反对，敦促美方尽快纠正，保留采取必要措施的权利</td><td>事实</td><td class="l">11-07</td><td class="l">新华社</td></tr>
       <tr><td>15</td><td class="l">监管</td><td class="l">《税收征管法（修订草案）》公开征求意见，拟规定税款滞纳金不得超出税款本数的二倍</td><td>事实</td><td class="l">11-07</td><td class="l">陆家嘴财经早餐</td></tr>
       <tr><td>16</td><td class="l">政策</td><td class="l">北京经开区发布信创产业若干措施，对超节点服务器、AI 终端、量子计算云平台等给予最高 3000 万元支持</td><td>事实</td><td class="l">11-07</td><td class="l">陆家嘴财经早餐</td></tr>
@@ -248,7 +257,7 @@
   <div class="note"><b>配额校验</b>：20 条（事实 17 / 观点 3），落在 12–20 区间；20 条均为不同事件（100% ≥ 70%）✅　<b>已合并</b>：外储与黄金储备为同一次发布 → 第 13 条</div>
 
   <h3>资讯与行情的对应（只列同现，不归因）</h3>
-  <table>
+  <table class="t-wrap">
     <thead><tr><th class="l">资讯</th><th class="l">同期可观察行情</th><th class="l">备注</th></tr></thead>
     <tbody>
       <tr><td class="l">#13 外储回升与黄金 24 连增</td><td class="l">美元指数 +0.72%、COMEX 黄金 -0.94%</td><td class="l">同现于 11-06；央行购金与短期金价方向相反</td></tr>
@@ -260,7 +269,7 @@
 </section>
 
 <section>
-  <h2>7. 交付与边界</h2>
+  <h2>6. 边界与免责</h2>
   <ul>
     <li><b>休市版</b>：周日无交易，全篇行情数据均为 11-06（周五）收盘，不得当作当日行情引用。</li>
     <li>数据来自公开渠道；<b>本期待补字段 0 项</b>——费半、VIX 经新浪行情取得，科创综指/北证50/美债经 tushare 取得，20 日/YTD 由历史日线计算；<span class="tag">源冲突⚠</span> 已按来源层级采信。</li>
@@ -270,7 +279,7 @@
 </section>
 
 <footer>
-  市场资讯报告 · 午间版 · 2026-11-08（休市版）· 模板 v1.5 · 生成 11-08 12:50<br>
+  市场资讯报告 · 午间版 · 2026-11-08（休市版）· 模板 v1.6 · 生成 11-08 12:50<br>
   数据源：通达信 tdx-connector · tushare · 中国债券信息网 · 新华财经 · 财联社 · 央视财经 · 上海证券报 · 证券时报 · 东方财富 · 陆家嘴财经早餐
 </footer>
 
