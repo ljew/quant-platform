@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import EChart from "../components/EChart";
-import HotBriefCard from "../components/HotBriefCard";
+import SentimentStrategyCard from "../components/SentimentStrategyCard";
 import LlmConfigModal from "../components/LlmConfigModal";
 import { Badge, Btn, Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
 import EvalBadges from "../components/EvalBadges";
@@ -192,9 +192,10 @@ export default function FactorMinePage() {
         actions={<Btn onClick={() => setShowFns(!showFns)} kind="ghost" small>函数参考</Btn>}
       />
 
-      {/* —— 热点简报（一手快讯 + DeepSeek 搜索 → LLM 筛选）—— */}
+      {/* —— 舆情策略（情绪择时 + 重点行业 + 重点个股）——
+          老刘 2026-11-08：这里不需要再显示热点简报，换成可执行的舆情策略。 */}
       <div style={{ marginBottom: 16 }}>
-        <HotBriefCard columns={1} />
+        <SentimentStrategyCard />
       </div>
 
       {/* —— 新闻情绪择时（市场级 · 非结构化数据）—— */}

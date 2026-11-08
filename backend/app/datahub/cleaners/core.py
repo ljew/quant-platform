@@ -144,12 +144,27 @@ def load_name_map(db) -> list[tuple[str, str]]:
 
 
 def upsert_stock_sentiment(db, rows: dict, model) -> int:
-    """(symbol, date) -> [mentions, bull, bear] 幂等累加写入个股情绪表。"""
+    """(symbol, date) -> [mentions, bull, bear] 幂等累加写入个股情绪表。
+
+    ⚠️ 必须先归一 symbol：上游有的给 6 位纯代码（301551）、有的给带前缀
+    （sz300024），不统一就会在表里分裂成两套编码 —— 之后 join stocks 取行业
+    只能命中一半（2026-11-08 实测 75/182），舆情策略的行业聚合直接失真。
+    """
+    import re as _re
     from datetime import datetime as _dt
     from sqlalchemy import select as _sel
 
+    from app.services.data_source import normalize_symbol
+
     n = 0
     for (sym, d_str), (mentions, bull, bear) in rows.items():
+        s = str(sym or "").strip().lower()
+        if s.isdigit():
+            sym = normalize_symbol(s)[0]
+        elif _re.fullmatch(r"(sh|sz|bj)\d{6}", s):
+            sym = s
+        else:
+            continue          # A25301 这类文档编号混进来的脏代码，直接丢
         d = _dt.strptime(d_str, "%Y-%m-%d").date()
         row = db.execute(_sel(model).where(model.symbol == sym, model.date == d)).scalar()
         senti = (bull - bear) / max(bull + bear, 1)

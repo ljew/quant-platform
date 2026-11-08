@@ -349,6 +349,11 @@ export const api = {
   hotBriefToday: () => get<HotBrief>("/factor/hot-brief/today"),
   hotBriefList: (limit = 24) => get<HotBrief[]>("/factor/hot-brief/list?limit=" + limit),
   /** 单条输入的原文内容；full=true 时实时抓整页正文（联网、按次计费） */
+  /** 舆情策略：择时 + 行业 + 个股（三层合一的可执行结论） */
+  sentimentStrategy: (topIndustry = 8, topStock = 15) =>
+    get<SentimentStrategy>(
+      `/factor/sentiment/strategy?top_industry=${topIndustry}&top_stock=${topStock}`,
+    ),
   hotBriefInput: (ref: string, opts?: { runId?: number; full?: boolean }) => {
     const q = new URLSearchParams({ ref });
     if (opts?.runId) q.set("run_id", String(opts.runId));
@@ -649,6 +654,49 @@ export interface HotBrief {
   source_split?: Record<string, number>;
   model?: string;
   error?: string;
+}
+
+/** 舆情策略：情绪择时 + 重点行业 + 重点个股（见 services/sentiment_strategy.py） */
+export interface SentimentTiming {
+  ok: boolean;
+  date?: string;
+  value?: number;     // 当前市场情绪 -1~+1
+  pct?: number;       // 在近 N 日的分位
+  ma5?: number;
+  ma20?: number;
+  n_days?: number;
+  stance?: string;    // 悲观极致 / 偏冷 / 中性 / 偏热 / 亢奋
+  position?: number;  // 建议仓位 %
+  comment?: string;
+}
+
+export interface SentimentIndustry {
+  industry: string;
+  n_stock: number;
+  mentions: number;
+  net: number;
+  leaders: { symbol: string; name: string; net: number; mentions: number }[];
+}
+
+export interface SentimentStock {
+  symbol: string;
+  name: string;
+  industry: string;
+  mentions: number;
+  net: number;
+  heat: number;
+  trend: number | null;   // 相对上一有数据日的情绪变化
+}
+
+export interface SentimentStrategy {
+  ok: boolean;
+  asof?: string;
+  generated_at?: string;
+  note?: string;
+  error?: string;
+  timing?: SentimentTiming;
+  industries?: SentimentIndustry[];
+  stocks?: SentimentStock[];
 }
 
 /** 新闻情绪择时检验（市场级 · 非结构化数据）。2026-09-18 下线，2026-11-07 恢复。 */
