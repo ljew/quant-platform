@@ -42,6 +42,9 @@ const SOURCE_COLOR: Record<string, string> = {
   deepseek: "#4d5bd0",
   wechat: "#1a8a48",
   guba: "#5d6d7e",
+  // 券商研报：靛蓝，与「东财」的棕黄拉开 —— 两者内容不同（研报是观点，
+  // 东财是新闻），颜色太近会让人以为是一类东西。
+  research: "#2c6e9b",
 };
 
 function fmtTime(s: string | null): string {

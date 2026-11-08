@@ -27,7 +27,7 @@ import logging
 import os
 import re
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import date, datetime, time as dtime, timedelta
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -49,6 +49,9 @@ SOURCE_LABELS: dict[str, str] = {
     "tushare": "tushare资讯",
     "wechat": "公众号",
     "guba": "股吧",
+    # 券商研报：来源是 research_report 表（已由 data_scheduler 每日采集），
+    # 这里只做格式转换，不重复请求东财。
+    "research": "券商研报",
     # —— 境外（OPS-FN-1a）；不进 FAST/SLOW，由 foreign_news_scheduler 三槽跑 ——
     "fn_fed": "Fed 新闻稿",
     "fn_fed_mon": "Fed 货币",
@@ -79,6 +82,10 @@ def _to_dt(v) -> datetime | None:
     """各源时间口径不同，统一成 datetime：unix 秒 / ISO 字符串 / None。"""
     if v is None or v == "" or v == 0:
         return None
+    # 已经是 datetime 就直接用（研报源传的是 datetime.combine 出来的对象，
+    # 走 str→fromisoformat 虽然也能成，但依赖字符串格式，不必冒这个险）
+    if isinstance(v, datetime):
+        return v
     try:
         if isinstance(v, (int, float)):
             return datetime.fromtimestamp(float(v))
@@ -253,6 +260,62 @@ def ingest(db: Session, source: str, items: list[dict]) -> int:
         return -1
 
 
+def _fetch_research(db: Session, days: int = 3, limit: int = 800) -> list[dict]:
+    """券商研报 → 资讯流（来源 `research_report` 表，不重新抓接口）。
+
+    老刘 2026-11-08：「把研报这些最新观点作为资讯内容放到今日资讯中，作为参考」。
+    研报本身不是 alpha（四种因子构造都验过不显著），但「哪家机构在什么价位看多
+    什么票」是有参考价值的上下文 —— 尤其和快讯对照着看时。
+
+    ⚠️ 时间戳只有日期：东财 `publishDate` 没有时分，全部落在当天 00:00，
+    在「全部」流里会排在同日快讯之前。按来源筛选查看更合适。
+
+    summary 拼成一行「机构 · 评级 · 行业 · EPS 预测」，让用户不点开也能判断
+    这条值不值得看。
+    """
+    from app.models import ResearchReport
+
+    since = date.today() - timedelta(days=max(1, days))
+    rows = (db.query(ResearchReport)
+            .filter(ResearchReport.publish_date >= since)
+            .order_by(ResearchReport.publish_date.desc())
+            .limit(limit).all())
+
+    out: list[dict] = []
+    for r in rows:
+        # 北交所（920/83/87/88 开头）整体不在平台分析口径内（K 线域已剔除），
+        # 研报里却有不少。留着会让用户点进去看不到 K 线，直接过滤。
+        code = str(r.stock_code or "")
+        if code[:1] in ("4", "8") or code.startswith("92"):
+            continue
+        bits: list[str] = []
+        if r.org_sname:
+            bits.append(str(r.org_sname))
+        if r.rating:
+            bits.append(f"「{r.rating}」")
+        if r.industry:
+            bits.append(str(r.industry))
+        eps = []
+        if r.eps_this:
+            eps.append(f"今年 {r.eps_this:.2f}")
+        if r.eps_next:
+            eps.append(f"明年 {r.eps_next:.2f}")
+        if r.eps_next2:
+            eps.append(f"后年 {r.eps_next2:.2f}")
+        if eps:
+            bits.append("EPS " + " / ".join(eps))
+        out.append({
+            "key": r.info_code,
+            "title": r.title,
+            "summary": " · ".join(bits),
+            "url": r.url or "",
+            "published_at": datetime.combine(r.publish_date, dtime.min)
+                            if r.publish_date else None,
+            "symbols": r.stock_code or "",
+        })
+    return out
+
+
 def sync_fast(db: Session) -> dict:
     """快源：财联社 / 东财 / 新浪。任何一路失败不影响其它。"""
     out: dict[str, int] = {}
@@ -279,6 +342,11 @@ def sync_slow(db: Session) -> dict:
     except Exception as e:  # noqa: BLE001
         logger.warning("同步 tushare 失败：%s", e)
         out["tushare"] = -1
+    try:
+        out["research"] = _insert(db, _rows("research", _fetch_research(db)))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("同步研报失败：%s", e)
+        out["research"] = -1
     return out
 
 
