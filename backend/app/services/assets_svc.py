@@ -5,8 +5,11 @@
 """
 from __future__ import annotations
 
+import os
+import sqlite3
 import time
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy import func, select
 
@@ -41,6 +44,7 @@ _GROUPS = [
     ("行情", "行情数据", "日K 与指数，策略回测的主粮"),
     ("因子", "因子数据", "选股与归因的输入"),
     ("元数据", "元数据", "标的属性、财报、指数成分"),
+    ("基金", "基金数据", "持仓穿透与 FOF 多层的原始披露，独立库按披露日历更新"),
 ]
 
 # 数据源 → 其产出的落点数据集（用于在源卡片上显示「存量」）
@@ -169,6 +173,103 @@ def _judge(status_rows: int, lag: int | None, max_lag: int, has_date: bool) -> s
     return "stale"
 
 
+# ---------------------------------------------------------------- 基金链路
+# 基金数据在独立库 data/fund_research.db。主库 2026-11-08 因「容器 + 本机同时写
+# bind mount 上的 SQLite」损坏过（malformed），拆库之后基金重算的风险不再扩散到
+# 全平台，代价是这里要多开一个连接做统计。
+#
+# 新鲜度必须按**披露日历**判定，不能按交易日：季报一年只有 4 次，用「滞后几个
+# 交易日」会让页面一年 300 天飘红，形成狼来了。
+FUND_DB = Path(os.getenv("QUANT_RESEARCH_DB", "/data/fund_research.db"))
+_BIG_TABLE = 3_000_000     # 超过这个行数就不做 count(distinct)，太慢
+
+# key, 标签, 表, 日期列, 标的列, 期次类型, 备注
+_FUND_DATASETS = [
+    ("fund_nav_daily", "基金净值日线", "fund_nav_daily", "nav_date", "ts_code", "daily",
+     "逐基金日净值，回归校验的输入"),
+    ("fund_hold_coverage", "基金持仓覆盖", "fund_hold_coverage", "end_date", "base_code", "quarter",
+     "逐基金披露持仓（Q1/Q3 前十大、H1/FY 全量）"),
+    ("fund_industry_exposure", "基金行业敞口", "fund_industry_exposure", "end_date", "base_code", "quarter",
+     "申万一级穿透结果，含 carried 影子轨"),
+    ("fund_csrc_industry", "监管行业配置", "fund_csrc_industry", "end_date", "base_code", "quarter",
+     "证监会门类季度披露，仓位约束的权威锚"),
+    ("fund_fof_holdings", "FOF 基金投资明细", "fund_fof_holdings", "end_date", "base_code", "half",
+     "FOF 中报/年报 PDF 解析出的被投基金"),
+    ("fund_fof_penetration", "FOF 行业穿透", "fund_fof_penetration", "end_date", "base_code", "half",
+     "FOF→底层基金→行业，未穿透部分单列不估算"),
+    ("fund_industry_regression", "净值回归校验", "fund_industry_regression", "end_date", "ts_code", "quarter",
+     "约束 WLS 回归，独立校验穿透结果"),
+]
+
+
+def _expected_fof_period(today: date) -> date:
+    """FOF 只披露中报(0630)与年报(1231)，取最近一个已过法定截止日的期次。"""
+    y = today.year
+    cands = [(date(y, 8, 31), date(y, 6, 30)), (date(y, 4, 30), date(y - 1, 12, 31))]
+    ok = [p for dl, p in cands if dl <= today]
+    return max(ok) if ok else date(y - 1, 6, 30)
+
+
+def _fund_items(base: date, now_dt: datetime) -> list[dict]:
+    """基金链路的资产项。库不存在/打不开时返回空列表，不影响主平台。"""
+    if not FUND_DB.exists():
+        return []
+    try:
+        con = sqlite3.connect(f"file:{FUND_DB}?mode=ro", uri=True, timeout=10)
+    except Exception:  # noqa: BLE001
+        return []
+
+    exp_q = _expected_report_period(base)
+    exp_h = _expected_fof_period(base)
+    out: list[dict] = []
+    try:
+        for key, label, table, dcol, scol, kind, note in _FUND_DATASETS:
+            try:
+                n = int(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] or 0)
+                latest_raw = con.execute(f"SELECT MAX({dcol}) FROM {table}").fetchone()[0]
+            except Exception:  # noqa: BLE001
+                continue
+            symbols = None
+            if n and n <= _BIG_TABLE:
+                try:
+                    symbols = int(con.execute(
+                        f"SELECT COUNT(DISTINCT {scol}) FROM {table}").fetchone()[0] or 0)
+                except Exception:  # noqa: BLE001
+                    symbols = None
+            latest = _to_date(latest_raw)
+            lag_td = _lag_trading_days(latest, base) if (latest and kind == "daily") else None
+            lag_cd = (base - latest).days if latest else None
+
+            exp = None if kind == "daily" else (exp_q if kind == "quarter" else exp_h)
+            by_period = kind != "daily"
+            if not by_period:
+                status = _judge(n, lag_td, 1, True)
+            elif n <= 0 or latest is None:
+                status = "empty"
+            elif exp is None or latest >= exp:
+                status = "ok"
+            elif (exp - latest).days <= 200:
+                status = "warn"      # 落后一期，披露还没齐
+            else:
+                status = "stale"     # 落后两期及以上，说明采集断了
+            out.append({
+                "key": key, "group": "基金", "label": label,
+                "rows": n, "symbols": symbols,
+                "start": None,
+                "latest": latest.isoformat() if latest else None,
+                "lag_trading_days": lag_td,
+                "lag_calendar_days": lag_cd,
+                "max_lag": 1 if kind == "daily" else 0,
+                "note": note,
+                "status": status,
+                "by_period": by_period,
+                "expected": exp.isoformat() if exp else None,
+            })
+    finally:
+        con.close()
+    return out
+
+
 def _recent_coverage(db, days: int = 12) -> dict:
     """最近 N 个自然日内，个股日K 每天覆盖了多少只股票。
 
@@ -295,6 +396,10 @@ def assets_report(db, force: bool = False) -> dict:
         if mined:
             mined["status"] = "na"
             mined["note"] = "无启用挖掘因子，无需更新"
+
+    # —— 基金链路（独立库 fund_research.db，按披露日历判定新鲜度）——
+    for _it in _fund_items(base, now_dt):
+        items[_it["key"]] = _it
 
     # —— 分组输出 ——
     groups = []

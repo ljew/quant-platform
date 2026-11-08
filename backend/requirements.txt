@@ -20,5 +20,10 @@ tushare==1.4.29
 # datahub 数据枢纽（Bronze/Silver 分层存储 + 源配置）
 pyarrow>=14.0
 PyYAML>=6.0
+# FOF 定期报告解析（fetch_fof_reports.py）：法定披露的「基金投资明细」只在 PDF 里，
+# Tushare fund_portfolio 和天天基金 jjcc 对 FOF 都只返回股票明细，拿不到被投基金。
+# pypdfium2 负责快速取每页纯文本做章节定位，pdfplumber 负责抽表格。
+pdfplumber==0.11.10
+pypdfium2==5.15.1
 # 测试（M1-6，2026-10-08 建立回归测试基建）
 pytest>=8.0

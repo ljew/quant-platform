@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { api, AssetsReport, AssetItem, CoverageBlock, HealthRuleRow, HealthReport, LineageReport } from "../api/client";
+import { Fragment, useCallback, useEffect, useState } from "react";
+import { api, AssetsReport, AssetItem, CoverageBlock, FundPipelineStatus, HealthRuleRow, HealthReport, LineageReport } from "../api/client";
 import { Badge, Card, PageHeader } from "../components/ui";
 import { useTheme, ThemeColors } from "../theme";
 
@@ -409,8 +409,11 @@ export default function DataPipelinePage() {
         ))}
       </Card>
 
-      {/* —— ⑤ 任务执行时间线 —— */}
-      <Card title="⑤ 任务执行（最近 6 次运行）" colors={colors} style={{ marginTop: 14 }}>
+      {/* —— ⑤ 基金数据管道（独立库，另有自己的调度器）—— */}
+      <FundPipelineCard colors={colors} />
+
+      {/* —— ⑥ 任务执行时间线 —— */}
+      <Card title="⑥ 任务执行（最近 6 次运行）" colors={colors} style={{ marginTop: 14 }}>
         {lin.timeline.length === 0 && <div style={{ fontSize: 12, color: colors.muted }}>暂无运行记录</div>}
         {lin.timeline.map((r) => {
           const maxSec = Math.max(...r.steps.map((s) => s.duration_sec), 0.1);
@@ -443,9 +446,9 @@ export default function DataPipelinePage() {
         })}
       </Card>
 
-      {/* —— ⑥ 数据健康度 —— */}
+      {/* —— ⑦ 数据健康度 —— */}
       {health && (
-        <Card title="⑥ 数据健康度（规则化检查）" colors={colors} style={{ marginTop: 14 }}>
+        <Card title="⑦ 数据健康度（规则化检查）" colors={colors} style={{ marginTop: 14 }}>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
             <ScoreRing score={health.overall_score} status={health.overall_status} colors={colors} />
             <div style={{ flex: 1, minWidth: 260 }}>
@@ -593,6 +596,249 @@ export default function DataPipelinePage() {
         )}
       </Card>
     </div>
+  );
+}
+
+/* ============ 基金数据管道（独立库，按披露日历调度） ============ */
+function FundPipelineCard({ colors }: { colors: ThemeColors }) {
+  const [st, setSt] = useState<FundPipelineStatus | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const [detail, setDetail] = useState<Record<string, string>>({});
+
+  const load = useCallback(() => {
+    api.fundPipeline().then(setSt).catch(() => {});
+  }, []);
+
+  // 有环节在跑时 5s 一刷，闲着 20s 一刷（避免无意义轮询）。
+  // 依赖用布尔量而不是 stages 数组：数组每次刷新都是新引用，
+  // 会让 effect 每轮重建定时器，等于永远刷不到稳态。
+  const anyRunning = !!st?.stages?.some((s) => s.running || s.today_status === "running");
+  useEffect(() => {
+    load();
+    const t = setInterval(load, anyRunning ? 5000 : 20000);
+    return () => clearInterval(t);
+  }, [load, anyRunning]);
+
+  const run = async (key: string) => {
+    setBusy(key);
+    try {
+      const r = await api.fundPipelineRun(key, true);
+      if (!r.ok) window.alert(r.error || "启动失败");
+      else if (r.skipped) window.alert("该环节今天已成功，已跳过");
+      setTimeout(load, 800);
+    } catch (e) {
+      window.alert("触发失败：" + (e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const showDetail = async (key: string) => {
+    if (openKey === key) { setOpenKey(null); return; }
+    setOpenKey(key);
+    if (detail[key] !== undefined) return;
+    try {
+      const d = await api.fundPipelineDetail(key);
+      setDetail((p) => ({ ...p, [key]: d.ok ? (d.detail || "（无输出）") : (d.error || "无记录") }));
+    } catch {
+      setDetail((p) => ({ ...p, [key]: "读取失败" }));
+    }
+  };
+
+  // 应急：清掉卡住的 running 记录。本进程内真有活线程时后端会拒绝，不会跑重。
+  const reset = async (key: string) => {
+    if (!window.confirm("确认重置？仅在进度卡住（容器重启等）时使用。")) return;
+    setBusy(key);
+    try {
+      const r = await api.fundPipelineReset(key);
+      window.alert(r.ok ? (r.message || "已重置") : (r.error || "重置失败"));
+      setTimeout(load, 500);
+    } catch (e) {
+      window.alert("重置失败：" + (e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // 应急：今天没成功的环节按依赖顺序补跑
+  const runAll = async () => {
+    setBusy("__all__");
+    try {
+      const r = await api.fundPipelineRunAll();
+      const n = r.started?.length || 0;
+      window.alert(r.ok ? `已排队 ${n} 个环节${n ? "：" + r.started!.join("、") : "（今天都已完成）"}`
+                        : (r.error || "补跑失败"));
+      setTimeout(load, 800);
+    } catch (e) {
+      window.alert("补跑失败：" + (e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // 应急：暂停/恢复自动巡检
+  const togglePause = async () => {
+    const next = !st?.paused;
+    if (next && !window.confirm("暂停后调度器不再自动触发任何环节（手动「运行」仍可用）。确认暂停？")) return;
+    setBusy("__pause__");
+    try {
+      const r = await api.fundPipelinePause(next);
+      if (!r.ok) window.alert(r.error || "操作失败");
+      setTimeout(load, 400);
+    } catch (e) {
+      window.alert("操作失败：" + (e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (!st) return null;
+  const stages = st.stages || [];
+  const nBad = stages.filter((s) => s.today_status === "fail" || s.today_status === "running").length;
+  const nOk = stages.filter((s) => s.today_status === "ok").length;
+  const data = st.data || {};
+  const fmt = (k: string) => data[k]?.latest || "—";
+  const navLatest = fmt("fund_nav_daily");
+  const holdLatest = fmt("fund_hold_coverage");
+  const penLatest = fmt("fund_industry_exposure");
+  const fofLatest = fmt("fund_fof_holdings");
+  const regLatest = fmt("fund_industry_regression");
+
+  return (
+    <Card title="⑤ 基金数据管道（独立库 · 按披露日历调度）" colors={colors} style={{ marginTop: 14 }} pad={0}>
+      <div style={{ padding: "10px 14px", borderBottom: `1px solid ${colors.border}`,
+                    display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center", fontSize: 12 }}>
+        <Badge text={st.enabled ? "调度已启用" : "调度未启用"}
+               color={st.enabled ? colors.down : colors.muted} soft />
+        {st.paused && <Badge text="已暂停自动触发" color={colors.up} soft />}
+        <span style={{ color: colors.muted }}>
+          披露窗口：<b style={{ color: st.in_disclosure_window ? colors.accent : colors.muted }}>
+            {st.in_disclosure_window ? "进行中" : "未到"}</b>
+          {" · "}今日{st.is_trading_day ? "交易日" : "非交易日"}
+          {" · "}成功 <b style={{ color: colors.down }}>{nOk}</b>/{stages.length}
+          {nBad > 0 && <> · <b style={{ color: colors.up }}>异常 {nBad}</b></>}
+        </span>
+        <span style={{ color: colors.muted }}>净值 <b>{navLatest}</b></span>
+        <span style={{ color: colors.muted }}>持仓 <b>{holdLatest}</b></span>
+        <span style={{ color: colors.muted }}>穿透 <b>{penLatest}</b></span>
+        <span style={{ color: colors.muted }}>FOF <b>{fofLatest}</b></span>
+        <span style={{ color: colors.muted }}>回归 <b>{regLatest}</b></span>
+        <button
+          onClick={runAll} disabled={busy === "__all__" || anyRunning}
+          title="把今天还没成功的环节按依赖顺序补跑"
+          style={{ padding: "2px 8px", fontSize: 11,
+                   cursor: anyRunning ? "default" : "pointer",
+                   background: "transparent",
+                   color: anyRunning ? colors.muted : colors.accent,
+                   border: `1px solid ${anyRunning ? colors.border : colors.accent}`, borderRadius: 4 }}
+        >{busy === "__all__" ? "…" : "补跑未完成"}</button>
+        <button
+          onClick={togglePause} disabled={busy === "__pause__"}
+          title={st.paused ? "恢复自动巡检" : "手工补数/排障时暂停自动触发，避免抢库锁"}
+          style={{ padding: "2px 8px", fontSize: 11, cursor: "pointer",
+                   background: "transparent",
+                   color: st.paused ? colors.up : colors.muted,
+                   border: `1px solid ${st.paused ? colors.up : colors.border}`, borderRadius: 4 }}
+        >{busy === "__pause__" ? "…" : st.paused ? "恢复调度" : "暂停调度"}</button>
+        <span style={{ marginLeft: "auto", color: colors.muted, fontSize: 11 }}>
+          巡检 {st.last_tick ? st.last_tick.slice(11, 19) : "—"}
+        </span>
+      </div>
+
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ color: colors.muted, textAlign: "left" }}>
+              <th style={{ padding: "7px 10px", fontWeight: 500 }}>环节</th>
+              <th style={{ padding: "7px 10px", fontWeight: 500 }}>时点</th>
+              <th style={{ padding: "7px 10px", fontWeight: 500 }}>今日</th>
+              <th style={{ padding: "7px 10px", fontWeight: 500 }}>最近成功</th>
+              <th style={{ padding: "7px 10px", fontWeight: 500 }}>耗时</th>
+              <th style={{ padding: "7px 10px", fontWeight: 500 }}>累计</th>
+              <th style={{ padding: "7px 10px", fontWeight: 500, textAlign: "right" }}>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {stages.map((s) => {
+              const running = s.running || s.today_status === "running";
+              const stt = running ? "RUNNING" : (s.today_status || "");
+              // 僵尸判定：库里写着 running，但服务进程内已没有该环节的线程
+              // （容器重启/进程被杀）。这是确定性信号，不必等时长阈值。
+              // 次要信号：跑得比该环节自身 timeout 还久，也一定是卡住。
+              const elapsedMin = running && s.today_started
+                ? (Date.now() - new Date(s.today_started).getTime()) / 60000 : 0;
+              const zombie = running && (!s.running || elapsedMin * 60 > s.timeout);
+              return (
+                <Fragment key={s.key}>
+                  <tr style={{ borderTop: `1px solid ${colors.border}` }}>
+                    <td style={{ padding: "7px 10px" }}>
+                      <b>{s.label}</b>
+                      <div style={{ color: colors.muted, fontSize: 11, marginTop: 2, maxWidth: 420 }}>
+                        {s.desc}
+                      </div>
+                    </td>
+                    <td style={{ padding: "7px 10px", color: colors.muted }}>{s.run_at}</td>
+                    <td style={{ padding: "7px 10px" }}>
+                      <Badge text={stt === "ok" ? "成功" : stt === "fail" ? "失败"
+                                   : stt === "RUNNING" ? "运行中" : "未跑"}
+                             color={statusColor(stt, colors)} soft />
+                      {s.today_error && (
+                        <div style={{ color: colors.up, fontSize: 11, marginTop: 2 }}>{s.today_error}</div>
+                      )}
+                    </td>
+                    <td style={{ padding: "7px 10px", color: colors.muted }}>
+                      {s.last_ok_at ? s.last_ok_at.replace("T", " ").slice(0, 16) : "—"}
+                    </td>
+                    <td style={{ padding: "7px 10px", color: colors.muted }}>
+                      {s.today_duration != null ? `${Math.round(s.today_duration)}s` : "—"}
+                    </td>
+                    <td style={{ padding: "7px 10px", color: colors.muted }}>
+                      {s.runs_total} 次{s.fails_total ? ` / 失败 ${s.fails_total}` : ""}
+                    </td>
+                    <td style={{ padding: "7px 10px", textAlign: "right", whiteSpace: "nowrap" }}>
+                      <button
+                        onClick={() => run(s.key)} disabled={running || busy === s.key}
+                        style={{ marginRight: 6, padding: "2px 8px", fontSize: 11, cursor: running ? "default" : "pointer",
+                                 background: "transparent", color: running ? colors.muted : colors.accent,
+                                 border: `1px solid ${running ? colors.border : colors.accent}`, borderRadius: 4 }}
+                      >{busy === s.key ? "…" : "运行"}</button>
+                      {zombie && (
+                        <button
+                          onClick={() => reset(s.key)} disabled={busy === s.key}
+                          title={`记录为运行中但进程已不存在（已 ${Math.round(elapsedMin)} 分钟），点此作废后重跑`}
+                          style={{ marginRight: 6, padding: "2px 8px", fontSize: 11, cursor: "pointer",
+                                   background: "transparent", color: colors.up,
+                                   border: `1px solid ${colors.up}`, borderRadius: 4 }}
+                        >重置</button>
+                      )}
+                      <button
+                        onClick={() => showDetail(s.key)}
+                        style={{ padding: "2px 8px", fontSize: 11, cursor: "pointer",
+                                 background: "transparent", color: colors.muted,
+                                 border: `1px solid ${colors.border}`, borderRadius: 4 }}
+                      >{openKey === s.key ? "收起" : "输出"}</button>
+                    </td>
+                  </tr>
+                  {openKey === s.key && (
+                    <tr>
+                      <td colSpan={7} style={{ padding: "0 10px 10px" }}>
+                        <pre style={{ margin: 0, padding: 10, maxHeight: 220, overflow: "auto",
+                                      background: colors.bg, border: `1px solid ${colors.border}`,
+                                      borderRadius: 6, fontSize: 11, lineHeight: 1.5,
+                                      color: colors.text, whiteSpace: "pre-wrap" }}>
+                          {detail[s.key] ?? "读取中…"}
+                        </pre>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Card>
   );
 }
 
