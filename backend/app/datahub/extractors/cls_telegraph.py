@@ -117,7 +117,12 @@ class ClsTelegraphExtractor(BaseExtractor):
                     "publish_time": ctime,
                     "fetched_at": fetched_at,
                 })
-            last_time = max((int(x.get("ctime") or 0) for x in items), default=0)
+            # ⚠️ 游标要取**本页最早**那条的 ctime，不是最新的。
+            # 传 max 等于告诉服务端「给我比这更新的」→ 下一页还是同一批，
+            # 去重后只剩 50 条。实测 rn=50/pages=3 只返回 52 条、跨度 6.9 小时，
+            # 导致财联社覆盖率只有两三成（2026-11-08 查「政策原文」时顺带发现）。
+            last_time = min((int(x.get("ctime") or 0) for x in items
+                             if x.get("ctime")), default=0)
             if not last_time:
                 break
             time.sleep(0.4)
