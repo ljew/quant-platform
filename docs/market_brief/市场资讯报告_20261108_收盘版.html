@@ -33,6 +33,15 @@
   th{background:var(--soft);color:#4b5563;font-weight:600;font-size:11px;white-space:nowrap}
   tbody tr:hover{background:#fafbfc}
   td.l,th.l{text-align:left}
+  /* v1.6 折行控制：短文本列不折行，仅长文本列允许换行 */
+  td{white-space:nowrap}
+  table.t-wrap td{white-space:normal}
+  table.t-wrap td:first-child{white-space:nowrap}
+  table.news td:nth-child(2),table.news td:nth-child(4),
+  table.news td:nth-child(5),table.news td:nth-child(6){white-space:nowrap}
+  table.num td:not(:first-child),table.num th:not(:first-child){width:1%}
+  .tags{white-space:nowrap;display:inline-block}
+  table.t-wrap td.l{line-height:1.45}
   .src{color:var(--muted);font-size:10.5px;margin:5px 0 0}
   .note{background:var(--infobg);border:1px solid var(--infoline);border-radius:7px;padding:7px 10px;font-size:11.5px;margin:7px 0}
   ul{margin:4px 0;padding-left:18px} li{margin:2px 0}
@@ -59,16 +68,17 @@
     <span class="chip">A股数据 <b>11-06 当日收盘</b></span>
     <span class="chip">海外数据 <b>美东 11-06 收盘 / 北京 11-07 凌晨</b></span>
     <span class="chip badge-rest"><b>休市</b> · 下一交易日 11-09 周一</span>
-    <span class="chip">模板 <b>v1.5</b></span>
+    <span class="chip">模板 <b>v1.6</b></span>
     <span class="chip">资讯 <b>25 条 / 观点 4 条</b></span>
   </div>
-  <div class="note" style="margin-bottom:0">本版为<b>休市版</b>：周日 A 股、亚太、欧美均休市，<b>本时段无新增行情</b>。第 2 节全部为 <b>11-06（周五）当日收盘</b>数据并逐项标日期，非盘中快照；第 3/4 节为「上一交易日回顾 + 休市期间消息面」；第 5 节观察点指向 11-09 周一；第 6 节以休市期间资讯为主。报告性质为信息收集整理与事实核对，<b>不产出涨跌方向预测与买卖建议，全篇不设裁决区、不设签字栏、不做方向裁决</b>。</div>
+  <div class="note" style="margin-bottom:0">本版为<b>休市版</b>：周日 A 股、亚太、欧美均休市，<b>本时段无新增行情</b>。第 2 节全部为 <b>11-06（周五）当日收盘</b>数据并逐项标日期，非盘中快照；第 3 节为「上一交易日回顾」；第 4 节观察点指向 11-09 周一；第 5 节以休市期间资讯为主。报告性质为信息收集整理与事实核对，<b>不产出涨跌方向预测与买卖建议，全篇不设裁决区、不设签字栏、不做方向裁决</b>。</div>
 </header>
 
 <section>
-  <h2>1. 一分钟速览</h2>
+  <h2>1. 一分钟速览（含 A 股状态判定）</h2>
+  <h3>1.1 关键事实</h3>
   <ul>
-    <li><b>休市事实</b>：11-08 为周日，境内外主要市场无交易；本时段无新增行情，全篇行情读数均为 11-06 收盘 <span class="tag">通达信✓</span><span class="tag">tushare✓</span></li>
+    <li><b>休市事实</b>：11-08 为周日，境内外主要市场无交易；本时段无新增行情，全篇行情读数均为 11-06 收盘 <span class="tags"><span class="tag">通达信✓</span><span class="tag">tushare✓</span></span></li>
     <li><b>A 股 11-06 收盘</b>：上证 3649.18（<span class="down">-1.10%</span>）、深成 11175.78（<span class="down">-2.57%</span>）、创业板 2465.23（<span class="down">-3.96%</span>）、科创综指 1496.36（<span class="down">-3.24%</span>）、北证50 888.48（<span class="down">-2.37%</span>）；两市 1.658 万亿、缩量逾 4600 亿</li>
     <li><b>海外（美东 11-06 收盘 / 北京 11-07 凌晨）</b>：纳指 <span class="up">+1.09%</span>、标普 <span class="up">+0.31%</span>、道指 <span class="down">-0.46%</span>，费半 9390.25（<span class="up">+4.21%</span>）、VIX 25.63（<span class="down">-9.02%</span>）；欧洲三大股指 11-06 全跌</li>
     <li><b>跨资产最异常读数</b>：中债 10Y 曲线 1.59%（<span class="down">-2BP</span>）与美债 10Y 4.86%（<span class="up">+2BP</span>）反向，中美利差 327BP；同周 COMEX 黄金 <span class="up">+4.63%</span>、WTI <span class="down">-13.23%</span></li>
@@ -76,14 +86,25 @@
     <li><b>已知日程</b>：11-09 中国 10 月 CPI/PPI；11-10 中国 M2/社融 + 美国 10 月 CPI；11-12 24 时成品油调价窗口 <span class="tag">新浪财经·11-08</span></li>
   </ul>
   <div class="note">时序提示：A 股 11-06 定价的是<b>美东 11-05 的暴跌</b>（纳指 -5.52%、费半 -12.25%）；美东 11-06 的修复发生在 A 股收盘之后，<b>尚未被 A 股定价</b>。第 2 节海外数据与 A 股 11-06 收盘不是同一时点。</div>
-  <div class="sum"><b>小结</b>周日休市、无当日行情；11-06 收盘为缩量普跌，中美利率与油金周度方向均不一致。</div>
+  <h3>1.2 A 股状态判定（事实层，11-06 收盘）</h3>
+  <table class="t-wrap">
+    <thead><tr><th class="l">维度</th><th class="l">11-06 收盘读数</th><th class="l">判据 / 参照</th><th class="l">源</th></tr></thead>
+    <tbody>
+      <tr><td class="l">宽度（上涨占比）</td><td class="l">758 / 5499 ≈ <b>13.8%</b></td><td class="l">&lt;20% 为普跌</td><td class="l">通达信✓ 11-06</td></tr>
+      <tr><td class="l">量能</td><td class="l">1.658 万亿，较前一日缩量 4600 亿+</td><td class="l">对比 5/20/60 日均：缩量下跌</td><td class="l">通达信✓ / 上证报·11-07</td></tr>
+      <tr><td class="l">风格</td><td class="l">上证50 -0.84%，创业板 -3.96%；银行/公用逆势</td><td class="l">大盘 vs 小盘、成长 vs 红利</td><td class="l">通达信✓ 11-06</td></tr>
+      <tr><td class="l">资金</td><td class="l">ETF 净流入 126.24 亿；两融 22709 亿（+0.29%，2 日连增）</td><td class="l">主力净流、ETF、两融（11-06）</td><td class="l">新浪财经·11-07</td></tr>
+      <tr><td class="l">相对海外</td><td class="l">创业板 -3.96% vs 费半 -12.25%、KOSPI -6.02%</td><td class="l">A 股跌幅 vs 亚太跌幅</td><td class="l">新浪✓ / 国际金融要情·11-07</td></tr>
+    </tbody>
+  </table>
+  <div class="sum"><b>小结</b>周日休市无当日行情；11-06 收盘五项读数共同指向缩量普跌、成长重挫与资金逆势并存，属结构分化。</div>
 </section>
 
 <section>
   <h2>2. 品种全景</h2>
 
-  <h3>2.1 股票 · 境内（11-06 当日收盘，非本时段快照）<span class="tag">tushare✓</span><span class="tag">通达信✓</span></h3>
-  <table>
+  <h3>2.1 股票 · 境内（11-06 当日收盘，非本时段快照）<span class="tags"><span class="tag">tushare✓</span><span class="tag">通达信✓</span></span></h3>
+  <table class="num">
     <thead><tr><th class="l">指数</th><th>11-06 收盘</th><th>涨跌幅</th><th>成交额*</th><th>20日</th><th>YTD</th><th>数据时点</th><th class="l">源</th></tr></thead>
     <tbody>
       <tr><td class="l">上证指数</td><td>3649.18</td><td class="down">-1.10%</td><td>7726 亿</td><td class="down">-4.32%</td><td class="down">-8.05%</td><td>11-06 收盘</td><td class="l">通达信✓</td></tr>
@@ -104,7 +125,7 @@
   <div class="sum"><b>小结</b>大盘抗跌、成长重挫，量能收缩而资金端逆势流入，年内风格分化贯穿全年。</div>
 
   <h3>2.2 股票 · 海外（美东 11-06 收盘 / 北京时间 11-07 凌晨；亚太与欧洲为 11-06 当地收盘）<span class="tag">新浪✓</span></h3>
-  <table>
+  <table class="num">
     <thead><tr><th class="l">市场</th><th>收盘</th><th>涨跌幅</th><th>当地收盘日</th><th>北京时间</th><th class="l">源</th></tr></thead>
     <tbody>
       <tr><td class="l">道琼斯</td><td>51285.73</td><td class="down">-0.46%</td><td>美东 11-06</td><td>11-07 04:00</td><td class="l">国际金融要情·11-07</td></tr>
@@ -121,12 +142,12 @@
     </tbody>
   </table>
   <p class="src"><b>欧洲早盘</b>：11-08 周日休市，<b>本时段无该项行情</b>（非数据缺失）。<b>VIX 历史分位</b> <span class="tag warn-tag">待补⚠</span>；费半自美东 11-05 -12.25% 后反弹 +4.21%，VIX 回落 9.02%。<br>
-  <b>周度累计</b>：本周纳指 -3.37%、标普500 -2.68%、纳斯达克100 -4.91%，纳指录得<b>周线四连跌</b> <span class="tag">新浪证券·11-08</span><span class="tag warn-tag">源冲突⚠</span>。<br>
+  <b>周度累计</b>：本周纳指 -3.37%、标普500 -2.68%、纳斯达克100 -4.91%，纳指录得<b>周线四连跌</b> <span class="tags"><span class="tag">新浪证券·11-08</span><span class="tag warn-tag">源冲突⚠</span></span>。<br>
   时序：美东 11-05（周四）纳指 -5.52%、费半 -12.25%，为 2025-04-03 以来最大单日跌幅；美东 11-06 仅部分修复，道指仍收跌。</p>
   <div class="sum"><b>小结</b>欧美分化、亚太普跌；费半反弹与 VIX 回落同现，但道指与欧洲仍收跌，广度不足。</div>
 
-  <h3>2.3 债券与利率（11-06，口径分列，禁止混比）<span class="tag">中债✓</span><span class="tag">tushare✓</span></h3>
-  <table>
+  <h3>2.3 债券与利率（11-06，口径分列，禁止混比）<span class="tags"><span class="tag">中债✓</span><span class="tag">tushare✓</span></span></h3>
+  <table class="num">
     <thead><tr><th class="l">品种</th><th>收益率/价格</th><th>变动</th><th class="l">口径</th><th>日期</th><th class="l">源</th></tr></thead>
     <tbody>
       <tr><td class="l">中债国债 3M</td><td>1.16%</td><td>持平</td><td class="l">中债估值收益率曲线</td><td>11-06</td><td class="l">中债✓</td></tr>
@@ -159,7 +180,7 @@
   <div class="sum"><b>小结</b>中债曲线下行、美债曲线上行，中美利差走阔，内外利率方向相反。</div>
 
   <h3>2.4 黄金 · 大宗 · 汇率（11-06 结算/收盘）</h3>
-  <table>
+  <table class="num">
     <thead><tr><th class="l">品种</th><th>收盘/现价</th><th>涨跌幅</th><th class="l">单位/口径</th><th>日期</th><th class="l">源</th></tr></thead>
     <tbody>
       <tr><td class="l">COMEX 黄金（12 月）</td><td>4074.90</td><td class="down">-0.94%</td><td class="l">美元/盎司 结算价</td><td>11-06</td><td class="l">央视财经·11-07</td></tr>
@@ -190,7 +211,7 @@
 <section>
   <h2>3. 上一交易日收盘 → 当前：发生了什么</h2>
   <p class="src" style="margin-top:0">休市版时间线，每条带时点与来源；禁止把不同交易日的数据串成一条因果链。本时段无新增行情，以下为消息面时间线。</p>
-  <table>
+  <table class="t-wrap">
     <thead><tr><th class="l">时点（北京时间）</th><th class="l">事件 / 数据</th><th class="l">源</th></tr></thead>
     <tbody>
       <tr><td class="l">11-06 15:00</td><td class="l">A 股收盘：上证 3649.18（-1.10%）、创业板 2465.23（-3.96%），两市缩量逾 4600 亿</td><td class="l">通达信✓ 11-06 收盘</td></tr>
@@ -209,26 +230,12 @@
   <div class="sum"><b>小结</b>休市期消息面以政策回顾与下周前瞻为主，A 股 11-06 与美东 11-05 同现，因果关系未确认。</div>
 </section>
 
-<section>
-  <h2>4. A 股状态判定（事实层，全部为 11-06 当日收盘）</h2>
-  <p class="src" style="margin-top:0">休市日不构成当日状态；本节读数逐项标日期，对象为上一交易日。</p>
-  <table>
-    <thead><tr><th class="l">维度</th><th class="l">11-06 收盘读数</th><th class="l">判据 / 参照</th><th class="l">源</th></tr></thead>
-    <tbody>
-      <tr><td class="l">宽度（上涨占比）</td><td class="l">758 / 5499 ≈ <b>13.8%</b></td><td class="l">&lt;20% 为普跌</td><td class="l">通达信✓ 11-06</td></tr>
-      <tr><td class="l">量能</td><td class="l">1.658 万亿，较前一日缩量 4600 亿+</td><td class="l">对比 5/20/60 日均：缩量下跌</td><td class="l">通达信✓ / 上证报·11-07</td></tr>
-      <tr><td class="l">风格</td><td class="l">上证50 -0.84%，创业板 -3.96%；银行/公用逆势</td><td class="l">大盘 vs 小盘、成长 vs 红利</td><td class="l">通达信✓ 11-06</td></tr>
-      <tr><td class="l">资金</td><td class="l">ETF 净流入 126.24 亿；两融 22709 亿（+0.29%，2 日连增）</td><td class="l">主力净流、ETF、两融（11-06）</td><td class="l">新浪财经·11-07</td></tr>
-      <tr><td class="l">相对海外</td><td class="l">创业板 -3.96% vs 费半 -12.25%、KOSPI -6.02%</td><td class="l">A 股跌幅 vs 亚太跌幅</td><td class="l">新浪✓ / 国际金融要情·11-07</td></tr>
-    </tbody>
-  </table>
-  <div class="sum"><b>小结（本节结论）</b>无当日行情；11-06 收盘五项读数共同指向缩量普跌、成长重挫与资金逆势并存，属结构分化。</div>
-</section>
+
 
 <section>
-  <h2>5. 下一交易日（11-09 周一）观察点与情景触发</h2>
+  <h2>4. 下一交易日（11-09 周一）观察点与情景触发</h2>
   <p class="src" style="margin-top:0">目标交易日 <b>2026-11-09 周一</b>，并含当晚欧美时段。每条为 if-then 可验证条件，不含概率与买卖建议。</p>
-  <table>
+  <table class="t-wrap">
     <thead><tr><th>#</th><th class="l">观察点</th><th class="l">触发条件（可观测）</th><th class="l">若触发需核对什么</th><th class="l">依据</th></tr></thead>
     <tbody>
       <tr><td>1</td><td class="l">算力硬件链对美东 11-06 修复的承接</td><td class="l">若 11-09 开盘 30 分钟内元件/CPO/通信设备指数转正，或继续下跌</td><td class="l">核对费半 +4.21% 与 A 股该链条的价差时序、是否补涨或再背离</td><td class="l">11-06 该链条领跌，未定价美东 11-06 修复</td></tr>
@@ -244,11 +251,11 @@
 </section>
 
 <section>
-  <h2>6. 资讯简述（25 条 · 收盘版配额 16–26 ✅ · 观点 4 条 · 按发布时间倒排）</h2>
+  <h2>5. 资讯简述（25 条 · 收盘版配额 16–26 ✅ · 观点 4 条 · 按发布时间倒排）</h2>
   <p class="src" style="margin-top:0"><b>覆盖窗口</b>：2026-11-06 15:00 → 2026-11-08 15:30（<b>休市期间 + 上一交易日盘后</b>），重点为 11-08 12:50 → 15:30 增量与前两版未收录的周末资讯。<br>
   <b>排序与合并</b>：按发布时间从新到旧，编号 1 = 最新；先归并 → 再倒排 → 后编号。与前两版（早间版 30 条、午间版 20 条）逐条去重，全天新增的盘后公告与 11-08 午后新刊发的回顾/前瞻已收进；同一事件多源合并为 1 条。<br>
   <b>类别配额</b>（按 16 条下限核对）：宏观政策/监管 6 · 海外市场/政治 5 · 产业与公司 5 · 资金面 3 · 商品与汇率 2 · 机构观点 4 · 日程预告 2 —— 七类均达标。</p>
-  <table>
+  <table class="t-wrap news">
     <thead><tr><th>#</th><th class="l">类别</th><th class="l">一句话简述</th><th>属性</th><th>发布时间</th><th class="l">来源</th></tr></thead>
     <tbody>
       <tr><td>1</td><td class="l">宏观政策</td><td class="l">国务院总理李强 11-06 主持国务院常务会议，要求完善资本市场稳市机制、增强股市内在稳定性，并研究明年经济工作思路</td><td>事实</td><td>11-08 15:14</td><td class="l">新浪证券·2026-11-08</td></tr>
@@ -281,7 +288,7 @@
   <p class="src">25 条均为不同事件（100% ≥70%）；事实 21 条 / 观点 4 条，观点均已写出主体；无改写凑数、无拆公告、无旧闻标新、无行情复述。事件本身发生在 11-06 及之前的条目（#1/#2/#3/#23/#24/#25）由 11-08 周末回顾集中刊发，已在下方对应表标注时序。</p>
 
   <h3>资讯与行情的对应（只列同现，不归因）</h3>
-  <table>
+  <table class="t-wrap">
     <thead><tr><th class="l">资讯</th><th class="l">同期可观察行情</th><th class="l">备注（时序 / 是否已被上一交易日定价）</th></tr></thead>
     <tbody>
       <tr><td class="l">#5 10 只 ETF 纳入港股通</td><td class="l">11-06 A 股已收盘</td><td class="l">生效日为 11-09，落在下一交易日，未被 11-06 定价</td></tr>
@@ -295,30 +302,10 @@
   <p class="src">本栏只登记「同时出现」的客观对应，<b>不构成因果判断</b>；无法确认时序的已在备注写明。与第 1 节时序提示为同一对应关系的不重复登记。</p>
 </section>
 
-<section>
-  <h2>7. 三层验收</h2>
-  <table>
-    <thead><tr><th class="l">层</th><th class="l">检查项</th><th>结果</th></tr></thead>
-    <tbody>
-      <tr><td class="l">研究层</td><td class="l">每个数字带日期+口径+源标签；无编造；冲突已采信并标记</td><td class="l">✅ 逐字段标注；周度美股、美元指数按来源层级采信并挂标</td></tr>
-      <tr><td class="l">研究层</td><td class="l">未把资讯综述写成研究结论；因果未被叙事替代</td><td class="l">✅ 第 3 节列明 4 项不能确认的因果，第 6 节对应表只列同现</td></tr>
-      <tr><td class="l">回测层</td><td class="l">本报告不含回测结论</td><td class="l">✅ 不适用</td></tr>
-      <tr><td class="l">实盘层</td><td class="l">观察点为可观测条件，无隐含买卖指令</td><td class="l">✅ 第 5 节 6 条均为 if-then 条件</td></tr>
-      <tr><td class="l">交付层</td><td class="l">四时段覆盖窗口正确；休市日未虚构行情</td><td class="l">✅ 周日休市，全篇无当日行情，明写「本时段无新增行情」</td></tr>
-      <tr><td class="l">交付层</td><td class="l">第 1/2/3 节小结齐全（≤60 字，只描述状态），第 4 节为小结（本节结论）</td><td class="l">✅ 共 7 处；第 4 节写明「无当日行情」</td></tr>
-      <tr><td class="l">交付层</td><td class="l">全篇无「源校验门记录」「缺失字段清单」两节，过程未展开</td><td class="l">✅ 校验动作已执行，未单列</td></tr>
-      <tr><td class="l">交付层</td><td class="l">第 6 节条数达配额下限（收 16）且类别配额各项达标</td><td class="l">✅ 25 条（上限 26），七类均达标，观点 4 条在 2–5 内</td></tr>
-      <tr><td class="l">交付层</td><td class="l">已按必扫来源逐源过一遍、六组检索轮次各执行一次</td><td class="l">✅ 8 组检索 + 外部 3 源并发；中文源覆盖新华财经、财联社、上证报、证券时报、中国证券网、第一财经、中国证券报、新浪财经/证券、央视财经、东方财富、汇通网、同花顺、钛媒体、财新网、陆家嘴财经早餐</td></tr>
-      <tr><td class="l">交付层</td><td class="l">第 6 节每条带来源+时间、事实/观点分列、≥70% 不同事件、无因果与方向推断</td><td class="l">✅ 25/25 不同事件，事实 21 / 观点 4，按时间倒排并已合并</td></tr>
-      <tr><td class="l">交付层</td><td class="l">全篇无裁决区 / 签字栏 / 方向裁决</td><td class="l">✅</td></tr>
-      <tr><td class="l">交付层</td><td class="l">遵守去重规则：无 KPI 卡片区、同一数字与对应关系只出现一次</td><td class="l">✅ 与前两版资讯逐条去重</td></tr>
-      <tr><td class="l">交付层</td><td class="l">已执行入库脚本并返回 ok:true</td><td class="l">✅ 见完成摘要</td></tr>
-    </tbody>
-  </table>
-</section>
+
 
 <section>
-  <h2>8. 边界与免责</h2>
+  <h2>6. 边界与免责</h2>
   <ul>
     <li>性质：<b>信息收集整理与事实核对</b>，不构成投资建议，不承诺时效性或完整性。</li>
     <li>数据来自公开渠道；标注为「待补」的字段未取到（<b>本期 1 项：VIX 历史分位</b>），严禁估算或编造；标注为「源冲突」的字段存在源间差异，已按来源层级采信，使用前请复核。</li>
@@ -328,7 +315,7 @@
   </ul>
 </section>
 
-<footer>市场资讯报告 · 收盘版 · 2026-11-08 15:30 北京时间 · 模板 v1.5 · 休市版 · 信息收集整理与事实核对，不构成投资建议</footer>
+<footer>市场资讯报告 · 收盘版 · 2026-11-08 15:30 北京时间 · 模板 v1.6 · 休市版 · 信息收集整理与事实核对，不构成投资建议</footer>
 
 </div>
 </body>
