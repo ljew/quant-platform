@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Card, PageHeader } from "../components/ui";
 import EChart from "../components/EChart";
 import HotBriefCard from "../components/HotBriefCard";
+import TodayRobustnessCard from "../components/TodayRobustnessCard";
 import { agentApi, api, get, newsApi, AgentState, KlineBar, NewsFeed } from "../api/client";
 import { localDate } from "../utils/date";
 import { formatPrice2, klineTooltip } from "../utils/klineTooltip";
@@ -205,6 +206,9 @@ export default function TodayPage() {
       }}>
         {verdict}
       </div>
+
+      {/* —— W46-3 稳健摘要（轻量）：新鲜度 + 最近评估徽章 + OOS/成本入口 —— */}
+      <TodayRobustnessCard colors={colors} />
 
       {/* —— 每小时热点简报（非结构化资讯 → LLM 判断）——
           放在「一句话观点」下面：两个都是判断，先读完观点再看可执行清单。
