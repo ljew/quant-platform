@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, Field, ConfigDict
 
 from app.core.cost_defaults import COMMISSION, SLIPPAGE
 
@@ -313,6 +313,85 @@ class CostSensitivityResult(BaseModel):
     axes: CostSensitivityAxes
     cells: list[CostGridCell]
     summary: CostSensitivitySummary
+    strategy_key: str
+    symbol: str
+    start: str
+    end: str
+
+# ===== W46-2 / M3-3 walk-forward OOS =====
+class WalkForwardRequest(BaseModel):
+    """与 BacktestRequest 同名同义的回测身份字段 + 滚动切窗参数。"""
+    symbol: str
+    start: str
+    end: str
+    strategy: str
+    params: dict = {}
+    initial_cash: float = 1_000_000.0
+    commission: float | None = None  # 缺省 → cost_defaults
+    slippage: float | None = None
+    adj: str = "qfq"
+    mode: str = "walk_forward"  # walk_forward | single
+    oos_ratio: float = 0.3
+    n_windows: int = 3
+    scheme: str = "expanding"
+    metric: str = "sharpe"  # sharpe | excess_return
+    min_is_bars: int = 60
+    min_oos_bars: int = 20
+
+
+class WalkForwardSegmentMetrics(BaseModel):
+    n_bars: int = 0
+    sharpe: float = 0.0
+    total_return: float = 0.0
+    excess_return: float = 0.0
+    max_drawdown: float = 0.0
+    trade_count: int = 0
+
+
+class WalkForwardWindow(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    index: int
+    is_start: str
+    is_end: str
+    oos_start: str
+    oos_end: str
+    is_: WalkForwardSegmentMetrics = Field(alias="is")
+    oos: WalkForwardSegmentMetrics
+    verdict: str
+    note: str = ""
+
+
+class WalkForwardLegacy(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    split_date: str
+    oos_start: str
+    is_: WalkForwardSegmentMetrics = Field(alias="is")
+    oos: WalkForwardSegmentMetrics
+    verdict: str
+    note: str = ""
+
+
+class WalkForwardSummary(BaseModel):
+    final_verdict: str
+    agg_verdict: str
+    legacy_verdict: str
+    gate_ok: bool = False
+    fragile_regime: bool = False
+    note: str = ""
+
+
+class WalkForwardResult(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    mode: str
+    scheme: str
+    metric: str
+    oos_ratio: float
+    n_windows: int
+    cost_profile: dict
+    oos: dict
+    legacy_single: WalkForwardLegacy | None = None
+    windows: list[WalkForwardWindow]
+    summary: WalkForwardSummary
     strategy_key: str
     symbol: str
     start: str
