@@ -804,6 +804,24 @@ export interface FactorValueStats {
   n_unique: number;
 }
 
+export interface FactorIcPack {
+  ic_mean: number | null;
+  icir: number | null;
+  t_stat: number | null;
+  ic_win_rate: number | null;
+  n_periods: number;
+  ic_series?: { date: string; ic: number }[];
+}
+
+export interface FactorOrthoBasis {
+  names: string[];
+  exprs: Record<string, string>;
+  min_cross_section: number;
+  n_snaps_resid: number;
+  n_snaps_fallback_raw: number;
+  note?: string;
+}
+
 export interface FactorMineReport {
   ok: boolean;
   error?: string;
@@ -834,6 +852,11 @@ export interface FactorMineReport {
   valuation_pit?: ValuationPit | null;
   pead_pit?: PeadPit | null;
   oos?: EvalOos | null;
+  /** W47-2：是否对代表集残差后再评 IC */
+  orthogonalize?: boolean;
+  ic_raw?: FactorIcPack | null;
+  ic_resid?: FactorIcPack | null;
+  ortho_basis?: FactorOrthoBasis | null;
 }
 
 export interface FactorHorizonRow {
