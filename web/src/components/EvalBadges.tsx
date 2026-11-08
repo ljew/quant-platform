@@ -11,7 +11,7 @@ export interface CostProfile {
   stamp_tax?: number;
   min_commission?: number;
   risk_free_rate?: number;
-  source?: "default" | "user" | string;
+  source?: "default" | "user" | "grid_pick" | string;
   label?: string;
 }
 
@@ -50,13 +50,13 @@ const ACCENT = "#4c6ef5";
 
 function costText(c?: CostProfile | null): string | null {
   if (!c) return null;
-  const src = c.source === "user" ? "自定义" : "默认";
-  // 设计示例：成本·默认万2.5+万1
-  const short =
+  // W46-1：grid_pick 主文案仍「成本·自定义」；悬停靠 label「网格选中·」区分（无独立短标「成本·网格」）
+  const src = c.source === "user" || c.source === "grid_pick" ? "自定义" : "默认";
+  const shortLabel =
     c.commission === 0.00025 && c.slippage === 0.0001
       ? "万2.5+万1"
       : `佣${((c.commission ?? 0) * 10000).toFixed(1)}+滑${((c.slippage ?? 0) * 10000).toFixed(1)}`;
-  return `成本·${src}${short}`;
+  return `成本·${src}${shortLabel}`;
 }
 
 function valText(v?: ValuationPit | null): string | null {

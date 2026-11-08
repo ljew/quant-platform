@@ -143,6 +143,61 @@ export interface BacktestResult {
 }
 
 // —— 业务 API ——
+
+/** W46-1 成本敏感网格 */
+export interface CostSensitivityRequest {
+  symbol: string;
+  start: string;
+  end: string;
+  strategy: string;
+  params?: Record<string, unknown>;
+  initial_cash?: number;
+  adj?: string;
+  mode?: "grid" | "multipliers";
+  commissions?: number[];
+  slippages?: number[];
+  multipliers?: number[];
+  base_commission?: number;
+  base_slippage?: number;
+  metric?: "excess_return" | "sharpe" | "total_return";
+}
+
+export interface CostGridCell {
+  commission: number;
+  slippage: number;
+  multiplier?: number | null;
+  is_default?: boolean;
+  total_return: number;
+  annual_return: number;
+  sharpe: number;
+  max_drawdown: number;
+  excess_return: number;
+  trade_count?: number;
+  final_equity?: number;
+}
+
+export interface CostSensitivityResult {
+  mode: string;
+  metric: string;
+  base_cost_profile: CostProfile;
+  axes: {
+    commissions?: number[] | null;
+    slippages?: number[] | null;
+    multipliers?: number[] | null;
+  };
+  cells: CostGridCell[];
+  summary: {
+    default_cell_ok: boolean;
+    double_cost_excess_positive: boolean;
+    fragile: boolean;
+    note?: string;
+  };
+  strategy_key: string;
+  symbol: string;
+  start: string;
+  end: string;
+}
+
 export const api = {
   strategies: () => get<StrategyInfo[]>("/strategy/strategies"),
   // limit 显式传入：后端默认只返回 500 根，长区间会被静默截断成「最近 500 根」。
@@ -161,6 +216,9 @@ export const api = {
     ),
   backtestDetail: (id: number) => get<BacktestResult>(`/strategy/backtests/${id}`),
   backtestHistory: (limit = 30) => get<BacktestResult[]>(`/strategy/backtests?limit=${limit}`),
+  /** W46-1 成本敏感网格（同步；长区间请自行缩小或用 multipliers） */
+  costSensitivity: (payload: CostSensitivityRequest) =>
+    post<CostSensitivityResult>("/strategy/backtest/cost-sensitivity", payload),
   // 参数寻优
   optimize: (payload: Record<string, unknown>) =>
     post<OptimizeTrial[]>("/strategy/optimize", payload),
