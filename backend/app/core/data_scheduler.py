@@ -211,6 +211,63 @@ def _record_fallback_run(ok: bool, message: str, started: datetime) -> None:
         logger.warning("补写降级 pipeline_runs 失败：%s", str(e)[:100])
 
 
+def _run_text_update() -> None:
+    """每日非结构化素材补充：研报元数据 + 公告正文。
+
+    与 _run_fund_update 同一个思路：轻量、失败不影响主链路。公告正文抓取
+    走子进程 + 硬超时 —— 它要发几百次 HTTP，万一东财限速卡住，绝不能拖住
+    调度线程（那会让第二天的 19:00 也错过）。
+    """
+    from app.database import SessionLocal
+    from app.services.research_report import sync as sync_report
+
+    db = SessionLocal()
+    try:
+        n = sync_report(db, days=2)      # 2 天窗口，覆盖周末空档
+        logger.info("研报同步 %d 篇", n)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("研报同步失败：%s", str(e)[:120])
+    finally:
+        db.close()
+
+    backend = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    env = dict(os.environ)
+    env["PYTHONPATH"] = backend
+
+    # ① doc_document 增量：只处理最新几个 parquet，靠 INSERT OR IGNORE 幂等。
+    #    这一步之前是「一次性回填脚本」，没人每天跑 → 文档库停在 2026-10-24。
+    try:
+        proc0 = run_with_timeout(
+            [sys.executable, "-m", "app.kb.backfill_s1", "--dry-run", "3"],
+            env=env, cwd=backend, timeout=600,
+        )
+        if proc0.returncode == 0:
+            logger.info("文档库增量：%s",
+                        (proc0.stdout or "").strip().split("\n")[-1][:160])
+        else:
+            logger.warning("文档库增量 rc=%s：%s", proc0.returncode,
+                           (proc0.stderr or "")[-200:])
+    except Exception as e:  # noqa: BLE001
+        logger.warning("文档库增量异常：%s", str(e)[:120])
+
+    script = os.path.join(backend, "scripts", "kb_fetch_ann_body.py")
+    if not os.path.exists(script):
+        return
+    try:
+        proc = run_with_timeout(
+            [sys.executable, script, "--limit", "1200", "--workers", "8"],
+            env=env, cwd=backend, timeout=900,
+        )
+        tail = (proc.stdout or "").strip().split("\n")[-1][:200]
+        if proc.returncode == 0:
+            logger.info("公告正文回补：%s", tail)
+        else:
+            logger.warning("公告正文回补 rc=%s：%s", proc.returncode,
+                           (proc.stderr or "")[-200:])
+    except Exception as e:  # noqa: BLE001
+        logger.warning("公告正文回补异常：%s", str(e)[:120])
+
+
 def _run_fund_update() -> None:
     """基金数据：净值每日、基础信息 / 经理每周一次。
 
@@ -560,6 +617,7 @@ def _loop(enabled: bool) -> None:
                             last_run_date = _today_str()
                             retry.update(etl_n=0, etl_ts=0.0)
                             _run_fund_update()
+                            _run_text_update()
                         elif not network_ready(*TUSHARE):
                             # 断网时**不消耗重试次数**：3 次 × 15 分钟的额度用来对付
                             # 数据源本身的问题（限速、接口抖动），不该被「网还没醒」吃掉。

@@ -2,7 +2,7 @@
  * 境外资讯（OPS-FN-1a）：RSS + 可选 X 日爬入库。
  *
  * 独立于「全部资讯」：源状态条 + 芯片多选 + 时间窗 + 关键词 + 立即同步。
- * 本页不强制 LLM 总结（1b 再说）。
+ * 本页以列表为主；无 LLM 时明示「仅列表不总结」（OPS-FN-1b）。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Btn, Card, PageHeader } from "../components/ui";
@@ -447,7 +447,8 @@ export default function ForeignNewsPage() {
       >
         源状态条颜色：绿=ok / 红=fail / 黄=degraded / 灰=unconfigured 或 disabled。
         调度每日三槽（07:00 / 12:30 / 21:00 Asia/Shanghai）；也可手动「立即同步」。
-        本页只做列表与入库，不强制 LLM 总结。
+        未配置 LLM，仅列表不总结；无 X Bearer 时 RSS 境外块仍可用。
+        热点简报 / 正式报告会纳入本页入库的境外条（编号 O*）。
       </div>
     </div>
   );

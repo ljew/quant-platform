@@ -418,7 +418,7 @@ export default function LlmConfigModal({ open, colors, onClose, onChanged }: Pro
                   {label("模型名")}
                   <input value={draft.model} list="llm-model-options"
                          onChange={(e) => setDraft({ ...draft, model: e.target.value })}
-                         placeholder="deepseek-chat"
+                         placeholder="deepseek-flash"
                          style={{ ...inputStyle(colors), fontFamily: "'SF Mono', Menlo, monospace", fontSize: 12.5 }} />
                   <datalist id="llm-model-options">
                     {(activePreset?.models || []).map((m) => <option key={m} value={m} />)}
@@ -437,6 +437,11 @@ export default function LlmConfigModal({ open, colors, onClose, onChanged }: Pro
               {activePreset?.note && (
                 <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 8 }}>
                   说明：{activePreset.note}
+                  {["deepseek-chat", "deepseek-reasoner"].includes(draft.model || "") && (
+                    <span style={{ color: colors.up || "#c0392b" }}>
+                      {" "}旧模型已退役，请改为 deepseek-flash
+                    </span>
+                  )}
                 </div>
               )}
 

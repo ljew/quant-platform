@@ -354,6 +354,14 @@ def build_report(db: Session) -> tuple[str, str]:
     xq_hot = xueqiu_hot()
     news = eastmoney_headlines(6)
 
+    # 境外资讯（OPS-FN-1b）：读 news_feed fn_*，不把 global_quotes 当新闻
+    foreign_items: list[dict] = []
+    try:
+        from app.services import foreign_news as _fn
+        foreign_items = (_fn.query_foreign(db, hours=24, limit=6).get("items") or [])[:6]
+    except Exception:  # noqa: BLE001
+        foreign_items = []
+
     up, dn = "#c0392b", "#1e8449"  # A 股配色：红涨绿跌
 
     def _chg(v: float) -> str:
@@ -407,6 +415,19 @@ def build_report(db: Session) -> tuple[str, str]:
         f"{n['title']}</a> <span style='color:#aaa;font-size:11px'>{n['time'][:16]}</span></li>"
         for n in news
     )
+    if foreign_items:
+        foreign_rows = "".join(
+            f"<li style='margin:3px 0'>"
+            + (f"<a href='{f.get('url')}' style='color:#2471a3;text-decoration:none'>{f.get('title') or ''}</a>"
+               if f.get("url") else (f.get("title") or ""))
+            + f" <span style='color:#aaa;font-size:11px'>{f.get('source_label') or f.get('source') or ''}"
+            + (f" · {(f.get('published_at') or '')[:16]}" if f.get("published_at") else "")
+            + "</span></li>"
+            for f in foreign_items
+        )
+    else:
+        foreign_rows = ("<li style='margin:3px 0;color:#888'>暂无境外入库，见平台「今日观点 → 境外资讯」"
+                        "（#foreign-news）</li>")
 
     html = f"""<html><body style="font-family:-apple-system,'PingFang SC',Helvetica;margin:0;background:#fafafa">
 <div style="max-width:860px;margin:0 auto;padding:24px">
@@ -445,6 +466,9 @@ def build_report(db: Session) -> tuple[str, str]:
 
     <h2 style="font-size:15px;border-left:4px solid #2471a3;padding-left:10px;margin-top:26px">东财要闻</h2>
     <ul style="padding-left:18px;font-size:13px">{news_rows}</ul>
+
+    <h2 style="font-size:15px;border-left:4px solid #16a085;padding-left:10px;margin-top:26px">境外资讯</h2>
+    <ul style="padding-left:18px;font-size:13px">{foreign_rows}</ul>
 
     <p style="color:#999;font-size:11px;margin-top:26px;border-top:1px solid #eee;padding-top:12px">
       本报告由个人量化投研平台 Orchestrator 自动生成（多 Agent 流水线：数据→质检→选股→信号→归因→发布）。

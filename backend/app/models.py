@@ -574,9 +574,8 @@ class NewsFeedItem(Base):
 class HotBrief(Base):
     """每小时热点简报（非结构化资讯 → LLM 筛选解读）。
 
-    输入是两条腿：① 平台自采一手快讯（财联社电报，时效最强）；
-    ② DeepSeek 网页搜索 `/v1/tools/search`（覆盖快讯发不到的地方：
-    部委原文、行业数据、券商观点、隔夜外盘）。
+    输入是三腿：① 财联社一手快讯；② 境外日爬（news_feed fn_* / O*）；
+    ③ DeepSeek 网页搜索 `/v1/tools/search`（覆盖兜底）。
     模型只负责按「对 A 股有没有实质影响」筛选判断。
 
     ⚠️ 2026-11-07 我曾误判「DeepSeek API 无联网能力」——当时只试了
@@ -596,6 +595,7 @@ class HotBrief(Base):
     n_input: Mapped[int] = mapped_column(Integer, default=0)      # 输入资讯条数（快讯+搜索）
     n_flash: Mapped[int] = mapped_column(Integer, default=0)      # 其中：财联社一手快讯
     n_search: Mapped[int] = mapped_column(Integer, default=0)     # 其中：DeepSeek 网页搜索
+    n_foreign: Mapped[int] = mapped_column(Integer, default=0)    # 其中：境外日爬 fn_*
     n_items: Mapped[int] = mapped_column(Integer, default=0)      # 模型保留条数
     items_json: Mapped[str] = mapped_column(Text, default="[]")
     # 本轮喂给模型的**原始输入快照**（编号/来源/时间/标题/链接）。
@@ -1479,3 +1479,42 @@ class FundNav(Base):
 
     def __repr__(self) -> str:
         return f"<FundNav {self.ts_code} {self.nav_date}>"
+
+# ───────────── 券商研报（2026-11-08 补）─────────────
+# 为什么值得单独建表：这是唯一同时带「评级 + 三年盈利预测 + 机构」的公开源。
+# 盈利预测修正是 A 股最强的单因子之一，而此前平台完全没有这类数据。
+
+class ResearchReport(Base):
+    """个股研报元数据（东方财富研报中心 reportapi）。
+
+    正文在 PDF 里（`pdf.dfcfw.com/pdf/H3_{info_code}_1.pdf`），本表只存结构化
+    字段 + info_code：先把「谁在什么时候把评级/盈利预测改成了什么」这个最有用
+    的部分拿下来，正文按需再抓。
+
+    ⚠️ `publish_date` 接口给的是 `2026-11-08 00:00:00.000`，统一截成 date。
+    """
+
+    __tablename__ = "research_report"
+
+    info_code: Mapped[str] = mapped_column(String(32), primary_key=True)
+    title: Mapped[str] = mapped_column(String(300), default="")
+    stock_code: Mapped[str] = mapped_column(String(8), index=True, default="")
+    stock_name: Mapped[str] = mapped_column(String(32), default="")
+    org_code: Mapped[str] = mapped_column(String(16), default="")
+    org_name: Mapped[str] = mapped_column(String(64), default="")
+    org_sname: Mapped[str] = mapped_column(String(32), default="")     # 机构简称
+    publish_date: Mapped[date] = mapped_column(Date, index=True)
+    rating: Mapped[str] = mapped_column(String(16), default="")       # 买入/增持/中性…
+    industry: Mapped[str] = mapped_column(String(32), default="")
+    # 三年盈利预测（EPS 元 / PE 倍）。用于「预测上调幅度」因子。
+    eps_this: Mapped[float | None] = mapped_column(Float, nullable=True)
+    eps_next: Mapped[float | None] = mapped_column(Float, nullable=True)
+    eps_next2: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pe_this: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pe_next: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pe_next2: Mapped[float | None] = mapped_column(Float, nullable=True)
+    url: Mapped[str] = mapped_column(String(300), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+    def __repr__(self) -> str:
+        return f"<ResearchReport {self.stock_name} {self.rating} {self.publish_date}>"

@@ -111,6 +111,7 @@ def _migrate_sqlite() -> None:
     research_runs_expected = {"gate_deadline": "TIMESTAMP"}
     # hot_brief 表：输入来源拆分（2026-11-07 接入 DeepSeek 搜索后区分快讯/搜索）
     hot_brief_expected = {"n_flash": "INTEGER DEFAULT 0", "n_search": "INTEGER DEFAULT 0",
+                          "n_foreign": "INTEGER DEFAULT 0",
                           "inputs_json": "TEXT DEFAULT '[]'", "summary": "TEXT DEFAULT ''",
                           "today_items_json": "TEXT DEFAULT '[]'"}
     # 实盘成交/公司行动：稳定外部标识用于幂等写入。NULL 不参与 SQLite 唯一约束。

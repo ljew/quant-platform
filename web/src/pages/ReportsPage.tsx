@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Badge, Btn, Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
 import { useTheme } from "../theme";
-import { get } from "../api/client";
+import { get, newsApi, type ForeignDigest } from "../api/client";
 
 interface ReportRow {
   report_id: string;
@@ -74,6 +74,7 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [active, setActive] = useState<ReportRow | null>(null);
+  const [foreignDigest, setForeignDigest] = useState<ForeignDigest | null>(null);
   const boxRef = useRef<HTMLDivElement | null>(null);
 
   const load = useCallback(async () => {
@@ -91,6 +92,12 @@ export default function ReportsPage() {
       setRows(list.reports);
       setTotal(list.total);
       setStats(st);
+      try {
+        const dig = await newsApi.foreignDigest(24, 8);
+        setForeignDigest(dig);
+      } catch {
+        setForeignDigest(null);
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
       setRows([]);
@@ -133,6 +140,15 @@ export default function ReportsPage() {
         actions={
           <>
             <Btn small kind="ghost" onClick={() => void load()}>刷新</Btn>
+            <Btn
+              small
+              kind="ghost"
+              onClick={() =>
+                window.dispatchEvent(new CustomEvent("quant-nav", { detail: { tab: "foreign-news" } }))
+              }
+            >
+              查看境外资讯
+            </Btn>
             <a href="/api/v1/reports/index" target="_blank" rel="noreferrer"
               style={{ fontSize: 12.5, color: colors.accent, textDecoration: "none" }}>
               纯 HTML 索引 ↗
@@ -164,6 +180,41 @@ export default function ReportsPage() {
           colors={colors}
         />
       </div>
+
+      {/* —— 境外日摘要片段（OPS-FN-1b；不调 LLM）—— */}
+      <Card colors={colors} pad={12} style={{ marginBottom: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", alignItems: "baseline" }}>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>境外日摘要（近 24h）</div>
+          <button
+            onClick={() =>
+              window.dispatchEvent(new CustomEvent("quant-nav", { detail: { tab: "foreign-news" } }))
+            }
+            style={{ border: 0, background: "transparent", color: colors.accent, cursor: "pointer", fontSize: 12 }}
+          >
+            打开境外资讯 →
+          </button>
+        </div>
+        {foreignDigest && foreignDigest.count > 0 ? (
+          <ul style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 12.5, lineHeight: 1.7, color: colors.text }}>
+            {foreignDigest.items.slice(0, 6).map((it, i) => (
+              <li key={i} style={{ marginBottom: 2 }}>
+                <span style={{ color: colors.muted }}>[{it.source_label || it.source}] </span>
+                {it.url ? (
+                  <a href={it.url} target="_blank" rel="noreferrer" style={{ color: colors.accent, textDecoration: "none" }}>
+                    {it.title}
+                  </a>
+                ) : (
+                  it.title
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div style={{ marginTop: 8, fontSize: 12.5, color: colors.muted }}>
+            暂无境外入库或尚未同步 —— 前往「境外资讯」手动同步；未配置 LLM 时仅列表不总结。
+          </div>
+        )}
+      </Card>
 
       {/* —— 筛选 —— */}
       <Card colors={colors} pad={12} style={{ marginBottom: 12 }}>

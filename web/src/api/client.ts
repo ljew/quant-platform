@@ -583,8 +583,8 @@ export interface HealthReport {
 /** 每小时热点简报条目 */
 export interface HotBriefSource {
   ref: string;          // 输入编号，如 "S1"
-  kind: string;         // 快讯 / 搜索
-  label: string;        // 财联社电报 / DeepSeek · 央广财经
+  kind: string;         // 快讯 / 境外 / 搜索
+  label: string;        // 财联社电报 / Fed 新闻稿 / DeepSeek · 央广财经
   url: string;
 }
 
@@ -597,8 +597,8 @@ export interface HotBriefItem {
   why: string;
   strength: number;
   /** 来源：模型回填输入编号，服务端翻译成人可读标签（见 hot_brief._resolve_src） */
-  source_kind?: string;    // 快讯 / 搜索 / 快讯+搜索
-  source_label?: string;   // 财联社电报 / DeepSeek · 央广财经
+  source_kind?: string;    // 快讯 / 境外 / 搜索 / 混合
+  source_label?: string;   // 财联社电报 / Fed 新闻稿 / DeepSeek · …
   source_url?: string;
   source_refs?: string[];
   /** 完整来源清单（source_label 超过 2 个时会压缩，这里是全量） */
@@ -610,8 +610,8 @@ export interface HotBriefItem {
 
 /** 本轮喂给模型的原始输入（用于回溯「这条是从哪看到的」） */
 export interface HotBriefInput {
-  ref: string;      // F1 / S2
-  kind: string;     // 快讯 / 搜索
+  ref: string;      // F1 / O2 / S3
+  kind: string;     // 快讯 / 境外 / 搜索
   ts: number;       // unix 秒；搜索可能为 0
   title: string;
   site: string;
@@ -637,6 +637,7 @@ export interface HotBrief {
   n_input?: number;
   n_flash?: number;
   n_search?: number;
+  n_foreign?: number;
   n_items?: number;
   items?: HotBriefItem[];
   /** 本轮原始输入快照（标题/站点/链接），可回溯原文 */
@@ -1145,6 +1146,24 @@ export interface ForeignSyncStatus {
   next_slot?: string;
   sources?: Record<string, { added?: number; status?: string; error?: string }>;
 }
+export interface ForeignDigestItem {
+  title: string;
+  source: string;
+  source_label: string;
+  published_at: string | null;
+  url: string;
+  summary?: string;
+}
+
+export interface ForeignDigest {
+  hours: number;
+  count: number;
+  total: number;
+  items: ForeignDigestItem[];
+  text: string;
+  llm: boolean;
+}
+
 
 export const newsApi = {
   feed: (refresh = false) => get<NewsFeed>(`/news/feed${refresh ? "?refresh=true" : ""}`),
@@ -1208,6 +1227,9 @@ export const newsApi = {
   },
   /** 境外调度器状态 */
   foreignSyncStatus: () => get<ForeignSyncStatus>("/news/foreign/sync-status"),
+  /** 境外日摘要（标题列表 + 短拼接；不调 LLM） */
+  foreignDigest: (hours = 24, limit = 40) =>
+    get<ForeignDigest>(`/news/foreign/digest?hours=${hours}&limit=${limit}`),
 };
 
 // —— 自动研究闭环（/auto/*）——
