@@ -159,8 +159,13 @@ def _digest_done_today() -> bool:
     db = SessionLocal()
     try:
         day = datetime.now().date().isoformat()
-        return db.query(BriefDigest).filter(BriefDigest.day == day,
-                                            BriefDigest.error == "").first() is not None
+        row = db.query(BriefDigest).filter(BriefDigest.day == day,
+                                           BriefDigest.error == "").first()
+        if row is None:
+            return False
+        # 只有 21:45 之后生成的才算「今天的完整版」。下午手动试跑的版本
+        # 缺 21:02 那轮（傍晚消息），到点仍要重生成覆盖一次。
+        return row.created_at is not None and row.created_at.hour >= DIGEST_HOUR
     except Exception:  # noqa: BLE001
         return False
     finally:
