@@ -847,6 +847,9 @@ def compute_factor_cross_section(db: Session, syms: list[str], trade_date: date)
     news_lookup = news_lookup_factory(_nhist)
 
     attrs_map = _attrs_for(db, syms)
+    # W45-4：成长三因子按 FundamentalsHistory 截面 as-of（禁止 stocks 最新快照前视）
+    from app.services.factor_mining import _fund_timeline, _apply_fund_asof
+    fund_tl = _fund_timeline(db, syms)
     # 基准（中证800）对齐序列：与股票区间对齐
     sd = trade_date - timedelta(days=400)
     bench = _benchmark_closes(db, sd, trade_date)
@@ -896,7 +899,8 @@ def compute_factor_cross_section(db: Session, syms: list[str], trade_date: date)
         mkt_b = bench[-len(closes):]
         if len(mkt_b) != len(closes):
             continue
-        attrs = attrs_map.get(sym, {}) or {}
+        attrs = dict(attrs_map.get(sym, {}) or {})
+        _apply_fund_asof(attrs, fund_tl, sym, trade_date)
         from app.datahub.ns_vars import fill_missing, make_ns
 
         vols = fill_missing([float(b[2]) if b[2] is not None else None for b in bars])
