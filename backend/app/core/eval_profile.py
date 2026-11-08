@@ -115,21 +115,29 @@ def build_eval_profile_for_backtest(
     req: Any,
     *,
     multi_asset: bool,
+    valuation_coverage: float | None = None,
 ) -> dict[str, Any]:
     """回测路径：单标的技术指标 → PIT n/a；组合/多因子 → 真实 mode。
 
-    组合回测当前 attributes 仍读 stocks 最新快照（非 StockValuationDaily），
-    故 valuation_pit=fallback（W45-5 显式标注，勿静默）。
+    2026-11-08 起组合回测的估值已按日频序列取值（stock_valuation_daily，每 5 日
+    采一点），不再用 stocks 最新快照。`valuation_coverage` 由装配层传入 ——
+    有覆盖标 asof，没覆盖才降级 fallback（显式标注，勿静默）。
     PEAD 走 fundamentals 截面 as-of（W45-3），标 asof + raw_pp。
     """
     source = cost_source_from_request(req)
     cost = build_cost_profile(req.commission, req.slippage, source=source)
     if multi_asset:
-        valuation = build_valuation_pit(
-            "fallback",
-            coverage=0.0,
-            note="组合回测 attributes 仍取 stocks 最新快照；估值日频 PIT 未接入本路径",
-        )
+        cov = float(valuation_coverage or 0.0)
+        if cov > 0.5:
+            valuation = build_valuation_pit(
+                "asof", coverage=cov,
+                note="估值取自 stock_valuation_daily 日频序列（每 5 日一点，按调仓日取最近值）",
+            )
+        else:
+            valuation = build_valuation_pit(
+                "fallback", coverage=cov,
+                note="估值日频序列缺失或覆盖不足，退回 stocks 最新快照（有前视风险）",
+            )
         pead = build_pead_pit("asof", scale="raw_pp")
     else:
         valuation = pit_na()
@@ -156,8 +164,8 @@ def build_eval_profile_for_paper(req: Any, *, multi_asset: bool) -> dict[str, An
     cost = build_cost_profile(req.commission, req.slippage, source=source)
     if multi_asset:
         valuation = build_valuation_pit(
-            "fallback",
-            note="纸面组合任务沿用回测属性口径；创建时仅回显成本徽章",
+            "asof",
+            note="创建时仅回显；实际运行时按 stock_valuation_daily 日频序列取值",
         )
         pead = build_pead_pit("asof", scale="raw_pp")
     else:

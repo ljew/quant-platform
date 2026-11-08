@@ -471,6 +471,8 @@ def _run_portfolio(db, req, meta, params, progress_cb=None):
                Stock.roe, Stock.revenue_yoy, Stock.profit_yoy, Stock.list_date)
         .where(Stock.symbol.in_(syms))
     ).all()
+    # ⚠️ 这里的 pe_ttm / pb / market_cap 是**最新快照**，只作兜底用。
+    # 估值类取值走 valuation 序列（下方载入），否则等于用今天的估值选三年前的股。
     attributes = {
         r.symbol: {
             "name": r.name,
@@ -488,6 +490,14 @@ def _run_portfolio(db, req, meta, params, progress_cb=None):
         }
         for r in attrs_rows
     }
+
+    # 4b) 日频估值序列（PIT）：pe_ttm / pb / market_cap 在回测期里是变的，
+    #     用 stocks 最新快照会让估值因子带上三年后的信息（前视）。
+    #     每 5 个自然日取一个点：3 年约 78 万条，月度调仓够用；
+    #     全量 365 万条在容器 5.5G 内存下风险太大。
+    from app.core.engine.valuation import load_valuation_series
+
+    valuation = load_valuation_series(db, syms, load_start, ed)
 
     # 5) 基本面历史快照（多报告期），供 point-in-time 时序因子（PEAD 盈余惊喜）使用
     fund_rows = db.execute(
@@ -543,6 +553,7 @@ def _run_portfolio(db, req, meta, params, progress_cb=None):
         rebalance_period=rebalance_period,
         warmup=max(warmup_min, int(params.get("warmup_days", 0) or 0)),
         attributes=attributes,
+        valuation=valuation,
         membership=membership,
         risk_limits=risk_limits or None,
         fundamentals=fundamentals or None,
@@ -553,6 +564,16 @@ def _run_portfolio(db, req, meta, params, progress_cb=None):
         result = engine.run(meta["cls"], params)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"组合回测执行失败: {e}")
+
+    # 估值 PIT 覆盖率：供评估徽章判断该标 asof 还是 fallback。
+    # 用 setattr 而不是改 PortfolioResult 的字段 —— 那个 dataclass 有两处
+    # return 构造点，加字段容易漏；取不到就按 0 处理（降级 fallback）。
+    try:
+        from app.core.engine.valuation import coverage as _val_coverage
+
+        result.valuation_pit_coverage = _val_coverage(valuation, syms)
+    except Exception:  # noqa: BLE001
+        result.valuation_pit_coverage = 0.0
 
     # 假空仓保护：调仓持续抛异常 → 策略永远不建仓，收益恒 0 却看不出是 bug。
     # 典型触发：membership 快照日类型不对（date vs str）导致 _members_on 比较失败。
@@ -765,7 +786,10 @@ def _persist(db, req, meta, params, result) -> Backtest:
                     "max_drawdown": getattr(result, "hedged_max_drawdown", 0.0),
                 },
                 # W45-badge：评估口径（落库，历史详情可回放徽章）
-                **build_eval_profile_for_backtest(req, multi_asset=multi),
+                **build_eval_profile_for_backtest(
+                    req, multi_asset=multi,
+                    valuation_coverage=getattr(result, "valuation_pit_coverage", None),
+                ),
             },
             ensure_ascii=False,
         ),

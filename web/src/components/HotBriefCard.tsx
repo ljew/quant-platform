@@ -272,6 +272,9 @@ export default function HotBriefCard({
   const [loading, setLoading] = useState(true);
   const [showAllItems, setShowAllItems] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
+  // 当日全景已生成时，本卡的主线+综述默认收起（两者都是「今日整体」，
+  // 上下叠着讲同一件事）。这里允许手动展开，不把功能砍掉。
+  const [judgeOpen, setJudgeOpen] = useState(false);
   const [llmConfigured, setLlmConfigured] = useState<boolean | null>(null);
 
   const load = useCallback(() => {
@@ -303,10 +306,16 @@ export default function HotBriefCard({
     .map((k) => `${k} ${split[k]}`)
     .join(" · ");
 
+  // 当天已有「当日全景」→ 本卡隐藏主线与综述，只留明细清单。
+  // 判断依据是后端给的 digest_day（等于本简报所属日期），不是前端猜测。
+  const hasDigest = !!brief?.digest_day && brief.digest_day === brief.date;
+  const hideJudge = hasDigest && !judgeOpen;
+
   const meta = brief ? (
     <span style={{ fontSize: 11.5, color: colors.muted, fontWeight: 400 }}>
-      {brief.date || ""} · 共 {brief.n_briefs ?? 1} 轮 · 今日 {brief.n_items} 条
-      {splitText ? `（${splitText}）` : ""}
+      {brief.date || ""} · 共 {brief.n_briefs ?? 1} 轮
+      {hasDigest ? "" : ` · 今日 ${brief.n_items} 条`}
+      {!hasDigest && splitText ? `（${splitText}）` : ""}
       {brief.created_at ? ` · 最新 ${brief.created_at.slice(11, 16)}` : ""}
     </span>
   ) : null;
@@ -350,7 +359,35 @@ export default function HotBriefCard({
         </div>
       )}
 
-      {brief?.mainline && (
+      {hasDigest && (brief?.mainline || paragraphs.length > 0) && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 11.5,
+            color: colors.muted,
+            padding: "6px 10px",
+            borderRadius: 6,
+            background: colors.bg,
+            border: `1px dashed ${colors.border}`,
+            marginBottom: 10,
+          }}
+        >
+          <span>今日判断见上方「当日全景」，本卡只留明细</span>
+          <button
+            onClick={() => setJudgeOpen((v) => !v)}
+            style={{
+              border: 0, background: "transparent", color: colors.accent,
+              cursor: "pointer", fontSize: 11.5, padding: 0, marginLeft: "auto",
+            }}
+          >
+            {judgeOpen ? "收起本轮解读 ▴" : "查看本轮解读 ▾"}
+          </button>
+        </div>
+      )}
+
+      {brief?.mainline && !hideJudge && (
         <div
           style={{
             fontSize: dense ? 12.5 : 13,
@@ -368,8 +405,8 @@ export default function HotBriefCard({
         </div>
       )}
 
-      {/* —— ② 今日综述 —— */}
-      {paragraphs.length > 0 && (
+      {/* —— ② 今日综述（全景已生成时让位，见 hideJudge）—— */}
+      {paragraphs.length > 0 && !hideJudge && (
         <div style={{ marginBottom: 10 }}>
           <div style={{ fontSize: 12, color: colors.muted, marginBottom: 4 }}>
             今日综述
@@ -396,7 +433,7 @@ export default function HotBriefCard({
         </div>
       )}
 
-      {/* —— ③ 今日主题（已 LLM 去重）—— */}
+      {/* —— ③ 今日全部要点（已 LLM 跨轮去重）—— */}
       {items.length > 0 && (
         <>
           <div style={{ fontSize: 12, color: colors.muted, margin: "2px 0 6px" }}>

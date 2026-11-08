@@ -76,12 +76,20 @@ def _fetch_page(begin: str, end: str, page: int, qtype: int = 0) -> dict:
     return json.loads(raw)
 
 
-def sync(db: Session, days: int = 7, qtype: int = 0) -> int:
-    """拉最近 days 天的研报（按 info_code 幂等 upsert），返回写入条数。"""
+def sync(db: Session, days: int = 7, qtype: int = 0,
+         start: date | None = None, end: date | None = None) -> int:
+    """拉研报（按 info_code 幂等 upsert），返回写入条数。
+
+    默认拉最近 `days` 天；给了 `start`/`end` 就按该区间拉，用于历史回补
+    （做「盈利预测修正」因子至少要 2 年历史，日更只够覆盖最近几天）。
+
+    ⚠️ 东财这个接口单月约 1000 篇、单页 100 条、实测 0.23 秒/页，
+    所以按月回补 4 年也就几分钟。但别并发 —— 同一个域名并发容易触发限流。
+    """
     from app.models import ResearchReport
 
-    end = date.today()
-    begin = end - timedelta(days=max(1, days))
+    end = end or date.today()
+    begin = start or (end - timedelta(days=max(1, days)))
     rows: list[dict] = []
     for page in range(1, MAX_PAGES + 1):
         try:

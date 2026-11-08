@@ -11,6 +11,7 @@
 - 基准为传入的指数日K，输出策略净值、基准净值、超额收益与信息比率(IR)。
 """
 from __future__ import annotations
+from bisect import bisect_right
 
 import logging
 import math
@@ -140,7 +141,15 @@ class PortfolioContext:
         return {k: v for k, v in self.engine.positions.items() if v > 0}
 
     def attribute(self, symbol: str, key: str):
-        """查询标的截面属性（industry / market_cap / pe_ttm / pb 等）。"""
+        """查询标的截面属性。
+
+        估值类（pe_ttm / pb / market_cap）**按当前回测日期取值**（PIT）；
+        行业、名称等静态属性直接读快照。
+        """
+        if key in _PIT_KEYS and self.date:
+            v = self.engine.valuation_at(symbol, key, self.date)
+            if v is not None:
+                return v
         return (self.engine.attributes.get(symbol, {}) or {}).get(key)
 
     def report_factor(self, symbol: str, name: str, value: float) -> None:
@@ -208,6 +217,11 @@ class PortfolioContext:
         )
 
 
+# 需要按时点取值的估值字段。其余属性（industry / name / list_date）是
+# 相对静态的，用最新快照不会造成前视。
+_PIT_KEYS = frozenset({"pe_ttm", "pb", "market_cap"})
+
+
 class PortfolioBacktestEngine:
     def __init__(
         self,
@@ -223,6 +237,7 @@ class PortfolioBacktestEngine:
         limit_enabled: bool = True,
         cash_buffer: float = 0.005,
         attributes: dict | None = None,
+        valuation: dict | None = None,
         membership: list | None = None,
         risk_limits: dict | None = None,
         fundamentals: dict | None = None,
@@ -270,8 +285,16 @@ class PortfolioBacktestEngine:
         self.lot_size = int(lot_size)
         self.limit_enabled = bool(limit_enabled)
         self.cash_buffer = float(cash_buffer)
-        # 标的截面属性（行业/市值/估值），由调用方注入
+        # 标的截面属性（行业/名称/上市日），由调用方注入。
+        # ⚠️ 这里的 market_cap / pe_ttm / pb 是**最新快照**，只能用于
+        # 「不需要时点」的场景（行业分类、ST 名称）。估值类取值一律走
+        # valuation_at()，否则等于用今天的估值去选三年前的股（前视）。
         self.attributes: dict = attributes or {}
+        # 日频估值序列 {symbol: {"dates": [...], "pe_ttm": [...], "pb": [...],
+        #                        "total_mv": [...]}}，dates 升序。
+        # 由装配层从 stock_valuation_daily 载入；为空时 attribute() 退回快照
+        # （并会被 eval_profile 标成 fallback）。
+        self.valuation: dict = valuation or {}
         # 时点(point-in-time)成分股成员资格：[(trade_date_str, {symbol}), ...] 升序。
         # 为空表示关闭 PIT 过滤（沿用全部已载入标的，兼容旧行为）。
         self.membership: list = list(membership) if membership else []
@@ -347,6 +370,25 @@ class PortfolioBacktestEngine:
         """标的证券名称（ST 识别用）。attributes 未注入 name 时返回空串，
         此时 ST 退化为主板 10% 的涨跌停幅度（已知偏差，见 core/rules/limit.py）。"""
         return str((self.attributes.get(symbol, {}) or {}).get("name") or "")
+
+    def valuation_at(self, symbol: str, key: str, date: str):
+        """按交易日期取估值（PIT）。无数据返回 None，由调用方决定退回快照还是置空。
+
+        用 bisect 找「<= date 的最后一个点」：当日停牌/未更新时自然回落到
+        上一个有效值，比分区间更安全（不会突然变 None 把股票踢出池子）。
+        """
+        seq = self.valuation.get(symbol)
+        if not seq:
+            return None
+        arr = seq.get(key)
+        dates = seq.get("dates")
+        if not arr or not dates:
+            return None
+        d = str(date)[:10]
+        i = bisect_right(dates, d) - 1
+        if i < 0:
+            return None
+        return arr[i]
 
     def _price_today(self, symbol: str):
         return self._last_close.get(symbol)

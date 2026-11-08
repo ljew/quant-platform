@@ -190,7 +190,7 @@ class EnhancedFactorStrategy(PortfolioStrategy):
             if not (closes_m and closes_r and closes_v and closes_b and closes_t and mkt):
                 continue
             mkt_b = mkt[-len(closes_b):]
-            # 截面属性（估值/市值/质量/成长）
+            # 截面属性（行业/名称等静态项）；估值三项另走 ctx.attribute()
             attrs = ctx.engine.attributes.get(sym, {}) or {}
             # point-in-time 盈余惊喜（PEAD）：仅用报告期<=今日的快照，杜绝前视
             fund_snaps = ctx.engine.fundamentals.get(sym)
@@ -200,9 +200,12 @@ class EnhancedFactorStrategy(PortfolioStrategy):
             ns = {
                 "c_m": closes_m, "c_r": closes_r, "c_v": closes_v,
                 "c_b": closes_b, "c_t": closes_t, "mkt_b": mkt_b,
-                "pe_ttm": attrs.get("pe_ttm"),
-                "pb": attrs.get("pb"),
-                "market_cap": attrs.get("market_cap"),
+                # ⚠️ 估值必须走 ctx.attribute()：它会按当前回测日期取值。
+                # 直接读 attrs 拿到的是 stocks 表的最新快照 —— 2026-11 的 PE
+                # 用在 2023-01 的截面上，是前视（2026-11-08 修）。
+                "pe_ttm": ctx.attribute(sym, "pe_ttm"),
+                "pb": ctx.attribute(sym, "pb"),
+                "market_cap": ctx.attribute(sym, "market_cap"),
                 "roe": fund_attrs.get("roe"),
                 "revenue_yoy": fund_attrs.get("revenue_yoy"),
                 "profit_yoy": fund_attrs.get("profit_yoy"),

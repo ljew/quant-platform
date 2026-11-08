@@ -205,6 +205,11 @@ def _load_portfolio(db, task: PaperTask) -> dict:
     if mge > 0:
         risk_limits["max_gross_exposure"] = mge
 
+    # 与回测同口径：估值要按日期取，不能拿最新快照跑历史（见 valuation.py）
+    from app.core.engine.valuation import load_valuation_series
+
+    valuation = load_valuation_series(db, list(data.keys()), sd, end)
+
     engine = PortfolioBacktestEngine(
         data, benchmark,
         initial_cash=task.initial_cash, commission=task.commission, slippage=task.slippage,
@@ -212,7 +217,7 @@ def _load_portfolio(db, task: PaperTask) -> dict:
         # warmup 必须取策略声明的 warmup_days（jk=270），否则引擎从第 125 根就开跑，
         # 策略的 260 日回看拿不满 → 选股全空。start_date 让引擎把「第 0 天」锚回 sd。
         warmup=max(warmup_min, int(params.get("warmup_days", 0) or 0)),
-        attributes=attributes, membership=membership,
+        attributes=attributes, valuation=valuation, membership=membership,
         risk_limits=risk_limits or None, fundamentals=fundamentals or None,
         financials_raw=financials_raw or None,
         start_date=sd,
