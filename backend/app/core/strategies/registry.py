@@ -215,16 +215,22 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
     "hs300_enhanced": {
         "key": "hs300_enhanced",
         "name": "沪深300指数增强",
-        "description": "在沪深300成分股池内，用『动量+反转+低波动』多因子横截面打分，每月选得分最高的 N 只等权配置，跑赢基准指数。成分股仅 300 只、比中证800更少，适合不想覆盖太多标的的场景。基准为沪深300指数。",
+        "description": "在沪深300成分股池内，用『价值(PE/PB)+低波动』横截面打分，每月选得分最高的 N 只等权配置。"
+                       "⚠️ 2026-11-08 实测：原配置的动量因子(权重0.5)在 2023-2025 是稳定负贡献"
+                       "（全区间超额 -9.49%），去掉后改为价值为主降到 -0.47%~+7.09%。"
+                       "动量/反转参数仍保留，想调回来可以自己设权重。基准为沪深300指数。",
         "cls": Csi800EnhancedStrategy,
         "multi_asset": True,
         "index_code": "000300",
         "index_symbol": "sh000300",
         "index_name": "沪深300",
+        # ⚠️ w_value 之前**漏了** —— 策略按 p.get("w_value", 0.2) 兜底跑，
+        # 于是「价值」这一项在界面上根本调不到。已补上并设为主因子。
         "default_params": {
             "top_n": 30, "rebalance_period": 21,
             "momentum_lookback": 60, "reversal_lookback": 5, "vol_lookback": 20,
-            "w_mom": 0.5, "w_rev": 0.2, "w_vol": 0.3, "max_weight": 0.05,
+            "w_mom": 0.0, "w_rev": 0.0, "w_vol": 0.2, "w_value": 0.8,
+            "max_weight": 0.05,
         },
         "param_schema": [
             _int("top_n", "选股数量 TopN", 30, 5, 200, 5),
@@ -232,10 +238,10 @@ STRATEGY_REGISTRY: dict[str, dict[str, Any]] = {
             _int("momentum_lookback", "动量回看(天)", 60, 10, 250, 5),
             _int("reversal_lookback", "反转回看(天)", 5, 1, 20, 1),
             _int("vol_lookback", "波动回看(天)", 20, 5, 120, 5),
-            _float("w_mom", "动量权重", 0.5, 0.0, 1.0, 0.05),
-            _float("w_rev", "反转权重", 0.2, 0.0, 1.0, 0.05),
-            _float("w_vol", "低波权重", 0.3, 0.0, 1.0, 0.05),
-            _float("w_value", "价值(估值)权重", 0.2, 0.0, 1.0, 0.05),
+            _float("w_mom", "动量权重", 0.0, 0.0, 1.0, 0.05),
+            _float("w_rev", "反转权重", 0.0, 0.0, 1.0, 0.05),
+            _float("w_vol", "低波权重", 0.2, 0.0, 1.0, 0.05),
+            _float("w_value", "价值(估值)权重", 0.8, 0.0, 1.0, 0.05),
             _float("max_weight", "单只最大权重", 0.05, 0.01, 0.2, 0.01),
             _int("neutralize_industry", "行业中性(1开/0关)", 1, 0, 1),
             _int("neutralize_marketcap", "市值中性(1开/0关)", 1, 0, 1),
