@@ -3,6 +3,7 @@
 - GET  /strategy/strategies   列出可用策略模板（含参数 schema，供前端动态渲染）
 - POST /strategy/backtest      运行一次回测（落库并返回结果）
 - POST /strategy/backtest/cost-sensitivity  成本敏感网格（W46-1；同步；长任务限制见路由注释）
+- POST /strategy/backtest/walk-forward  滚动 OOS（W46-2；同步；未做 async）
 - GET  /strategy/backtests     回测历史列表
 - GET  /strategy/backtests/{id} 回测详情
 - POST /strategy/optimize      网格寻优（同步，≤400 组）
@@ -55,6 +56,8 @@ from app.schemas import (
     OptimizeTrial,
     StrategyInfo,
     TradePoint,
+    WalkForwardRequest,
+    WalkForwardResult,
 )
 from app.services import data_source, duckdb_store, ingestion, membership_store
 from app.core.engine.backtest_engine import BacktestEngine
@@ -121,6 +124,71 @@ def run_cost_sensitivity(req: CostSensitivityRequest, db: Session = Depends(get_
         return _run_single(db, bt, meta, params)
 
     return _run_cs(req, runner)
+
+
+@router.post("/backtest/walk-forward", response_model=WalkForwardResult)
+def run_walk_forward_api(req: WalkForwardRequest, db: Session = Depends(get_db)):
+    """W46-2 / M3-3 walk-forward OOS（同步）。
+
+    切窗纯函数见 `services.walk_forward`；每窗循环既有 `_run_single` / `_run_portfolio`，
+    必算 `legacy_single`，`final = stricter(agg, legacy)`。不落每窗 equity_curve/trades。
+    **本切片未做 async 变体**：默认 3 窗短区间单标的可用；长区间 / 组合策略可能墙钟超时，
+    请缩小区间或降 `n_windows`。后续可镜像 `/backtest/async`（`/walk-forward/async`）。
+    """
+    from app.core.cost_defaults import COMMISSION, SLIPPAGE
+    from app.services.walk_forward import run_walk_forward as _run_wf
+
+    try:
+        meta = get_strategy(req.strategy)
+    except KeyError:
+        raise HTTPException(status_code=400, detail=f"未知策略: {req.strategy}")
+
+    params = dict(meta["default_params"])
+    params.update({k: v for k, v in (req.params or {}).items() if v is not None})
+    multi = meta.get("multi_asset", False)
+
+    commission = COMMISSION if req.commission is None else float(req.commission)
+    slippage = SLIPPAGE if req.slippage is None else float(req.slippage)
+
+    # 交易日序列：与寻优同一数据源（个股 → 指数回退）
+    bars_all = _load_bars(db, req.symbol, req.start, req.end, req.adj)
+    if not bars_all:
+        try:
+            bars_all = _load_index_bars(
+                db, req.symbol,
+                date.fromisoformat(req.start), date.fromisoformat(req.end), "none",
+            )
+        except Exception:  # noqa: BLE001
+            bars_all = []
+    if not bars_all:
+        raise HTTPException(
+            status_code=404,
+            detail=f"未获取到 {req.symbol} 的行情数据（{req.start}~{req.end}）",
+        )
+    bar_dates = []
+    for b in bars_all:
+        d = b["date"] if isinstance(b, dict) else getattr(b, "date", None)
+        bar_dates.append(d if isinstance(d, str) else d.isoformat())
+
+    def runner(start: str, end: str):
+        bt = BacktestRequest(
+            symbol=req.symbol,
+            start=req.start,
+            end=req.end,
+            strategy=req.strategy,
+            params=params,
+            initial_cash=req.initial_cash,
+            commission=commission,
+            slippage=slippage,
+            adj=req.adj,
+        )
+        if multi:
+            # 组合引擎暂不支持 start/end 覆写参数；用临时 req 裁区间
+            bt2 = bt.model_copy(update={"start": start, "end": end})
+            return _run_portfolio(db, bt2, meta, params)
+        return _run_single(db, bt, meta, params, start=start, end=end)
+
+    return _run_wf(req, bar_dates, runner)
 
 
 def _do_backtest(req: BacktestRequest, db: Session, progress_cb=None) -> BacktestResult:

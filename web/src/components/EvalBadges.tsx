@@ -115,6 +115,20 @@ function tone(
   return colors.accent || ACCENT;
 }
 
+function oosHover(o?: OosBadge | null): string | null {
+  if (!o) return null;
+  const parts: string[] = [];
+  if (o.windows_summary) parts.push(String(o.windows_summary));
+  else if (o.note) parts.push(String(o.note));
+  if (typeof o.oos_ratio === "number") {
+    parts.push(`oos_ratio=${Math.round(o.oos_ratio * 100)}%`);
+  }
+  if (o.mode === "walk_forward") {
+    parts.unshift("滚动");
+  }
+  return parts.length ? parts.join(" · ") : null;
+}
+
 export default function EvalBadges({
   cost_profile,
   valuation_pit,
@@ -146,6 +160,7 @@ export default function EvalBadges({
         cost_profile?.label,
         valuation_pit?.note,
         pead_pit?.note,
+        oosHover(oos),
       ]
         .filter(Boolean)
         .join(" · ")}

@@ -145,6 +145,81 @@ export interface BacktestResult {
 // —— 业务 API ——
 
 /** W46-1 成本敏感网格 */
+
+/** W46-2 walk-forward OOS */
+export interface WalkForwardRequest {
+  symbol: string;
+  start: string;
+  end: string;
+  strategy: string;
+  params?: Record<string, unknown>;
+  initial_cash?: number;
+  commission?: number | null;
+  slippage?: number | null;
+  adj?: string;
+  mode?: "walk_forward" | "single";
+  oos_ratio?: number;
+  n_windows?: number;
+  scheme?: "expanding";
+  metric?: "sharpe" | "excess_return";
+  min_is_bars?: number;
+  min_oos_bars?: number;
+}
+
+export interface WalkForwardSegmentMetrics {
+  n_bars: number;
+  sharpe: number;
+  total_return: number;
+  excess_return: number;
+  max_drawdown: number;
+  trade_count: number;
+}
+
+export interface WalkForwardWindow {
+  index: number;
+  is_start: string;
+  is_end: string;
+  oos_start: string;
+  oos_end: string;
+  is: WalkForwardSegmentMetrics;
+  oos: WalkForwardSegmentMetrics;
+  verdict: string;
+  note?: string;
+}
+
+export interface WalkForwardLegacy {
+  split_date: string;
+  oos_start: string;
+  is: WalkForwardSegmentMetrics;
+  oos: WalkForwardSegmentMetrics;
+  verdict: string;
+  note?: string;
+}
+
+export interface WalkForwardResult {
+  mode: string;
+  scheme: string;
+  metric: string;
+  oos_ratio: number;
+  n_windows: number;
+  cost_profile: CostProfile;
+  oos: EvalOos;
+  legacy_single?: WalkForwardLegacy | null;
+  windows: WalkForwardWindow[];
+  summary: {
+    final_verdict: string;
+    agg_verdict: string;
+    legacy_verdict: string;
+    gate_ok: boolean;
+    fragile_regime: boolean;
+    note?: string;
+  };
+  strategy_key: string;
+  symbol: string;
+  start: string;
+  end: string;
+}
+
 export interface CostSensitivityRequest {
   symbol: string;
   start: string;
@@ -219,6 +294,9 @@ export const api = {
   /** W46-1 成本敏感网格（同步；长区间请自行缩小或用 multipliers） */
   costSensitivity: (payload: CostSensitivityRequest) =>
     post<CostSensitivityResult>("/strategy/backtest/cost-sensitivity", payload),
+  /** W46-2 walk-forward OOS（同步；未做 async） */
+  walkForward: (payload: WalkForwardRequest) =>
+    post<WalkForwardResult>("/strategy/backtest/walk-forward", payload),
   // 参数寻优
   optimize: (payload: Record<string, unknown>) =>
     post<OptimizeTrial[]>("/strategy/optimize", payload),

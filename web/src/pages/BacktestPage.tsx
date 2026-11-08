@@ -5,6 +5,7 @@ import { useTheme } from "../theme";
 import { Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
 import EvalBadges from "../components/EvalBadges";
 import CostSensitivityPanel from "../components/CostSensitivityPanel";
+import WalkForwardPanel from "../components/WalkForwardPanel";
 import { signalLabel } from "../signalLabel";
 import ParamPanel, { ParamMap, changedKeys, defaultParams } from "../components/ParamPanel";
 
@@ -330,7 +331,7 @@ export default function BacktestPage() {
                 </Card>
               )}
 
-              {/* W46-1：成本敏感网格（净值块下方；滚动 OOS 留给 W46-2） */}
+              {/* W46-1：成本敏感网格（净值块下方） */}
               <CostSensitivityPanel
                 symbol={symbol}
                 start={start}
@@ -343,6 +344,20 @@ export default function BacktestPage() {
                   setResult(r);
                   setProgress("已应用网格成本并重跑");
                   api.backtestHistory(20).then(setHistory).catch(() => {});
+                }}
+              />
+
+              {/* W46-2：滚动 OOS（净值 + 成本网格之后；不改净值 / 不改成本块） */}
+              <WalkForwardPanel
+                symbol={symbol}
+                start={start}
+                end={end}
+                strategy={key}
+                params={params}
+                colors={colors}
+                disabled={running}
+                onOosProjected={(oos) => {
+                  setResult((prev) => (prev ? { ...prev, oos } : prev));
                 }}
               />
 
