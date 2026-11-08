@@ -5,7 +5,7 @@ Postgres+TimescaleDB 连接串即可，业务代码无需改动。
 """
 from __future__ import annotations
 
-import os
+import logging
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -15,12 +15,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# 用户提供的 Tushare token：环境变量 QUANT_TUSHARE_TOKEN 优先，
-# 缺失时回退到下方默认值（本地开发可直接用）。生产建议放入 .env 不要提交。
-TUSHARE_TOKEN = os.getenv(
-    "QUANT_TUSHARE_TOKEN",
-    "d2684763c95c5f46e0cf65dee253d0559ad6ed2ec0b05b12ae557e99",
-)
+# Tushare token：只从环境变量 / .env 的 QUANT_TUSHARE_TOKEN 读取（Settings 字段）。
+# 源码中不放任何默认密钥字面量；缺失时为空字符串 → 禁用 Tushare，数据源走 akshare 等兜底。
 
 # 默认开发数据库：项目内 SQLite 文件（自动创建）
 DEFAULT_SQLITE = f"sqlite:///{DATA_DIR / 'quant_dev.db'}"
@@ -37,7 +33,7 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/v1"
 
     # —— Tushare（指数成分/行情兜底数据源）——
-    tushare_token: str = TUSHARE_TOKEN
+    tushare_token: str = ""
 
     # —— 数据库 ——
     # 开发用 SQLite；生产示例：
@@ -92,3 +88,9 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+_log = logging.getLogger(__name__)
+if not (settings.tushare_token or "").strip():
+    _log.warning(
+        "QUANT_TUSHARE_TOKEN 未配置：Tushare 相关能力将不可用（不会回退到源码内置密钥）"
+    )
