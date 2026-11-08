@@ -161,7 +161,7 @@ def mutate_expr(expr: str, rng: random.Random) -> str:
 def build_context(db: Session, start: str, end: str, forward: int, step: int,
                   pool_size: int | None = 200) -> dict:
     """一次性加载评估所需数据（多候选共享）。pool_size 抽样加速。"""
-    from app.services.factor_mining import (_core_universe, _attrs_map, _es_map,
+    from app.services.factor_mining import (_core_universe, _attrs_map, _es_map, _es_asof,
                                            _dates_in_range, _attrs_timeline, _attrs_asof)
 
     ed = date.fromisoformat(end) if end else date.today()
@@ -273,7 +273,7 @@ def build_context(db: Session, start: str, end: str, forward: int, step: int,
                     if _pv:
                         a.update(_pv)
                 ns = make_ns(seg, bench_aligned[i0: idx + 1], a,
-                             esv=es_map.get(sym), vols=vseg, amts=aseg,
+                             esv=_es_asof(es_map, sym, snap), vols=vseg, amts=aseg,
                              fin=fin_asof(fin_hist, sym, snap))
                 try:
                     v = eval_factor(fexpr, ns)
@@ -355,7 +355,7 @@ def evaluate_candidate(expr: str, ctx: dict, groups: int,
     # ⚠️ 必须在这里导入：_attrs_asof 只在 build_context 内局部导入，
     # 本函数作用域没有它 → 一旦 ctx 带 attrs_tl（有属性时间线时必然带）
     # 就抛 NameError，整批 GP 候选全灭（2026-11-02 pyflakes 扫出）。
-    from app.services.factor_mining import _attrs_asof
+    from app.services.factor_mining import _attrs_asof, _es_asof
 
     ok, err, _ = validate_expr(expr)
     if not ok:
@@ -396,7 +396,7 @@ def evaluate_candidate(expr: str, ctx: dict, groups: int,
                     a.update(_pv)
             ns = make_ns(seg, bench_seg_raw, a,
                          news=ctx["news_lookup"](sym, snap),
-                         esv=ctx["es_map"].get(sym), vols=vseg, amts=aseg,
+                         esv=_es_asof(ctx["es_map"], sym, snap), vols=vseg, amts=aseg,
                          fin=fin_asof(ctx.get("fin_hist") or {}, sym, snap))
             try:
                 v = eval_factor(expr, ns)
