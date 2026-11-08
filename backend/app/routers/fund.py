@@ -13,6 +13,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 from pathlib import Path
 
 from fastapi import APIRouter
@@ -21,6 +22,9 @@ from sqlalchemy import text
 from app.database import SessionLocal
 
 router = APIRouter(prefix="/fund", tags=["fund"])
+
+# 持仓缺口查询要扫全量净值表（约 3 秒），按报告期缓存 10 分钟
+_gaps_cache: dict = {"key": None, "at": 0.0, "val": None}
 
 
 @router.get("/persistence")
@@ -129,6 +133,55 @@ def penetration_overview():
     data["ok"] = True
     data["cached_at"] = row[1]
     return data
+
+
+@router.get("/penetration/gaps")
+def penetration_gaps(end_date: str = ""):
+    """最新报告期的持仓缺口：近期仍有净值、却没有该期持仓披露的基金。
+
+    为什么必须单独给出（实测 2026Q3 有 206 只）
+    ------------------------------------------
+    Tushare 的 fund_portfolio 与天天基金 F10 对这些基金都没有三季报数据，
+    属**源头未披露**，不是抓取遗漏（12,092 只全部抓完、0 失败）。
+    但页面上只写「覆盖 8,238 只」，会被误读成「全市场只有 8,238 只基金」。
+    给出分母与缺口名单，才知道「补齐」补到了什么程度、还剩哪些真的补不了。
+
+    这个查询要扫 1,160 万行净值表（约 3 秒），所以独立成接口并缓存，
+    不塞进首屏的 overview。
+    """
+    key = (end_date.strip(),)
+    if _gaps_cache["key"] == key and time.time() - _gaps_cache["at"] < 600:
+        return _gaps_cache["val"]
+    try:
+        if not end_date:
+            r = _research("SELECT MAX(end_date) FROM fund_hold_coverage")
+            end_date = (r[0][0] if r and r[0][0] else "")
+        if not end_date:
+            return {"ok": False, "error": "覆盖表为空"}
+        ld = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}"
+        base = """
+            FROM (SELECT DISTINCT ts_code FROM fund_nav_daily
+                  WHERE nav_date >= date(?, '-45 day') AND ts_code LIKE '%.OF') n
+            LEFT JOIN fund_master_lite m ON m.ts_code = n.ts_code
+            WHERE NOT EXISTS (SELECT 1 FROM fund_hold_coverage c
+                              WHERE c.ts_code = n.ts_code AND c.end_date = ?)
+        """
+        total = _research("SELECT COUNT(*)" + base, (ld, end_date))[0][0]
+        have = _research(
+            "SELECT COUNT(DISTINCT ts_code) FROM fund_hold_coverage WHERE end_date=?",
+            (end_date,))[0][0]
+        rows = _research(
+            "SELECT n.ts_code, COALESCE(m.name,'') " + base +
+            " ORDER BY n.ts_code LIMIT 60", (ld, end_date))
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
+    val = {"ok": True, "end_date": end_date, "active_funds_45d": total + have,
+           "with_holdings": have, "missing": total,
+           "missing_pct": round(total / max(total + have, 1) * 100, 2),
+           "items": [{"ts_code": r[0], "name": r[1]} for r in rows],
+           "note": "缺口为源头未披露（Tushare 与天天基金均无该期数据），非抓取遗漏"}
+    _gaps_cache.update({"key": key, "at": time.time(), "val": val})
+    return val
 
 
 @router.get("/penetration/recheck")
@@ -330,28 +383,131 @@ def penetration_fof():
     return d
 
 
-@router.get("/penetration/funds")
-def penetration_funds(q: str = "", limit: int = 40):
-    """有穿透结果的基金列表，支持 6 位代码 / 名称模糊搜索。"""
-    keyword = q.strip()
+@router.get("/penetration/industries")
+def penetration_industries(end_date: str = ""):
+    """可选行业清单 + 该期全池平均权重，供行业反查做下拉。
+
+    只暴露真实存在的行业，不做前端硬编码 —— 申万一级会调整，
+    行业名一旦写死在前端，口径变化时页面会静默错配。
+    """
     try:
+        if not end_date:
+            r = _research("SELECT MAX(end_date) FROM fund_industry_exposure")
+            end_date = (r[0][0] if r and r[0][0] else "")
+        if not end_date:
+            return {"ok": False, "error": "穿透结果为空，请先运行 build_fund_penetration.py"}
+        n_funds = _research(
+            "SELECT COUNT(DISTINCT ts_code) FROM fund_industry_exposure WHERE end_date=?",
+            (end_date,))
         rows = _research("""
+            SELECT industry, COUNT(*) AS n_funds,
+                   ROUND(AVG(total_w), 2) AS avg_w,
+                   ROUND(MAX(total_w), 2) AS max_w,
+                   SUM(CASE WHEN total_w >= 5 THEN 1 ELSE 0 END) AS n_ge5
+            FROM fund_industry_exposure
+            WHERE end_date = ?
+            GROUP BY industry
+            ORDER BY avg_w DESC
+        """, (end_date,))
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "end_date": end_date,
+            "n_funds": n_funds[0][0] if n_funds else 0,
+            "industries": [
+                {"industry": r[0], "n_funds": r[1], "avg_w": r[2],
+                 "max_w": r[3], "n_ge5": r[4]} for r in rows]}
+
+
+@router.get("/penetration/industry/{industry}")
+def penetration_industry(industry: str, end_date: str = "",
+                          min_w: float = 0.0, min_n: int = 5, limit: int = 50):
+    """行业反查：给定申万一级行业，列出重仓该行业的基金。
+
+    「谁在买电子」比「这只基金买了什么」问得更频繁，穿透结果不能只能顺着查。
+    返回按该行业权重降序，并给出披露/继承拆分与相对全池的超配，
+    便于区分「真金白银买进去」和「靠补齐模型推出来的」。
+
+    min_n 默认 5：只披露 1~2 只股票的迷你基金/数据残缺基金，会以「100% 单一行业」
+    挤满榜首，把真正有代表性的组合压下去。要看去掉这个约束即可。
+    """
+    industry = industry.strip()
+    if not industry:
+        return {"ok": False, "error": "行业名不能为空"}
+    try:
+        if not end_date:
+            r = _research("SELECT MAX(end_date) FROM fund_industry_exposure")
+            end_date = (r[0][0] if r and r[0][0] else "")
+        rows = _research("""
+            SELECT e.base_code, e.ts_code, COALESCE(m.name,'') AS name,
+                   e.disclosed_w, e.carried_w, e.total_w, e.benchmark_w, e.active_w,
+                   c.disclosed_cover, c.exposure_basis, c.n_disclosed, c.is_complete
+            FROM fund_industry_exposure e
+            JOIN fund_hold_coverage c
+              ON c.ts_code = e.ts_code AND c.end_date = e.end_date
+            LEFT JOIN fund_master_lite m ON m.ts_code = e.ts_code
+            WHERE e.industry = ? AND e.end_date = ? AND e.total_w >= ?
+              AND c.n_disclosed >= ?
+            ORDER BY e.total_w DESC
+            LIMIT ?
+        """, (industry, end_date, max(float(min_w), 0.0),
+              max(int(min_n), 1), min(max(limit, 1), 300)))
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "industry": industry, "end_date": end_date,
+            "min_w": min_w, "min_n": min_n, "items": [
+                {"base_code": r[0], "ts_code": r[1], "name": r[2],
+                 "disclosed_w": r[3], "carried_w": r[4], "total_w": r[5],
+                 "benchmark_w": r[6], "active_w": r[7],
+                 "disclosed_cover": r[8], "exposure_basis": r[9],
+                 "n_disclosed": r[10], "is_complete": bool(r[11])} for r in rows]}
+
+
+@router.get("/penetration/funds")
+def penetration_funds(q: str = "", limit: int = 40, end_date: str = "",
+                       basis: str = "", sort: str = "code"):
+    """有穿透结果的基金列表，支持 6 位代码 / 名称模糊搜索。
+
+    end_date 限定某一报告期；basis 按权重口径筛（如 structure_only 捞出
+    「总量不可比」的那批，避免把它们和正常基金横向比较）；sort 支持
+    code / cover / carried / last —— cover 升序用来排查补齐质量最差的基金。
+    """
+    keyword = q.strip()
+    basis = basis.strip()
+    ed = end_date.strip()
+    order = {
+        "code": "c.base_code ASC",
+        "cover": "avg_cover ASC",
+        "carried": "n_carried DESC",
+        "last": "last_end_date DESC",
+    }.get(sort, "c.base_code ASC")
+    # end_date 与 basis 必须落在**同一期**上：分成两个独立 EXISTS 会出现
+    # 「按 structure_only 筛、却返回该基金另一期的日期」这种自相矛盾的结果。
+    where = ["(? = '' OR c.base_code LIKE ? OR c.ts_code LIKE ? OR COALESCE(m.name,'') LIKE ?)"]
+    params: list = [keyword, f"%{keyword}%", f"%{keyword}%", f"%{keyword}%"]
+    if ed or basis:
+        where.append("""EXISTS (SELECT 1 FROM fund_hold_coverage x
+                        WHERE x.ts_code = c.ts_code
+                          AND (? = '' OR x.end_date = ?)
+                          AND (? = '' OR x.exposure_basis = ?))""")
+        params += [ed, ed, basis, basis]
+    params.append(min(max(limit, 1), 200))
+    try:
+        rows = _research(f"""
             SELECT c.base_code, c.ts_code, COALESCE(m.name,'') AS name,
                    COUNT(*) AS n_sections, MAX(c.end_date) AS last_end_date,
                    ROUND(AVG(c.disclosed_cover),1) AS avg_cover,
                    SUM(c.n_carried) AS n_carried
             FROM fund_hold_coverage c
             LEFT JOIN fund_master_lite m ON m.ts_code = c.ts_code
-            WHERE (? = '' OR c.base_code LIKE ? OR c.ts_code LIKE ?
-                   OR COALESCE(m.name,'') LIKE ?)
+            WHERE {' AND '.join(where)}
             GROUP BY c.ts_code
-            ORDER BY c.base_code
+            ORDER BY {order}
             LIMIT ?
-        """, (keyword, f"%{keyword}%", f"%{keyword}%", f"%{keyword}%",
-              min(max(limit, 1), 200)))
+        """, tuple(params))
     except Exception as e:
         return {"ok": False, "error": str(e)}
-    return {"ok": True, "q": keyword, "items": [
+    return {"ok": True, "q": keyword, "filters": {
+        "end_date": ed, "basis": basis, "sort": sort}, "items": [
         {"base_code": r[0], "ts_code": r[1], "name": r[2], "n_sections": r[3],
          "last_end_date": r[4], "avg_cover": r[5], "n_carried": r[6]} for r in rows]}
 
@@ -373,7 +529,7 @@ def penetration_fund(code: str, end_date: str = "", detail: int = 0):
             SELECT end_date, ann_date, report_type, n_disclosed, disclosed_cover,
                    is_complete, anchor_end_date, anchor_gap_days, lookahead,
                    n_carried, carried_cover, confidence, hhi, top3_share,
-                   equity_source, reg_equity
+                   equity_source, reg_equity, exposure_basis
             FROM fund_hold_coverage WHERE ts_code=? ORDER BY end_date
         """, (ts_code,))
         if not cov:
@@ -416,15 +572,21 @@ def penetration_fund(code: str, end_date: str = "", detail: int = 0):
             "n_disclosed": r[3], "disclosed_cover": r[4], "is_complete": bool(r[5]),
             "anchor_end_date": r[6], "anchor_gap_days": r[7], "lookahead": bool(r[8]),
             "n_carried": r[9], "carried_cover": r[10], "confidence": r[11],
-            "hhi": r[12], "top3_share": r[13],
+            "hhi": r[12], "top3_share": r[13], "exposure_basis": r[16],
         } for r in cov],
         "current": {
             "report_type": c[2], "disclosed_cover": c[4], "carried_cover": c[10],
             "confidence": c[11], "hhi": c[12], "top3_share": c[13],
             "anchor_end_date": c[6], "anchor_gap_days": c[7], "lookahead": bool(c[8]),
             "equity_source": c[14] or "anchor", "reg_equity": c[15],
+            # 权重口径：structure_only 表示无总量锚、只做过结构归一，
+            # 行业结构可用，但绝对仓位不可与其它基金横向比较
+            "exposure_basis": c[16] or "net_value",
             # 补齐假设的边界：股票仓位按锚点继承，基金若已主动减仓，继承占比会虚高
             "warning": (
+                "本期原始权重超出合理量级（该基金的 stk_mkv_ratio 不是占净值比），"
+                "已做结构归一：行业结构可信，绝对仓位不可与其它基金横向比较"
+            ) if c[16] == "structure_only" else (
                 f"当期真实披露仅 {c[4]:.1f}%，显著低于典型季报（约 55%）；"
                 f"算法按锚点股票仓位补齐，继承占 {c[10]:.1f}%，"
                 "本期行业结构主要依赖补齐假设，不宜当作事实解读"

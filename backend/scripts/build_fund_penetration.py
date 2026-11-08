@@ -61,6 +61,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "data" / "holdings"
 DB = ROOT / "data" / "fund_research.db"      # 独立研究库：本脚本独占写
+SRC_DB = DB                                  # 只读来源（监管锚等），--db 演练时仍读这里
 MAIN_DB = ROOT / "data" / "quant_dev.db"     # 主库只读，仅取基金池规模
 RAW = DATA / "holdings_raw.csv"
 BY_FUND = DATA / "by_fund"
@@ -215,6 +216,40 @@ def gap_days(a: str, b: str) -> int:
         return 999
 
 
+def weight_scale(raw_sum: float, raw_sum_a: float, csrc_eq: float) -> tuple[float, str]:
+    """判断 stk_mkv_ratio 的量纲是否可信，必要时给出缩放因子。
+
+    为什么需要（2026-11-08 实测）
+    ----------------------------
+    stk_mkv_ratio 名义是「占基金净值比」，但在部分基金上退化成「占某个内部基数比」。
+    铁证：020398（中报）A 股权重和 2.9 / 港股权重和 181.5，比值 61.95；
+          而其 mkv 为 A 股 0.382 亿 / 港股 23.649 亿，比值 61.87。
+    两个比值几乎相等 ⇒ ratio 严格正比于 mkv，且 A 股与港股**共用同一个分母**，
+    只需一个常数即可纠回真实量级。极端例子 009329（ETF 联接）权重和高达 9731%。
+
+    于是分三档返回 (scale, basis)：
+
+      net_value       量纲正常，原值即占净值比，scale=1
+      regulatory      用监管披露的 A 股仓位锚定。因为 A 股与港股同分母，
+                      scale 对两类股票通用，港股随之一起被纠回
+      structure_only  无任何总量锚。只把结构归一到 100%，
+                      **总量不可比**，不得参与绝对仓位统计与跨基金横向比较
+
+    宁可用「结构归一 + 明示不可比」，也不去猜一个看似合理的股票仓位。
+    """
+    if raw_sum <= 0:
+        return 1.0, "empty"
+    if raw_sum <= 105:
+        return 1.0, "net_value"
+    if 0 < csrc_eq <= 105 and raw_sum_a > 0:
+        scale = csrc_eq / raw_sum_a
+        # 锚定后股票总仓位仍超 120% → 监管值只覆盖 A 股、与港股口径打架，
+        # 这只基金的绝对量级无从确认，降级为结构归一
+        if raw_sum * scale <= 120:
+            return scale, "regulatory"
+    return 100.0 / raw_sum, "structure_only"
+
+
 def waterfill(weights: list[float], quota: float, cap: float) -> tuple[list[float], float]:
     """按权重比例分配 quota，单股不超过 cap；触顶者的份额在剩余候选里再分配。
 
@@ -254,7 +289,7 @@ def build(df: pd.DataFrame, lookup: IndustryLookup) -> dict:
     # 监管披露的真实 A 股仓位（优先读独立库，表为空时回退 CSV 快照）
     reg_equity: dict[tuple[str, str], float] = {}
     try:
-        rc = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+        rc = sqlite3.connect(f"file:{SRC_DB}?mode=ro", uri=True)
         reg_equity = {(c, ed): float(v or 0) for c, ed, v in rc.execute(
             "SELECT base_code,end_date,a_share_pct FROM fund_csrc_equity")}
         rc.close()
@@ -281,9 +316,35 @@ def build(df: pd.DataFrame, lookup: IndustryLookup) -> dict:
         ann_date=("ann_date", "min"),
     )
     cov["report_type"] = cov["end_date"].str[4:].map(report_type)
-    cov["is_complete"] = cov["disclosed_cover"] >= COMPLETE_COVER
+    # 「完整截面」按报告类型 ∪ 阈值双重判定：
+    # 季报法定只披露前十大，权重和理论上到不了 90%。此前只看阈值，量纲爆表的
+    # 季报（cover 被算成 >100）会被误判为完整，进而跳过补齐 —— 4,490 个截面受影响。
+    cov["is_complete"] = (cov["disclosed_cover"] >= COMPLETE_COVER) & \
+                         cov["report_type"].isin(["H1", "FY"])
     log(f"截面 {len(cov):,} 个，完整 {int(cov.is_complete.sum()):,}，"
         f"需补齐 {int((~cov.is_complete).sum()):,}")
+
+    # ---- 量纲校正 ----
+    # 必须放在 full_axis / 基准分母之前：它们都拿 disclosed_cover 当「股票真实仓位」用。
+    # stk_mkv_ratio 在部分基金上不是占净值比（详见 weight_scale），不校正就会出现
+    # 9731% 的覆盖度和 194% 的港股仓位。is_complete 仍按原始值判定：
+    # 「这份报告是否全量披露」与权重单位无关。
+    df["_w_a"] = df["stk_mkv_ratio"].where(~df["symbol"].str.endswith(".HK"), 0.0)
+    _a_sum = df.groupby(["ts_code", "end_date"])["_w_a"].sum()
+    cov["a_cover"] = [float(_a_sum.get((t, e), 0.0))
+                      for t, e in zip(cov.ts_code, cov.end_date)]
+    cov["raw_cover"] = cov["disclosed_cover"]
+    _scales, _bases = [], []
+    for _r in cov.itertuples(index=False):
+        _s, _b = weight_scale(_r.disclosed_cover, _r.a_cover,
+                              reg_equity.get((_r.base_code, _r.end_date), 0.0))
+        _scales.append(round(_s, 8))
+        _bases.append(_b)
+    cov["w_scale"] = _scales
+    cov["exposure_basis"] = _bases
+    cov["disclosed_cover"] = (cov["disclosed_cover"] * cov["w_scale"]).round(4)
+    _basis_n = cov["exposure_basis"].value_counts().to_dict()
+    log(f"量纲校正：{_basis_n}")
 
     # 明细按 (fund, end_date) 建索引，便于按组切片
     df = df.sort_values(["ts_code", "end_date", "symbol"], kind="stable").reset_index(drop=True)
@@ -332,12 +393,16 @@ def build(df: pd.DataFrame, lookup: IndustryLookup) -> dict:
         if idx is None:
             continue
         sub = df.iloc[idx]
-        disclosed = list(zip(sub["symbol"].tolist(), sub["stk_mkv_ratio"].tolist()))
-        dsum = float(r.disclosed_cover)
-        dset = {s for s, _ in disclosed}
+        raw = list(zip(sub["symbol"].tolist(), sub["stk_mkv_ratio"].tolist()))
         # 监管披露的 A 股仓位（证监会门类 Σ 占净值比，按全部持仓计算）。
         # 港股通不在证监会 A 股行业分类内，故监管值只约束 A 股部分。
         reg_eq = reg_equity.get((r.base_code, r.end_date), 0.0)
+        # 量纲因子在进入本循环前已整表算好（见「量纲校正」），这里只取用。
+        scale = float(r.w_scale)
+        basis = r.exposure_basis
+        disclosed = [(s, w * scale) for s, w in raw]
+        dset = {s for s, _ in raw}
+        dsum = sum(w for _, w in disclosed)
         dsum_a = sum(w for s, w in disclosed if not s.endswith(".HK"))
 
         anchor_date = anchor_cover = anchor_ann = ""
@@ -471,7 +536,7 @@ def build(df: pd.DataFrame, lookup: IndustryLookup) -> dict:
             round(sum(w for _, w, _ in carried), 2),
             round(min(conf_list), 4) if (conf_list := [c for _, _, c in carried]) else 0.0,
             round(hhi, 6), round(top3, 2), round(float(anchor_cover or 0), 2),
-            equity_source, round(float(reg_eq), 2),
+            equity_source, round(float(reg_eq), 2), basis,
         ))
         for ind in set(dw) | set(cw):
             d, c = dw[ind], cw.get(ind, 0.0)
@@ -528,6 +593,7 @@ CREATE TABLE IF NOT EXISTS fund_hold_coverage (
     lookahead INTEGER, n_carried INTEGER, carried_cover REAL,
     confidence REAL, hhi REAL, top3_share REAL, anchor_cover REAL,
     equity_source TEXT, reg_equity REAL,
+    exposure_basis TEXT,
     PRIMARY KEY (ts_code, end_date))"""
 DDL_EXPOSURE = """
 CREATE TABLE IF NOT EXISTS fund_industry_exposure (
@@ -544,7 +610,8 @@ def persist(res: dict, sample: int, old_diag: dict) -> dict:
     con.execute(DDL_EXPOSURE)
     # 兼容已存在的 18 列表（CREATE TABLE IF NOT EXISTS 不会补列）
     _cols = [r[1] for r in con.execute("PRAGMA table_info(fund_hold_coverage)")]
-    for _c, _t in (("equity_source", "TEXT"), ("reg_equity", "REAL")):
+    for _c, _t in (("equity_source", "TEXT"), ("reg_equity", "REAL"),
+                   ("exposure_basis", "TEXT")):
         if _c not in _cols:
             con.execute(f"ALTER TABLE fund_hold_coverage ADD COLUMN {_c} {_t}")
     con.execute("CREATE INDEX IF NOT EXISTS ix_fhc_base ON fund_hold_coverage(base_code,end_date)")
@@ -561,14 +628,17 @@ def persist(res: dict, sample: int, old_diag: dict) -> dict:
     else:
         con.execute("DELETE FROM fund_hold_coverage")
         con.execute("DELETE FROM fund_industry_exposure")
+        # 空库演练时 fund_stat_cache 可能还不存在，先建再删，避免整个落库失败
+        con.execute("CREATE TABLE IF NOT EXISTS fund_stat_cache "
+                    "(key TEXT PRIMARY KEY, payload_json TEXT, updated_at TEXT)")
         con.execute("DELETE FROM fund_stat_cache WHERE key='penetration'")
 
     con.executemany(
         "INSERT OR REPLACE INTO fund_hold_coverage (base_code,ts_code,end_date,ann_date,"
         "report_type,n_disclosed,disclosed_cover,is_complete,anchor_end_date,anchor_ann_date,"
         "anchor_gap_days,lookahead,n_carried,carried_cover,confidence,hhi,top3_share,anchor_cover,"
-        "equity_source,reg_equity) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "equity_source,reg_equity,exposure_basis) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         res["coverage"])
     exp = res["exp"]
     con.executemany(
@@ -586,7 +656,9 @@ def persist(res: dict, sample: int, old_diag: dict) -> dict:
             "n_sections": int(len(g)),
             "cover_median": round(float(g.disclosed_cover.median()), 1),
             "n_holdings_median": int(g.n_disclosed.median()),
-            "pct_complete": round(float(g.disclosed_cover.ge(COMPLETE_COVER).mean()), 3),
+            # 用 is_complete 而不是 cover 阈值：季报法定只有前十大，
+            # 个别 cover 因量纲虚高不应算作「完整披露」
+            "pct_complete": round(float(g.is_complete.mean()), 3),
         }
     yearly = []
     for y, g in cov.assign(year=cov.end_date.str[:4]).groupby("year"):
@@ -614,22 +686,30 @@ def persist(res: dict, sample: int, old_diag: dict) -> dict:
     ind_ov.sort(key=lambda x: -x["total_w"])
 
     # 拉数进度：任何时刻都诚实标注「当前是部分数据还是全量」，避免页面谎报口径
-    # 基金池规模在主库；独立库不冗余 fund_master 全表，避免两边漂移
-    main = sqlite3.connect(f"file:{MAIN_DB}?mode=ro", uri=True)
+    # 基金池规模在主库；独立库不冗余 fund_master 全表，避免两边漂移。
+    # 主库走 WAL 且被容器占用时，宿主机打不开是常态（见 dbq.sh 的事故记录），
+    # 这只是个元数据，读不到就降级为 0，绝不能让它把整轮落库废掉。
+    total_pool = 0
     try:
-        total_pool = main.execute(
-            "SELECT COUNT(*) FROM fund_master WHERE group_tag='active' AND std_ret>=8"
-        ).fetchone()[0]
-    finally:
-        main.close()
-    prog = {"done": 0, "total": total_pool, "completed": total_pool == 0}
+        main = sqlite3.connect(f"file:{MAIN_DB}?mode=ro", uri=True, timeout=5)
+        try:
+            total_pool = main.execute(
+                "SELECT COUNT(*) FROM fund_master WHERE group_tag='active' AND std_ret>=8"
+            ).fetchone()[0]
+        finally:
+            main.close()
+    except Exception as e:  # noqa: BLE001
+        log(f"主库基金池规模读取失败，进度按未知处理：{type(e).__name__}")
+    # 池规模未知时 completed 必须为 None，不能因为 total=0 就谎报「已全量」
+    prog = {"done": 0, "total": total_pool or None,
+            "completed": None if not total_pool else False}
     pf = DATA / "progress.json"
     if pf.exists():
         try:
             done_n = len(json.loads(pf.read_text(encoding="utf-8")).get("done", []))
-            prog = {"done": done_n, "total": total_pool,
-                    "completed": done_n >= total_pool,
-                    "pct": round(done_n / max(total_pool, 1) * 100, 1)}
+            prog = {"done": done_n, "total": total_pool or None,
+                    "completed": (done_n >= total_pool) if total_pool else None,
+                    "pct": round(done_n / total_pool * 100, 1) if total_pool else None}
         except Exception:
             pass
 
@@ -643,6 +723,10 @@ def persist(res: dict, sample: int, old_diag: dict) -> dict:
                   "date_range": [str(cov.end_date.min()), str(cov.end_date.max())],
                   "is_sample": bool(sample), "sample_n": sample},
         "coverage_by_type": by_type,
+        # 权重口径分布：net_value 原值即占净值比；regulatory 用监管 A 股仓位锚定；
+        # structure_only 无锚、只归一到 100%，总量不可比（不参与绝对仓位横向比较）
+        "exposure_basis": {str(k): int(v)
+                           for k, v in cov.exposure_basis.value_counts().items()},
         "yearly": yearly,
         "old_cover_median_by_year": old_diag,
         "industry_overview": ind_ov,
@@ -742,7 +826,14 @@ def main() -> None:
     ap.add_argument("--sample", type=int, default=0)
     ap.add_argument("--input", type=str, action="append", default=None,
                     help="指定明细 CSV，可多次传；缺省读 holdings_raw.csv + 所有增量批次")
+    ap.add_argument("--db", type=str, default=None,
+                    help="目标库路径，默认 data/fund_research.db。演练时指向临时库，避免污染生产数据")
     args = ap.parse_args()
+    if args.db:
+        # 演练用：只改写入目标，读取的监管锚等仍来自研究库
+        global DB
+        DB = Path(args.db)
+        log(f"写入目标库：{DB}")
     if args.input:
         paths = [Path(p) for p in args.input]
     else:
