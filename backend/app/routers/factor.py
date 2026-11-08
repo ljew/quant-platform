@@ -566,6 +566,37 @@ def hot_brief_input(ref: str = "", run_id: int | None = None, full: bool = False
     return input_detail(db, ref, run_id=run_id, full=full)
 
 
+@router.get("/brief-digest/latest")
+def brief_digest_latest(before: str | None = None, db: Session = Depends(get_db)):
+    """最近一份当日全景综述。
+
+    `before=YYYY-MM-DD` 时取该日及之前最近的一份 —— 早上 7 点看首页时今天还没
+    收盘、没有今日综述，应该展示昨天收盘后那份，而不是空白。
+    """
+    from app.services.brief_digest import latest
+
+    return latest(db, before=before)
+
+
+@router.get("/brief-digest/list")
+def brief_digest_list(limit: int = 30, db: Session = Depends(get_db)):
+    """历史综述列表（不含正文，只给日期与主线）。"""
+    from app.services.brief_digest import list_digests
+
+    return list_digests(db, limit=limit)
+
+
+@router.post("/brief-digest/run")
+def brief_digest_run(day: str | None = None, db: Session = Depends(get_db)):
+    """手动生成某日综述（默认今天）。耗时约 100 秒 —— v4-pro 是推理模型。
+
+    调度器每天 17:45 自动跑一次；这个接口用于补跑或重跑。
+    """
+    from app.services.brief_digest import run as run_digest
+
+    return run_digest(db, day=day)
+
+
 @router.post("/hot-brief/run")
 def hot_brief_run(minutes: int = 60, db: Session = Depends(get_db)):
     """手动触发一次（调试用；调度器每小时 :02 自动跑）。"""
