@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +45,52 @@ def _trading_gap(last: date, today: date) -> int:
 
 def _item(label: str, status: str, detail: str) -> dict[str, str]:
     return {"label": label, "status": status, "detail": detail}
+
+
+def _etl_deadline(now: datetime) -> datetime | None:
+    """最近一个「ETL 本该已经跑完」的交易日 19:00。
+
+    ETL 只在交易日 19:00 跑，所以不能用「距今多少小时」这种绝对阈值：
+    周日上午看到「46 小时前」是**完全正常**的 —— 下一次本来就该是周一 19:00。
+    旧逻辑写死 36 小时，导致每个周末「调度层」都挂 WARN。
+
+    2026-11-08 老刘就是盯着这个 WARN 问「什么意思」才发现的。
+    """
+    from datetime import time as _time
+
+    from app.core.trading_calendar import is_trading_day
+
+    d = now.date()
+    for _ in range(10):
+        try:
+            ok = is_trading_day(d)
+        except Exception:  # noqa: BLE001
+            ok = d.weekday() < 5
+        if ok:
+            # 该交易日 19:00 起跑，次日 07:00 前必须完成（含降级重试）
+            deadline = datetime.combine(d, _time(19, 0)) + timedelta(hours=12)
+            if deadline <= now:
+                return datetime.combine(d, _time(19, 0))
+        d = d - timedelta(days=1)
+    return None
+
+
+def _etl_lag_status(fin: datetime | None, now: datetime) -> tuple[str, str]:
+    """ETL 是否落后：跟「最近该跑的那个交易日 19:00」比，而不是跟小时数比。
+
+    提前一天之后仍无记录才算落后 —— 中间有 12 小时宽限给降级重试。
+    """
+    if fin is None:
+        return OK, ""
+    exp = _etl_deadline(now)
+    if exp is None:
+        return OK, ""
+    # ⚠️ 时区：fin（PipelineRun.finished_at）是 **UTC naive**（模型默认 utcnow），
+    # 这里的 exp 是**本地 naive**。不换算直接比会凭空差 8 小时，明明跑过还报 WARN。
+    exp_utc = exp.astimezone().astimezone(timezone.utc).replace(tzinfo=None)
+    if fin >= exp_utc:
+        return OK, ""
+    return WARN, f"（应于 {exp:%m-%d %H:%M} 后完成，仍停在更早）"
 
 
 # ── 1. 调度层 ──────────────────────────────────────────────
@@ -85,10 +131,10 @@ def _check_scheduler(db) -> dict[str, Any]:
             elif run.status == "SUCCESS":
                 fin = run.finished_at or started
                 lag_h = (now - fin).total_seconds() / 3600 if fin else None
-                st = OK if (lag_h is not None and lag_h < 36) else WARN
+                st, extra = _etl_lag_status(fin, now)
                 items.append(_item("最近 ETL", st,
-                                   f"#{run.id} SUCCESS · {lag_h:.1f} 小时前" if lag_h is not None
-                                   else f"#{run.id} SUCCESS"))
+                                   (f"#{run.id} SUCCESS · {lag_h:.1f} 小时前{extra}"
+                                    if lag_h is not None else f"#{run.id} SUCCESS")))
             else:
                 items.append(_item("最近 ETL", WARN, f"#{run.id} {run.status} · 需排查"))
         else:

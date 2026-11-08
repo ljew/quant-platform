@@ -365,6 +365,9 @@ def query(db: Session, sources: list[str] | None = None, q: str = "",
         "summary": _CLS_PREFIX.sub("", r.summary) if r.source == "cls" else r.summary,
         "url": r.url,
         "published_at": r.published_at.isoformat(timespec="minutes") if r.published_at else None,
+        # 「新增」标志用的入库时刻：首页撤掉了「本轮新增」块，改在资讯列表里
+        # 给刚进来的条目打标（老刘 2026-11-08）。
+        "fetched_at": r.fetched_at.isoformat(timespec="minutes") if r.fetched_at else None,
         "symbols": r.symbols,
     } for r in rows]
     return {"items": items, "total": total, "has_more": offset + len(items) < total}

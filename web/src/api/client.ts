@@ -830,6 +830,8 @@ export interface NewsFeedItem {
   summary: string;
   url: string;
   published_at: string | null;
+  /** 入库时刻（本地时间无时区），「新」标志按它算 */
+  fetched_at?: string | null;
   symbols: string;
 }
 

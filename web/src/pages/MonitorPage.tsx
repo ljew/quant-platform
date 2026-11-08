@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, DataflowReport, HealthReport, MonitorStatus } from "../api/client";
+import { api, DataflowReport, FrameworkHealth, HealthReport, MonitorStatus } from "../api/client";
 import { Badge, Card } from "../components/ui";
 import { Arrow, FlowCol, LayerRow } from "../components/flow";
 import type { ThemeColors } from "../theme";
@@ -8,6 +8,60 @@ import { PageHeader } from "../components/ui";
 
 /** 平台监控页：一眼结论 → 告警 → 数据管道全景 → 运行记录。 */
 
+/** 框架体检（五层）的状态色。首页原来那条状态带 2026-11-08 挪到这儿。 */
+const FW_COLOR: Record<string, string> = {
+  OK: "#1e8449",
+  WARN: "#b9770e",
+  FAIL: "#c0392b",
+};
+
+/** 框架体检卡：五层状态 + 非 OK 项直列。
+ *
+ * 单独抽出来是为了能在 `/monitor/status` 还没返回时也显示 —— 那个接口要统计
+ * 71 张表的行数，实测 10 秒；原来 MonitorPage 在 data 为空时直接 return
+ * 「加载监控数据…」，把这块也挡掉了（2026-11-08 挪过来时踩到）。
+ */
+function FrameworkCard({ fw, colors, style }: {
+  fw: FrameworkHealth; colors: ThemeColors; style?: React.CSSProperties;
+}) {
+  const bad = fw.layers.flatMap((l) =>
+    l.items.filter((i) => i.status !== "OK").map((i) => ({ l, i })));
+  return (
+    <Card title="框架体检" colors={colors} style={style}>
+      <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap", fontSize: 12.5 }}>
+        {fw.layers.map((l) => {
+          const c = FW_COLOR[l.status] ?? colors.muted;
+          const tip = l.items.map((i) => `${i.label}：${i.detail}`).join("\n");
+          return (
+            <span key={l.key} title={tip}
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "help" }}>
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: c, display: "inline-block" }} />
+              <span>{l.name}</span>
+              <span style={{ color: c, fontWeight: 600 }}>{l.status}</span>
+            </span>
+          );
+        })}
+        <span style={{ marginLeft: "auto", color: colors.muted, fontSize: 11.5 }}>
+          {fw.checked_at.slice(5).replace("T", " ")} · 每分钟刷新 · 悬停看明细
+        </span>
+      </div>
+      {bad.length > 0 && (
+        <div style={{ marginTop: 10, borderTop: `1px solid ${colors.border}`, paddingTop: 8 }}>
+          {bad.map(({ l, i }) => (
+            <div key={`${l.key}-${i.label}`}
+              style={{ fontSize: 12, padding: "3px 0", color: colors.muted, lineHeight: 1.7 }}>
+              <span style={{ color: FW_COLOR[i.status] ?? colors.muted, fontWeight: 600 }}>
+                [{i.status}]
+              </span>{" "}
+              {l.name} · {i.label}：{i.detail}
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export default function MonitorPage() {
   const [data, setData] = useState<MonitorStatus | null>(null);
   const [error, setError] = useState("");
@@ -15,6 +69,7 @@ export default function MonitorPage() {
   const [dataflow, setDataflow] = useState<DataflowReport | null>(null);
   const [lastRefresh, setLastRefresh] = useState("");
   const [showDetail, setShowDetail] = useState(false);
+  const [fw, setFw] = useState<FrameworkHealth | null>(null);
   const [running, setRunning] = useState(false);
   const alarmRef = useRef<HTMLDivElement>(null);
   const { colors } = useTheme();
@@ -37,7 +92,24 @@ export default function MonitorPage() {
     return () => clearInterval(t);
   }, [refresh]);
 
-  if (!data) return <div style={{ padding: 24, color: "#888" }}>加载监控数据…{error}</div>;
+  // 框架体检：调度 / 编排 / 数据 / 研究 / 运行时 五层，每分钟刷新
+  useEffect(() => {
+    const load = () => api.frameworkHealth().then(setFw).catch(() => {});
+    load();
+    const t = setInterval(load, 60000);
+    return () => clearInterval(t);
+  }, []);
+
+  if (!data) {
+    // 框架体检的数据源（/monitor/framework-health）比 /monitor/status 快得多，
+    // 别让它在「加载监控数据…」后面白等 10 秒。
+    return (
+      <div style={{ maxWidth: 1280, margin: "0 auto" }}>
+        {fw && <FrameworkCard fw={fw} colors={colors} style={{ marginBottom: 14 }} />}
+        <div style={{ padding: 24, color: "#888" }}>加载监控数据…{error}</div>
+      </div>
+    );
+  }
   const st = data.services;
   const fresh = health?.layers;
 
@@ -143,6 +215,8 @@ export default function MonitorPage() {
           )}
         </Card>
       )}
+
+      {fw && <FrameworkCard fw={fw} colors={colors} style={{ marginBottom: 14 }} />}
 
       {/* —— 第二层：两栏 = 最近运行 + 系统服务 —— */}
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 14 }}>
