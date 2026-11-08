@@ -389,30 +389,6 @@ export default function HotBriefCard({
         </div>
       )}
 
-      {/* —— ① 本轮新增 —— */}
-      {brief && (
-        <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 12, color: colors.muted, marginBottom: 5 }}>
-            本轮新增
-            <span style={{ marginLeft: 6 }}>
-              （{brief.latest_at || "—"} 更新 · {brief.n_latest ?? latest.length} 条）
-            </span>
-          </div>
-          {latest.length > 0 ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: dense ? 7 : 9 }}>
-              {latest.map((it, i) => <ItemRow key={i} it={it} dense={dense} />)}
-            </div>
-          ) : (
-            <div style={{
-              fontSize: 12, color: colors.muted, padding: "6px 10px",
-              border: `1px dashed ${colors.border}`, borderRadius: 6,
-            }}>
-              本轮无新增主题 —— 快讯与搜索都没有新材料，下方综述与今日主题仍会更新。
-            </div>
-          )}
-        </div>
-      )}
-
       {/* —— ② 今日综述 —— */}
       {paragraphs.length > 0 && (
         <div style={{ marginBottom: 10 }}>
@@ -473,26 +449,6 @@ export default function HotBriefCard({
         </>
       )}
 
-      {!!brief && (brief.summary || latest.length > 0) && (
-        <details style={{ marginTop: 10, borderTop: `1px solid ${colors.border}`, paddingTop: 8 }}>
-          <summary style={{ cursor: "pointer", fontSize: 11.5, color: colors.accent }}>
-            本轮模型原始输出（JSON）— 主线 / 综述 / 条目全部字段
-          </summary>
-          <pre style={{
-            marginTop: 6, maxHeight: 340, overflow: "auto", fontSize: 10.5,
-            lineHeight: 1.55, background: colors.bg, border: `1px solid ${colors.border}`,
-            borderRadius: 6, padding: 8, whiteSpace: "pre-wrap", wordBreak: "break-all",
-            color: colors.text,
-          }}>
-            {JSON.stringify(
-              { model: brief.model || "", mainline: brief.mainline || "", summary: brief.summary || "", items: latest },
-              null,
-              2,
-            )}
-          </pre>
-        </details>
-      )}
-
       {!!brief?.inputs?.length && (
         <InputsPanel
           inputs={brief.inputs}
@@ -504,7 +460,7 @@ export default function HotBriefCard({
         输入 = 财联社一手快讯（时效）+ DeepSeek 网页搜索（覆盖广度），模型只做筛选与判断；
         交易日 7/9/10/11/13/14/16/21 点各生成一轮（非交易日 9/21 点），
         每轮的取数窗口是「距上一个时段」——早 7 点那轮会把隔夜消息一起带上。
-        「本轮新增」是这一轮的新条目，「今日主题」是全天合并去重后的全貌。
+        「今日主题」是全天合并去重后的全貌；哪条是新入库的，到「全部资讯」看标题前的「新」标。
         {columns === 1 && (
           <>
             {" "}来源标签：灰色「财联社电报」= 一手快讯，蓝色「DeepSeek · 站点」= 网页搜索（可点开原文）。

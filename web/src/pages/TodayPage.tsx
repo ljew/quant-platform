@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Card, PageHeader } from "../components/ui";
 import EChart from "../components/EChart";
 import HotBriefCard from "../components/HotBriefCard";
-import { agentApi, api, get, newsApi, AgentState, FrameworkHealth, KlineBar, NewsFeed } from "../api/client";
+import { agentApi, api, get, newsApi, AgentState, KlineBar, NewsFeed } from "../api/client";
 import { localDate } from "../utils/date";
 import { formatPrice2, klineTooltip } from "../utils/klineTooltip";
 import { useTheme } from "../theme";
@@ -35,11 +35,6 @@ const CARD_DEFS = [
 ];
 
 /** 体检状态色：绿=正常 橙=警告 红=失败 */
-const STATUS_COLOR: Record<string, string> = {
-  OK: "#1e8449",
-  WARN: "#b9770e",
-  FAIL: "#c0392b",
-};
 
 const INDICES = [
   { symbol: "sh000001", name: "上证指数" },
@@ -54,7 +49,6 @@ export default function TodayPage() {
   const [dates, setDates] = useState<{ date: string; symbols: number }[]>([]);
   const [actions, setActions] = useState<ActionItem[]>([]);
   const [agent, setAgent] = useState<AgentState | null>(null);
-  const [fwHealth, setFwHealth] = useState<FrameworkHealth | null>(null);
   // 注意：这个 feed 仍要拉 —— 右栏「指数概览」用的是它的 global_quotes。
   // 首页已不再展示原始快讯列表（2026-11-07 挪到「全部资讯」页）。
   const [feed, setFeed] = useState<NewsFeed | null>(null);
@@ -72,14 +66,6 @@ export default function TodayPage() {
       if (d[0]) setDate(d[0].date);
     }).catch(() => {});
     agentApi.state().then(setAgent).catch(() => {});
-  }, []);
-
-  // 框架体检：四层状态带，每分钟刷新
-  useEffect(() => {
-    const load = () => api.frameworkHealth().then(setFwHealth).catch(() => {});
-    load();
-    const t = setInterval(load, 60000);
-    return () => clearInterval(t);
   }, []);
 
   useEffect(() => {
@@ -210,32 +196,6 @@ export default function TodayPage() {
           </div>
         }
       />
-
-      {/* —— 框架体检状态带 —— */}
-      {fwHealth && (
-        <div style={{
-          display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap",
-          background: colors.card, border: `1px solid ${colors.border}`, borderRadius: 12,
-          padding: "9px 16px", fontSize: 12.5,
-        }}>
-          <span style={{ color: colors.muted, fontWeight: 600, letterSpacing: 0.3 }}>框架体检</span>
-          {fwHealth.layers.map((l) => {
-            const c = STATUS_COLOR[l.status] ?? colors.muted;
-            const tip = l.items.map((i) => `${i.label}：${i.detail}`).join("\n");
-            return (
-              <span key={l.key} title={tip}
-                style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "help" }}>
-                <span style={{ width: 7, height: 7, borderRadius: "50%", background: c, display: "inline-block" }} />
-                <span>{l.name}</span>
-                <span style={{ color: c, fontWeight: 600 }}>{l.status}</span>
-              </span>
-            );
-          })}
-          <span style={{ marginLeft: "auto", color: colors.muted, fontSize: 11.5 }}>
-            {fwHealth.checked_at.slice(5).replace("T", " ")} · 每分钟刷新
-          </span>
-        </div>
-      )}
 
       {/* —— 一句话观点 —— */}
       <div style={{

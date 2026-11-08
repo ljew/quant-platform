@@ -412,8 +412,47 @@ def step_extract_social_heat(db) -> int:
     return _upsert_social_heat(db, df, "雪球+微博")
 
 
+def _my_symbols(db, max_n: int = 12) -> list[str]:
+    """股吧要看的票 = 模拟盘持仓 + 今日 NEW 信号。
+
+    老刘 2026-11-08：「股吧里面只需要显示自选股或者说是我的模拟盘中的信息」。
+    原来抓的是雪球 A 股热股 Top10，全是跟他无关的票。
+
+    顺序即优先级：持仓是自己真金白银在里面的，排前面；不足 max_n 用今日
+    NEW 信号补（次日可能建仓的候选）。都没有则返回空，由 extractor 回退热股。
+    """
+    import json as _json
+
+    from sqlalchemy import text as _text
+
+    out: list[str] = []
+    try:
+        row = db.execute(_text(
+            "SELECT holdings_json FROM portfolio_state "
+            "ORDER BY as_of_date DESC LIMIT 1")).scalar()
+        for h in (_json.loads(row) if row else []):
+            s = str((h or {}).get("symbol") or "").lower()
+            if s and s not in out:
+                out.append(s)
+    except Exception:  # noqa: BLE001
+        pass
+    if len(out) < max_n:
+        try:
+            rows = db.execute(_text(
+                "SELECT symbol FROM signal_actions WHERE action='NEW' "
+                "AND date=(SELECT MAX(date) FROM signal_actions) "
+                "ORDER BY resonance DESC LIMIT :n"), {"n": max_n}).scalars().all()
+            for s in rows:
+                s = str(s or "").lower()
+                if s and s not in out:
+                    out.append(s)
+        except Exception:  # noqa: BLE001
+            pass
+    return out[:max_n]
+
+
 def step_extract_guba_heat(db) -> int:
-    """东财股吧：热门股的帖子阅读/评论热度 → social_heat_daily（source=股吧）。
+    """东财股吧：**自己持仓/候选票**的帖子热度 → social_heat_daily。
 
     不做多空打分：股吧内容以喊单、标题党为主，词典打分没有意义。
     """
@@ -425,9 +464,11 @@ def step_extract_guba_heat(db) -> int:
     from app.datahub.extractors.guba_hot import GubaHotExtractor
 
     params = src.get("params", {})
+    mine = _my_symbols(db, max_n=int(params.get("top_n", 12)))
     try:
-        df = GubaHotExtractor().fetch(top_n=int(params.get("top_n", 10)),
-                                      max_posts=int(params.get("max_posts", 40)))
+        df = GubaHotExtractor().fetch(top_n=max(len(mine), int(params.get("top_n", 10))),
+                                      max_posts=int(params.get("max_posts", 40)),
+                                      symbols=mine or None)
     except Exception as e:  # noqa: BLE001
         raise RuntimeError(f"股吧抓取失败: {e}")
     if df.empty:

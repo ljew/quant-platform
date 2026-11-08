@@ -14,6 +14,17 @@ import { useTheme } from "../theme";
 
 const PAGE = 60;
 
+/** 多久内入库算「新」。首页原来的「本轮新增」块撤掉后，改在这里标。 */
+const NEW_WINDOW_MIN = 90;
+
+/** 库里的 fetched_at 是本地时间且无时区标记，直接 new Date 即本地语义。 */
+function isNew(it: NewsFeedItem): boolean {
+  const raw = it.fetched_at;
+  if (!raw) return false;
+  const t = new Date(raw.includes("T") ? raw : raw.replace(" ", "T")).getTime();
+  return Number.isFinite(t) && Date.now() - t < NEW_WINDOW_MIN * 60 * 1000;
+}
+
 const RANGES: { label: string; hours: number }[] = [
   { label: "24 小时", hours: 24 },
   { label: "3 天", hours: 72 },
@@ -219,6 +230,14 @@ export default function NewsFeedPage() {
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.5 }}>
+                  {isNew(it) && (
+                    <span style={{
+                      display: "inline-block", fontSize: 10, lineHeight: "15px",
+                      padding: "0 4px", marginRight: 5, borderRadius: 3,
+                      background: `${colors.accent}18`, color: colors.accent,
+                      fontWeight: 600, verticalAlign: "1px",
+                    }}>新</span>
+                  )}
                   {it.url ? (
                     <a href={it.url} target="_blank" rel="noreferrer"
                        style={{ color: colors.text, textDecoration: "none" }}>
