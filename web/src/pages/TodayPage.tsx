@@ -208,9 +208,6 @@ export default function TodayPage() {
         {verdict}
       </div>
 
-      {/* —— W46-3 稳健摘要（轻量）：新鲜度 + 最近评估徽章 + OOS/成本入口 —— */}
-      <TodayRobustnessCard colors={colors} />
-
       {/* —— 每小时热点简报（非结构化资讯 → LLM 判断）——
           放在「一句话观点」下面：两个都是判断，先读完观点再看可执行清单。
           两列排布是为了不把「信号明细」挤出首屏。 */}
@@ -336,6 +333,13 @@ export default function TodayPage() {
           </Card>
 
         </div>
+      </div>
+
+      {/* —— 策略体检（原「稳健摘要」）：数据新鲜度 + 最近评估徽章 + OOS/成本入口 ——
+          放最下方：这是研发期的周期性检查（一周看一次），不是每日决策信息。
+          之前排在全景和简报之前，把「今天做什么」挤下去了。 */}
+      <div style={{ marginTop: 14 }}>
+        <TodayRobustnessCard colors={colors} />
       </div>
     </div>
   );

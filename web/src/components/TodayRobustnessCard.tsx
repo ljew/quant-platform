@@ -1,5 +1,10 @@
 /**
- * W46-3 今日稳健摘要（轻量）：挂今日观点页，不新开枢纽。
+ * 策略体检卡（原「稳健摘要」）：挂在首页**最下方**。
+ *
+ * 2026-11-08 老刘问「稳健摘要这一部分具体干啥用的，如果需要的放在最下方」——
+ * 它回答的是「我的策略框架健康吗」（数据新鲜度、最近一次回测的成本/PIT 口径、
+ * 有没有过样本外验证），属于**研发期的周期性检查**，不是「今天做什么」。
+ * 排在首页第 2 位时，把当日全景和热点简报都挤到了折线以下，已下移。
  * 复用 monitor dataflow 新鲜度 + 最近回测 detail 的 cost_profile/oos 徽章；
  * OOS/成本告警入口深链到 #btopt（回测复盘成本网格 / 滚动 OOS）。
  */
@@ -206,9 +211,9 @@ export default function TodayRobustnessCard({ colors }: { colors: ThemeColors })
       pad={12}
       title={
         <span>
-          稳健摘要
+          策略体检
           <span style={{ color: colors.muted, fontSize: 12, fontWeight: 400, marginLeft: 8 }}>
-            数据新鲜度 · 最近评估徽章 · OOS/成本入口（不新开驾驶舱）
+            信号基于多新的数据 · 最近一次回测的可信度 · 样本外与成本检验入口
           </span>
         </span>
       }
