@@ -4,6 +4,8 @@
 API schema / PaperTaskCreate / ORM 列默认 / 引擎构造默认 / xq 组合轨
 （xq/portfolio.py、portfolio_fresh.py、live/target.py）均应 import 本模块，
 避免再出现「引擎已修、schema 仍 0.0003/0.0」或「xq 滑点仍 0.001」的双轨漂移。
+
+单标的、组合回测与模拟盘均从本模块取默认成本；成交时点统一为次日开盘。
 """
 from __future__ import annotations
 

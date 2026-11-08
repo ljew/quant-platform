@@ -75,6 +75,27 @@ def check_enable_gate(
     verdict = oos.get("verdict") if isinstance(oos, dict) else None
     if verdict != "通过":
         reasons.append(f"OOS 须通过，当前={verdict or '无'}")
+    elif not oos.get("enabled"):
+        reasons.append("OOS 不得关闭")
+    if int(oos.get("n", 0) or 0) < 20:
+        reasons.append(f"OOS 有效截面须≥20，当前={oos.get('n', 0)}")
+    oos_t = oos.get("t_stat")
+    if oos_t is None or float(oos_t) < 2.0:
+        reasons.append(f"OOS Newey–West t 值须≥2.0，当前={oos_t}")
+    if float(oos.get("ic_mean", 0.0) or 0.0) <= 0:
+        reasons.append("OOS IC 必须为正")
+
+    wf = report.get("walk_forward") or {}
+    if wf.get("verdict") != "通过" or int(wf.get("n_folds", 0) or 0) < 3:
+        reasons.append("IS 内 walk-forward 须至少 3 折且通过")
+
+    universe = report.get("universe_pit") or {}
+    if (universe.get("mode") not in ("pit_index_membership", "custom_lifecycle")
+            or not universe.get("lifecycle_filter")):
+        reasons.append("股票池必须使用历史成分及上市/退市日期过滤")
+    valuation = report.get("valuation_pit") or {}
+    if valuation.get("mode") != "asof":
+        reasons.append("估值必须按历史截面 as-of 取值，禁止最新快照前视回退")
 
     use_expr = expr or str(report.get("expr") or "")
     if expr_depends_on_es(use_expr):

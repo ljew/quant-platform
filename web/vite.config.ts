@@ -15,6 +15,23 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    chunkSizeWarningLimit: 1500,
+    // 按需注册后的 ECharts 公共包约 711 KB，保留小幅增长余量；其他页面仍按 750 KB 告警。
+    chunkSizeWarningLimit: 750,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("/node_modules/echarts/") || id.includes("/node_modules/zrender/")) {
+            return "echarts";
+          }
+          if (
+            id.includes("/node_modules/react/") ||
+            id.includes("/node_modules/react-dom/") ||
+            id.includes("/node_modules/scheduler/")
+          ) {
+            return "react-vendor";
+          }
+        },
+      },
+    },
   },
 });

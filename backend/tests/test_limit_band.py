@@ -43,7 +43,8 @@ class _BuyBothOnD2:
         pass
 
     def rebalance(self, ctx, date: str) -> None:
-        if date == D2:
+        # D1 信号在 D2 开盘成交；D2 相对 D1 上涨 12%。
+        if date == D1:
             ctx.order_target_percent("sh600001", 0.5)
             ctx.order_target_percent("sz300001", 0.5)
 

@@ -10,6 +10,7 @@
   GET  /live/equity       净值序列 + 影子对照
   GET  /live/recon        执行质量（滑点 / 成交率 / 未成交）
   POST /live/fills        录入成交（人工或对账单回传）
+  POST /live/corporate-actions  录入送拆股与现金分红
 
 合规边界（再强调一次，改代码前先读）：
   候选池里少一只股票 = 数据，允许；
@@ -28,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.live import STRATEGY_KEY
-from app.live.recon import apply_fill, reconcile
+from app.live.recon import apply_corporate_action, apply_fill, reconcile
 from app.models import (LiveDecisionSnapshot, LiveEquity, LiveOrderIntent,
                         LivePosition)
 
@@ -156,17 +157,18 @@ class FillPayload(BaseModel):
     qty: int = Field(..., gt=0)
     price: float = Field(..., gt=0)
     trade_date: str | None = None
-    commission: float = 0.0
-    stamp_tax: float = 0.0
-    transfer_fee: float = 0.0
+    commission: float = Field(0.0, ge=0)
+    stamp_tax: float = Field(0.0, ge=0)
+    transfer_fee: float = Field(0.0, ge=0)
     intent_id: int | None = None
+    external_id: str | None = None
     name: str = ""
     strategy: str = STRATEGY_KEY
 
 
 @router.post("/fills")
 def create_fill(payload: FillPayload, db: Session = Depends(get_db)):
-    """录入成交。这是 live_position 的唯一写入入口。"""
+    """录入一笔幂等成交事件，并由完整事件账本重建持仓。"""
     d = date.fromisoformat(payload.trade_date) if payload.trade_date else date.today()
     try:
         f = apply_fill(db, trade_date=d, symbol=payload.symbol, side=payload.side,
@@ -174,9 +176,39 @@ def create_fill(payload: FillPayload, db: Session = Depends(get_db)):
                        commission=payload.commission, stamp_tax=payload.stamp_tax,
                        transfer_fee=payload.transfer_fee,
                        intent_id=payload.intent_id, source="manual",
+                       external_id=payload.external_id,
                        name=payload.name, strategy_key=payload.strategy)
         db.commit()
     except ValueError as exc:
         db.rollback()
         raise HTTPException(400, str(exc)) from exc
     return {"ok": True, "fill_id": f.id, "trade_date": d.isoformat()}
+
+
+class CorporateActionPayload(BaseModel):
+    symbol: str
+    trade_date: str
+    share_ratio: float = Field(1.0, gt=0)
+    cash_dividend_per_share: float = Field(0.0, ge=0)
+    external_id: str | None = None
+    note: str = ""
+    strategy: str = STRATEGY_KEY
+
+
+@router.post("/corporate-actions")
+def create_corporate_action(payload: CorporateActionPayload,
+                            db: Session = Depends(get_db)):
+    """录入送拆股或现金分红；重复外部编号返回原事件。"""
+    d = date.fromisoformat(payload.trade_date)
+    try:
+        action = apply_corporate_action(
+            db, trade_date=d, symbol=payload.symbol,
+            share_ratio=payload.share_ratio,
+            cash_dividend_per_share=payload.cash_dividend_per_share,
+            source="manual", external_id=payload.external_id,
+            note=payload.note, strategy_key=payload.strategy)
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "corporate_action_id": action.id, "trade_date": d.isoformat()}

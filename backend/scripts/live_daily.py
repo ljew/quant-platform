@@ -11,7 +11,7 @@
 1. **数据不合格就不出单**。宁可空跑，不可错跑——这是实盘第一条铁律。
    `trade_date == today` 不能当判据（本项目实测出现过 08:00 就写入当日 K 线），
    必须校验覆盖度/OHLC 合法性/成交额量级。
-2. 幂等。同一天重跑只更新不新增（UNIQUE 键兜底）。
+2. 幂等。完全相同的重跑为 no-op；内容变化时拒绝覆盖不可变快照。
 3. 决策快照先落库，再出订单。事后复盘只看快照，不看实时状态。
 
 不做什么：
@@ -21,7 +21,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -30,7 +29,7 @@ BACKEND = Path(__file__).resolve().parent.parent
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-from sqlalchemy import delete, select                          # noqa: E402
+from sqlalchemy import select                                   # noqa: E402
 from sqlalchemy.orm import Session                              # noqa: E402
 
 from app.config import DATA_DIR                                 # noqa: E402
@@ -40,8 +39,7 @@ from app.live.intent import build_intents                       # noqa: E402
 from app.live.signals import load_signals                       # noqa: E402
 from app.live.target import (Book, DEFAULT_CONFIG, Market,      # noqa: E402
                              Position, decide_close)
-from app.models import (LiveDecisionSnapshot, LiveOrderIntent,  # noqa: E402
-                        LivePosition, Stock)
+from app.models import LivePosition                             # noqa: E402
 from app.services.xq.data import load_panel                     # noqa: E402
 
 DUCKDB = str(DATA_DIR / "quant.duckdb")
@@ -114,23 +112,20 @@ def _industries(db: Session, symbols: list[str]) -> dict[str, str]:
 
 # ── 读实际持仓 ──
 
-def load_book(db: Session, capital: float) -> Book:
+def load_book(db: Session, capital: float,
+              strategy_key: str = STRATEGY_KEY) -> Book:
+    from app.live.recon import cash_from_fills
+
     rows = db.scalars(select(LivePosition).where(
-        LivePosition.strategy_key == STRATEGY_KEY)).all()
-    book = Book(cash=capital)
+        LivePosition.strategy_key == strategy_key)).all()
+    # 无论当前是否持仓，现金都从完整事件账本重建；空仓不再错误回到初始本金。
+    book = Book(cash=cash_from_fills(
+        db, capital=capital, strategy_key=strategy_key))
     for r in rows:
         if r.shares > 0:
             book.positions[r.symbol] = Position(
                 symbol=r.symbol, shares=r.shares, entry_price=r.avg_cost,
                 entry_date=r.entry_date or date.today(), peak=r.peak_close or r.avg_cost)
-    if rows:
-        # 有持仓记录时，现金以最近净值为准（净值表由对账维护）
-        from app.models import LiveEquity
-        eq = db.scalars(select(LiveEquity).where(
-            LiveEquity.strategy_key == STRATEGY_KEY)
-            .order_by(LiveEquity.trade_date.desc()).limit(1)).first()
-        if eq:
-            book.cash = eq.cash
     return book
 
 
@@ -172,7 +167,7 @@ def main() -> int:
         market = Market(px)
         sig = load_signals(db, panel.df, strategy_key=args.strategy)
 
-        book = load_book(db, args.capital)
+        book = load_book(db, args.capital, strategy_key=args.strategy)
         rank_key = None
         if args.rank == "pullback":
             rank_key = lambda s, a: (a["close"] / a["ma20"], s)  # noqa: E731
@@ -252,37 +247,26 @@ def main() -> int:
                 it.blocked = block_map[id(it)]
                 it.qty = 0
 
-        # ── 落库（幂等）──
+        # ── 落库：相同重跑 no-op，内容变化拒绝覆盖不可变快照 ──
         snap_id = None
+        snapshot_created = False
         if not args.dry_run:
-            db.execute(delete(LiveDecisionSnapshot).where(
-                LiveDecisionSnapshot.trade_date == target,
-                LiveDecisionSnapshot.strategy_key == args.strategy))
-            snap = LiveDecisionSnapshot(
-                trade_date=target, strategy_key=args.strategy, data_date=as_of,
-                data_ok=1 if chk["ok"] else 0, data_note=chk["note"],
-                enabled_json=json.dumps(sorted(sig["enabled"]), ensure_ascii=False),
-                card_tiers_json=json.dumps(sig.get("card_tiers", {}), ensure_ascii=False),
-                gate_open=1 if dec.gate["open"] else 0,
-                gate_exc=dec.gate["exc"], gate_n=dec.gate["n"],
-                candidates_json=json.dumps(dec.candidates, ensure_ascii=False, default=str),
-                config_json=json.dumps(cfg, ensure_ascii=False, default=str))
-            db.add(snap)
-            db.flush()
-            snap_id = snap.id
+            from app.live.persist import persist_decision
 
-            db.execute(delete(LiveOrderIntent).where(
-                LiveOrderIntent.trade_date == target,
-                LiveOrderIntent.strategy_key == args.strategy))
-            for it in ib.items:
-                db.add(LiveOrderIntent(
-                    trade_date=target, strategy_key=args.strategy, symbol=it.symbol,
-                    name=it.name, side=it.side,
-                    target_shares=it.target_shares, actual_shares=it.actual_shares,
-                    qty=it.qty, ref_price=it.ref_price, limit_price=it.limit_price,
-                    est_amount=it.est_amount, reason=it.reason, priority=it.priority,
-                    status="DRAFT" if it.ok else "REJECTED",
-                    reject_reason=it.blocked, snapshot_id=snap_id))
+            snap_id, snapshot_created = persist_decision(
+                db,
+                trade_date=target,
+                strategy_key=args.strategy,
+                data_date=as_of,
+                data_ok=1 if chk["ok"] else 0,
+                data_note=chk["note"],
+                enabled=sorted(sig["enabled"]),
+                card_tiers=sig.get("card_tiers", {}),
+                gate=dec.gate,
+                candidates=dec.candidates,
+                config=cfg,
+                items=ib.items,
+            )
             db.commit()
 
         # ── 打印清单 ──
@@ -311,7 +295,10 @@ def main() -> int:
         print(f"预估现金（风控后）：{book.cash:,.0f} → "
               f"{book.cash - ok_buy + ok_sell:,.0f}")
         if not args.dry_run:
-            print(f"\n已落库：snapshot#{snap_id} + {len(ib.items)} 条 order_intent")
+            if snapshot_created:
+                print(f"\n已落库：snapshot#{snap_id} + {len(ib.items)} 条 order_intent")
+            else:
+                print(f"\n快照无变化，跳过重复写入：snapshot#{snap_id}")
         else:
             print("\n[dry-run] 未写库")
         return 0

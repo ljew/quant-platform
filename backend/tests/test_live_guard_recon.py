@@ -4,7 +4,7 @@
 对账的验收标准是「持仓只能由成交推出，且卖出无持仓必须报错而不是静默吞掉」。
 """
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -180,7 +180,8 @@ class TestRecon:
 
     def test_partial_sell_keeps_cost(self, db):
         apply_fill(db, trade_date=D, symbol="sh600000", side="BUY", qty=1000, price=10.0)
-        apply_fill(db, trade_date=D, symbol="sh600000", side="SELL", qty=400, price=15.0)
+        apply_fill(db, trade_date=D + timedelta(days=1), symbol="sh600000",
+                   side="SELL", qty=400, price=15.0)
         db.commit()
         p = db.scalars(select(LivePosition)).one()
         assert p.shares == 600
@@ -188,7 +189,8 @@ class TestRecon:
 
     def test_full_sell_removes_position(self, db):
         apply_fill(db, trade_date=D, symbol="sh600000", side="BUY", qty=500, price=10.0)
-        apply_fill(db, trade_date=D, symbol="sh600000", side="SELL", qty=500, price=11.0)
+        apply_fill(db, trade_date=D + timedelta(days=1), symbol="sh600000",
+                   side="SELL", qty=500, price=11.0)
         db.commit()
         assert db.scalars(select(LivePosition)).all() == []
 
@@ -226,5 +228,5 @@ class TestRecon:
         assert r["n_intents"] == 2
         assert r["fill_rate"] == pytest.approx((1.0 + 0.3) / 2, abs=1e-4)
         assert r["slippage_mean_pct"] == pytest.approx(1.0, abs=0.1)
-        assert r["slippage_worst_pct"] == pytest.approx(0.0, abs=0.1)
+        assert r["slippage_worst_pct"] == pytest.approx(2.0, abs=0.1)
         assert any(m["symbol"] == "sh600001" for m in r["missed"])
