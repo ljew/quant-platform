@@ -156,19 +156,20 @@ class BacktestResult(BaseModel):
     universe_size: int = 0
     symbols_used: int = 0
     params: dict
-    initial_cash: float
-    final_equity: float
-    total_return: float
-    annual_return: float
-    max_drawdown: float
-    sharpe: float
-    win_rate: float
-    trade_count: int
-    round_trips: int
+    # 同 BacktestSummary：历史记录里可能为空或被写成非数值，读时容错而非崩
+    initial_cash: float | None = None
+    final_equity: float | None = None
+    total_return: float | None = None
+    annual_return: float | None = None
+    max_drawdown: float | None = None
+    sharpe: float | None = None
+    win_rate: float | None = None
+    trade_count: int | None = None
+    round_trips: int | None = None
     benchmark_symbol: str = ""
-    benchmark_total_return: float = 0.0
-    excess_return: float = 0.0
-    info_ratio: float = 0.0
+    benchmark_total_return: float | None = None
+    excess_return: float | None = None
+    info_ratio: float | None = None
     equity_curve: list[EquityPointModel]
     trades: list[TradePoint]
     holdings: list[dict] = []
@@ -199,15 +200,18 @@ class BacktestSummary(BaseModel):
     multi_asset: bool = False
     start_date: str
     end_date: str
-    total_return: float
-    annual_return: float
-    max_drawdown: float
-    sharpe: float
-    win_rate: float
-    trade_count: int
-    benchmark_total_return: float = 0.0
-    excess_return: float = 0.0
-    info_ratio: float = 0.0
+    # 全部允许 None：历史记录里这些列可能为空，也可能被写成非数值字符串
+    # （2026-11-08 实测 5 条 info_ratio 存了 meta JSON，整页 500）。
+    # 用「读时容错」而不是「读时崩」，前端展示「—」即可。
+    total_return: float | None = None
+    annual_return: float | None = None
+    max_drawdown: float | None = None
+    sharpe: float | None = None
+    win_rate: float | None = None
+    trade_count: int | None = None
+    benchmark_total_return: float | None = None
+    excess_return: float | None = None
+    info_ratio: float | None = None
     created_at: str | None = None
 
 

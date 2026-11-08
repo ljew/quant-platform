@@ -515,6 +515,19 @@ def social_heat(db: Session = Depends(get_db), days: int = 30):
         for r in rows
     ]
 
+@router.get("/sentiment/strategy")
+def sentiment_strategy(top_industry: int = 8, top_stock: int = 15,
+                       db: Session = Depends(get_db)):
+    """舆情策略：情绪择时 + 重点行业 + 重点个股（三层合一）。
+
+    与 /social/heat（纯热度计数）、/news/daily（纯情绪时序）的区别：
+    这里给的是**可执行结论**，不是指标。
+    """
+    from app.services.sentiment_strategy import snapshot
+
+    return snapshot(db, top_industry=top_industry, top_stock=top_stock)
+
+
 # ───────── 热点简报（按交易时段；非结构化资讯 → LLM 解读）─────────
 @router.get("/hot-brief/latest")
 def hot_brief_latest(db: Session = Depends(get_db)):

@@ -151,3 +151,49 @@ def feed_sync_status():
     from app.core.news_feed_scheduler import get_status
 
     return get_status()
+
+
+# ───────────────────── 境外资讯（OPS-FN-1a）─────────────────────
+# 专用路径便于状态条与权限语义清晰；底层仍走 news_feed 表（source=fn_*）。
+
+
+@router.get("/foreign/items")
+def foreign_items(
+    sources: str = Query("", description="逗号分隔的 fn_* 源，空=全部境外"),
+    q: str = Query("", description="标题/摘要关键词"),
+    hours: int = Query(24, ge=0, le=24 * 120, description="只看最近 N 小时，0=不限"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db=Depends(get_db),
+):
+    """境外资讯列表（按发布时间倒序）。"""
+    from app.services import foreign_news
+
+    srcs = [x.strip() for x in sources.split(",") if x.strip()]
+    return foreign_news.query_foreign(
+        db, sources=srcs or None, q=q, hours=hours, limit=limit, offset=offset,
+    )
+
+
+@router.get("/foreign/sources")
+def foreign_sources(hours: int = Query(72, ge=0, le=24 * 120), db=Depends(get_db)):
+    """境外源状态条：注册表 ∪ 运行态 ∪ 近 N 小时条数。密钥只回传 configured 布尔。"""
+    from app.services import foreign_news
+
+    return foreign_news.sources_status(db, hours=hours)
+
+
+@router.post("/foreign/sync")
+def foreign_sync(db=Depends(get_db)):
+    """强制全源一轮（整批硬顶 90s）；返回 per-source {added, status, error}。"""
+    from app.services import foreign_news
+
+    return foreign_news.sync(db)
+
+
+@router.get("/foreign/sync-status")
+def foreign_sync_status():
+    """境外资讯调度器状态（三槽 07:00/12:30/21:00）。"""
+    from app.core.foreign_news_scheduler import get_status
+
+    return get_status()

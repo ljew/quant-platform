@@ -1384,3 +1384,98 @@ class QuoteSnapshot(Base):
     trade_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     source: Mapped[str] = mapped_column(String(16), default="tushare")  # tushare / kline_fallback
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+# ───────────── 公募基金 / 基金经理（2026-11-08 补）─────────────
+# 为什么要建：老刘在做基金经理/基金的因子发现，但库里只有 ETF 行情，
+# 连「谁管哪只基金、任期多久、什么背景」都没有。tushare 的 fund_basic /
+# fund_manager / fund_nav 三个接口都通（实测 3014 只 ETF、5000 条经理记录、
+# 按 nav_date 一次能拉全市场 10500 行），只是从来没建表入库。
+
+class FundBasic(Base):
+    """基金基础信息（tushare fund_basic，market=E 为场内 ETF/LOF）。
+
+    低频变化：一只基金成立后这些字段基本不动，所以按 ts_code 全量覆盖即可。
+    """
+
+    __tablename__ = "fund_basic"
+
+    ts_code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), default="")
+    management: Mapped[str] = mapped_column(String(64), default="")   # 基金管理人
+    custodian: Mapped[str] = mapped_column(String(64), default="")    # 托管人
+    fund_type: Mapped[str] = mapped_column(String(24), default="")    # 股票型/债券型/…
+    found_date: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    list_date: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    issue_date: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    delist_date: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    issue_amount: Mapped[float | None] = mapped_column(Float, nullable=True)   # 发行份额（亿份）
+    m_fee: Mapped[float | None] = mapped_column(Float, nullable=True)          # 管理费率 %
+    c_fee: Mapped[float | None] = mapped_column(Float, nullable=True)          # 托管费率 %
+    p_value: Mapped[float | None] = mapped_column(Float, nullable=True)        # 面值
+    min_amount: Mapped[float | None] = mapped_column(Float, nullable=True)     # 最小申购（元）
+    benchmark: Mapped[str] = mapped_column(String(200), default="")
+    status: Mapped[str] = mapped_column(String(4), default="")        # L 上市 / D 摘牌
+    invest_type: Mapped[str] = mapped_column(String(24), default="")
+    type: Mapped[str] = mapped_column(String(24), default="")
+    market: Mapped[str] = mapped_column(String(4), default="E")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+    def __repr__(self) -> str:
+        return f"<FundBasic {self.ts_code} {self.name[:12]}>"
+
+
+class FundManager(Base):
+    """基金经理任职记录（tushare fund_manager）。
+
+    一只基金会有多个经理、一个经理管多只基金，所以主键是
+    (ts_code, name, begin_date) 的三元组，不是单列。
+    `resume` 是简历原文，做「经理背景因子」时要用（学历/从业年限/跳槽次数）。
+    """
+
+    __tablename__ = "fund_manager"
+    __table_args__ = (
+        UniqueConstraint("ts_code", "name", "begin_date", name="uq_fund_manager"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts_code: Mapped[str] = mapped_column(String(16), index=True)
+    ann_date: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    name: Mapped[str] = mapped_column(String(32), index=True)
+    gender: Mapped[str] = mapped_column(String(2), default="")
+    birth_year: Mapped[str | None] = mapped_column(String(6), nullable=True)
+    edu: Mapped[str] = mapped_column(String(16), default="")
+    nationality: Mapped[str] = mapped_column(String(24), default="")
+    begin_date: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    end_date: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    resume: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+    def __repr__(self) -> str:
+        return f"<FundManager {self.name} {self.ts_code}>"
+
+
+class FundNav(Base):
+    """基金净值日频（tushare fund_nav，按 nav_date 可一次拉全市场）。
+
+    ⚠️ 单位净值 `unit_nav` 与累计净值 `accum_nav` 不要混用：分红拆分会体现在
+    前者下跌，做收益计算要么用 `adj_nav`，要么用 accum_nav 的差分。
+    """
+
+    __tablename__ = "fund_nav"
+    __table_args__ = (
+        UniqueConstraint("ts_code", "nav_date", name="uq_fund_nav"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts_code: Mapped[str] = mapped_column(String(16), index=True)
+    ann_date: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    nav_date: Mapped[str] = mapped_column(String(8), index=True)
+    unit_nav: Mapped[float | None] = mapped_column(Float, nullable=True)
+    accum_nav: Mapped[float | None] = mapped_column(Float, nullable=True)
+    accum_div: Mapped[float | None] = mapped_column(Float, nullable=True)
+    net_asset: Mapped[float | None] = mapped_column(Float, nullable=True)
+    adj_nav: Mapped[float | None] = mapped_column(Float, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+    def __repr__(self) -> str:
+        return f"<FundNav {self.ts_code} {self.nav_date}>"

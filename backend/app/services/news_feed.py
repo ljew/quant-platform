@@ -49,6 +49,20 @@ SOURCE_LABELS: dict[str, str] = {
     "tushare": "tushare资讯",
     "wechat": "公众号",
     "guba": "股吧",
+    # —— 境外（OPS-FN-1a）；不进 FAST/SLOW，由 foreign_news_scheduler 三槽跑 ——
+    "fn_fed": "Fed 新闻稿",
+    "fn_fed_mon": "Fed 货币",
+    "fn_sec": "SEC 新闻稿",
+    "fn_bbc_biz": "BBC Business",
+    "fn_wsj_mkt": "WSJ Markets",
+    "fn_cnbc": "CNBC Top",
+    "fn_mw": "MarketWatch",
+    "fn_ecb": "ECB Press",
+    "fn_ft": "FT",
+    "fn_boe": "BoE News",
+    "fn_gnews_reu": "GNews·Reuters 镜像",
+    "fn_gnews_bbg": "GNews·Bloomberg 镜像",
+    "fn_x": "X · 宏观账号",
 }
 
 FAST_SOURCES = ("cls", "eastmoney", "sina")

@@ -82,6 +82,7 @@ def on_startup():
                   "app.services.auto_research", "app.core.nsi_scheduler",
                   "etf_flow_scheduler", "hot_brief_scheduler",
                   "news_feed_scheduler", "news_feed",
+                  "foreign_news_scheduler", "foreign_news",
                   "quote_scheduler", "quote_snapshot"):
         _lg = logging.getLogger(_name)
         if not _lg.handlers:
@@ -125,6 +126,13 @@ def on_startup():
         start_news_feed_scheduler()
     except Exception as _e:  # noqa: BLE001
         logging.getLogger(__name__).warning("资讯同步调度器启动失败：%s", _e)
+
+    # 境外资讯日爬：三槽 07:00 / 12:30 / 21:00 Asia/Shanghai（独立于国内 10min 循环）
+    try:
+        from app.core.foreign_news_scheduler import start_foreign_news_scheduler
+        start_foreign_news_scheduler()
+    except Exception as _e:  # noqa: BLE001
+        logging.getLogger(__name__).warning("境外资讯调度器启动失败：%s", _e)
 
     # 每小时热点简报：一手快讯（财联社）→ LLM 筛选解读 → hot_brief 表。
     # DeepSeek API 无联网能力（tools 只支持 function，2026-11-07 实测 422），

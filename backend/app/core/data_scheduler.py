@@ -211,6 +211,28 @@ def _record_fallback_run(ok: bool, message: str, started: datetime) -> None:
         logger.warning("补写降级 pipeline_runs 失败：%s", str(e)[:100])
 
 
+def _run_fund_update() -> None:
+    """基金数据：净值每日、基础信息 / 经理每周一次。
+
+    单独成一个轻量任务，不塞进 datahub 管道 —— 那条链路已经有 12 步、
+    任何一步卡住都会拖垮整轮；基金数据即使失败也不该影响股票日线。
+    """
+    from app.database import SessionLocal
+    from app.services.fund_data import sync_basic, sync_manager, sync_nav
+
+    db = SessionLocal()
+    try:
+        n = sync_nav(db, days=3)
+        logger.info("基金净值同步 %d 行", n)
+        if datetime.now().weekday() == 0:      # 周一刷基础信息与经理
+            b, m = sync_basic(db), sync_manager(db)
+            logger.info("基金基础信息 %d 只 / 基金经理 %d 条", b, m)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("基金数据同步失败：%s", str(e)[:120])
+    finally:
+        db.close()
+
+
 def _mark_zombie_runs_failed() -> None:
     """把超时遗留的 RUNNING 管道 run 标为 FAILED（子进程已被杀，不会自行收尾）。"""
     try:
@@ -537,6 +559,7 @@ def _loop(enabled: bool) -> None:
                         if ok:
                             last_run_date = _today_str()
                             retry.update(etl_n=0, etl_ts=0.0)
+                            _run_fund_update()
                         elif not network_ready(*TUSHARE):
                             # 断网时**不消耗重试次数**：3 次 × 15 分钟的额度用来对付
                             # 数据源本身的问题（限速、接口抖动），不该被「网还没醒」吃掉。
