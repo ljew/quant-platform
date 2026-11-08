@@ -5,6 +5,8 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, field_validator
 
+from app.core.cost_defaults import COMMISSION, SLIPPAGE
+
 
 # ===== 行情 =====
 # A 股展示口径（2026-11-07 统一，只在 API 出口层取整，不改库内原始数据，
@@ -116,8 +118,8 @@ class BacktestRequest(BaseModel):
     strategy: str  # 策略 key
     params: dict = {}
     initial_cash: float = 1_000_000.0
-    commission: float = 0.0003
-    slippage: float = 0.0
+    commission: float = COMMISSION
+    slippage: float = SLIPPAGE
     adj: str = "qfq"
 
 
@@ -210,8 +212,8 @@ class OptimizeRequest(BaseModel):
     strategy: str
     param_ranges: dict[str, list[float | int]]  # {"fast": [5,10,20], "slow": [20,40,60]}
     initial_cash: float = 1_000_000.0
-    commission: float = 0.0003
-    slippage: float = 0.0
+    commission: float = COMMISSION
+    slippage: float = SLIPPAGE
     adj: str = "qfq"
     rank_by: str = "sharpe"  # sharpe / total_return / max_drawdown / oos_sharpe / robustness
     oos_ratio: float = 0.3

@@ -802,20 +802,23 @@ def _attrs_for(db: Session, syms: list[str]) -> dict:
     }
 
 
-def _earnings_surprise_latest(db: Session, sym: str) -> float | None:
+def _earnings_surprise_latest(db: Session, sym: str, as_of: date | None = None) -> float | None:
     """PEAD 盈余惊喜（与回测引擎 _pit_earnings_surprise 同口径）：
-    最新报告期利润增速 − 历史利润增速均值，需 ≥2 期。"""
+    as_of（默认今日）及以前 ≥2 期 → 最新期 yoy − 历史均值；**不除以 100**。"""
+    from app.core.strategies.multi_factor import _pit_earnings_surprise
+
     rows = db.execute(
         select(FundamentalsHistory.report_date, FundamentalsHistory.profit_yoy)
         .where(FundamentalsHistory.symbol == sym)
         .order_by(FundamentalsHistory.report_date)
     ).all()
-    pts = [float(r[1]) for r in rows if r[1] is not None]
-    if len(pts) < 2:
+    snaps = [{"report_date": r[0], "profit_yoy": float(r[1])}
+             for r in rows if r[0] is not None and r[1] is not None]
+    if len(snaps) < 2:
         return None
-    cur = pts[-1]
-    hist_mean = sum(pts[:-1]) / len(pts[:-1])
-    return (cur - hist_mean) / 100.0  # 归一化（与回测 report_factor 取向一致）
+    ad = as_of or date.today()
+    as_of_s = ad.isoformat() if hasattr(ad, "isoformat") else str(ad)
+    return _pit_earnings_surprise(snaps, as_of_s)
 
 
 def _benchmark_closes(db: Session, sd: date, ed: date) -> list[float]:
@@ -898,7 +901,7 @@ def compute_factor_cross_section(db: Session, syms: list[str], trade_date: date)
 
         vols = fill_missing([float(b[2]) if b[2] is not None else None for b in bars])
         amts = fill_missing([float(b[3]) if b[3] is not None else None for b in bars])
-        esv = _earnings_surprise_latest(db, sym)
+        esv = _earnings_surprise_latest(db, sym, as_of=trade_date)
         ns = make_ns(closes, mkt_b, attrs,
                      news=news_lookup(sym, trade_date), esv=esv,
                      vols=vols, amts=amts,

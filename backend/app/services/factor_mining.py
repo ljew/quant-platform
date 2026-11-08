@@ -417,24 +417,46 @@ def _attrs_asof(tl: dict[str, list], sym: str, snap: date) -> dict | None:
     return ans
 
 
-def _es_map(db: Session, syms: list[str]) -> dict:
-    """PEAD 盈余惊喜（最新期 − 历史均值，≥2 期；与回测同口径）。"""
+def _es_map(db: Session, syms: list[str]) -> dict[str, list[tuple[date, float]]]:
+    """预载 PEAD 所需的利润增速时序（按报告期升序）。
+
+    返回 {symbol: [(report_date, profit_yoy), ...]}。真正计算必须经 `_es_asof`
+    按截面日做 PIT 过滤——禁止把「全样本最新一期」复用到历史截面（前视）。
+    口径对齐 multi_factor._pit_earnings_surprise：仅用 report_date <= as_of。
+    """
+    if not syms:
+        return {}
     rows = db.execute(
         select(FundamentalsHistory.symbol, FundamentalsHistory.report_date, FundamentalsHistory.profit_yoy)
         .where(FundamentalsHistory.symbol.in_(syms))
-        .order_by(FundamentalsHistory.report_date)
+        .order_by(FundamentalsHistory.symbol, FundamentalsHistory.report_date)
     ).all()
-    out: dict[str, float | None] = {}
-    cur: dict[str, list[float]] = {}
-    for sym, _rd, py in rows:
-        if py is not None:
-            cur.setdefault(sym, []).append(float(py))
-    for sym, vals in cur.items():
-        if len(vals) >= 2:
-            out[sym] = (vals[-1] - _mean(vals[:-1])) / 100.0
-        else:
-            out[sym] = None
+    out: dict[str, list[tuple[date, float]]] = {}
+    for sym, rd, py in rows:
+        if py is None or rd is None:
+            continue
+        out.setdefault(sym, []).append((rd, float(py)))
     return out
+
+
+def _es_asof(tl: dict[str, list[tuple[date, float]]], sym: str, as_of: date) -> float | None:
+    """Point-in-time PEAD：as_of 及以前 ≥2 期 → 最新期 yoy − 历史均值。
+
+    量纲对齐 multi_factor._pit_earnings_surprise：**原始百分点差，不除以 100**。
+    内部复用该函数，单测锁死挖矿与回测同输入同结果。
+    """
+    from app.core.strategies.multi_factor import _pit_earnings_surprise
+
+    pts = tl.get(sym) or []
+    if not pts:
+        return None
+    snaps = [{"report_date": rd, "profit_yoy": py} for rd, py in pts]
+    as_of_s = as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of)
+    return _pit_earnings_surprise(snaps, as_of_s)
+
+
+# 设计稿别名：_es_timeline ≡ _es_map（返回时序，禁止当静态值用）
+_es_timeline = _es_map
 
 
 def _closes_for(db: Session, syms: list[str], sd: date, ed: date) -> dict[str, list[float]]:
@@ -669,7 +691,7 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
             ns = make_ns(
                 seg, mkt_b, a,
                 news=news_lookup(sym, snap) if news_lookup else None,
-                esv=es_map.get(sym), vols=vseg, amts=aseg,
+                esv=_es_asof(es_map, sym, snap), vols=vseg, amts=aseg,
                 fin=fin_asof(fin_hist, sym, snap),
             )
             try:
@@ -858,7 +880,7 @@ def _corr_with_existing(db, expr, syms, attrs, es_map, aligned, axis_dates, benc
         ns = make_ns(
             seg, bench_aligned[i0: idx + 1], attrs.get(sym, {}) or {},
             news=news_lookup(sym, snap) if news_lookup else None,
-            esv=es_map.get(sym), vols=vseg, amts=aseg,
+            esv=_es_asof(es_map, sym, snap), vols=vseg, amts=aseg,
             fin=fin_asof(fin_hist, sym, snap),
         )
         try:

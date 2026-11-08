@@ -12,6 +12,7 @@ from app.database import SessionLocal, get_db
 from app.models import PaperTask, PaperTrade, PaperSnapshot
 from app.core.strategies.registry import get_strategy, STRATEGY_REGISTRY
 from app.core.engine.paper_engine import run_paper_task, get_paper_task_detail
+from app.core.cost_defaults import COMMISSION, SLIPPAGE
 
 router = APIRouter(prefix="/paper", tags=["paper"])
 
@@ -25,8 +26,8 @@ class PaperTaskCreate(BaseModel):
     index_code: str = ""
     params_json: str = "{}"
     initial_cash: float = 1_000_000.0
-    commission: float = 0.0003
-    slippage: float = 0.0
+    commission: float = COMMISSION
+    slippage: float = SLIPPAGE
     adj: str = "qfq"
     start_date: str | None = None
     enabled: bool = False

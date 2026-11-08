@@ -18,6 +18,7 @@ from sqlalchemy import (
     Index,
 )
 from sqlalchemy.orm import Mapped, mapped_column
+from app.core.cost_defaults import COMMISSION, SLIPPAGE
 
 from app.database import Base
 
@@ -279,8 +280,8 @@ class Backtest(Base):
     adj: Mapped[str] = mapped_column(String(4), default="qfq")
 
     initial_cash: Mapped[float] = mapped_column(Float, default=1_000_000.0)
-    commission: Mapped[float] = mapped_column(Float, default=0.0003)
-    slippage: Mapped[float] = mapped_column(Float, default=0.0)
+    commission: Mapped[float] = mapped_column(Float, default=COMMISSION)
+    slippage: Mapped[float] = mapped_column(Float, default=SLIPPAGE)
     params_json: Mapped[str] = mapped_column(String(1024), default="{}")
 
     # 绩效指标
@@ -334,8 +335,8 @@ class PaperTask(Base):
     params_json: Mapped[str] = mapped_column(String(1024), default="{}")
 
     initial_cash: Mapped[float] = mapped_column(Float, default=1_000_000.0)
-    commission: Mapped[float] = mapped_column(Float, default=0.0003)
-    slippage: Mapped[float] = mapped_column(Float, default=0.0)
+    commission: Mapped[float] = mapped_column(Float, default=COMMISSION)
+    slippage: Mapped[float] = mapped_column(Float, default=SLIPPAGE)
     adj: Mapped[str] = mapped_column(String(4), default="qfq")
 
     enabled: Mapped[bool] = mapped_column(default=False)  # 是否加入自动定时轮询

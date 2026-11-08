@@ -20,6 +20,9 @@ from typing import Any, List, Optional
 
 from app.core.engine.base_strategy import Mode, PortfolioStrategy
 from app.core.rules.limit import limit_trigger
+from app.core.cost_defaults import (
+    COMMISSION, SLIPPAGE, STAMP_TAX, MIN_COMMISSION, RISK_FREE_RATE,
+)
 
 logger = logging.getLogger("quant.portfolio")
 
@@ -211,11 +214,11 @@ class PortfolioBacktestEngine:
         data: dict[str, List[dict]],
         benchmark: List[dict],
         initial_cash: float = 1_000_000.0,
-        commission: float = 0.00025,
-        slippage: float = 0.0001,
+        commission: float = COMMISSION,
+        slippage: float = SLIPPAGE,
         rebalance_period: int = 21,
         warmup: int = 60,
-        min_commission: float = 5.0,
+        min_commission: float = MIN_COMMISSION,
         lot_size: int = 100,
         limit_enabled: bool = True,
         cash_buffer: float = 0.005,
@@ -225,8 +228,8 @@ class PortfolioBacktestEngine:
         fundamentals: dict | None = None,
         financials_raw: dict | None = None,
         start_date=None,
-        stamp_tax: float = 0.0005,
-        risk_free_rate: float = 0.025,
+        stamp_tax: float = STAMP_TAX,
+        risk_free_rate: float = RISK_FREE_RATE,
     ):
         self.data = data
         self.benchmark = benchmark

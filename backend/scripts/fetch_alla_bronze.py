@@ -48,11 +48,35 @@ OUT_DIR = os.path.join(ROOT, "data", "raw", "market", "bars_daily_alla")
 BASIC_PATH = os.path.join(ROOT, "data", "raw", "market", "stock_basic_all.parquet")
 os.makedirs(OUT_DIR, exist_ok=True)
 
-TOKEN = os.environ.get(
-    "TUSHARE_TOKEN",
-    "d2684763c95c5f46e0cf65dee253d0559ad6ed2ec0b05b12ae557e99",
-)
-pro = ts.pro_api(TOKEN)
+def resolve_tushare_token() -> str:
+    """从环境变量读取 Tushare token；源码不放默认密钥。
+
+    优先 TUSHARE_TOKEN，其次 QUANT_TUSHARE_TOKEN（与平台 Settings 一致）。
+    """
+    return (
+        os.environ.get("TUSHARE_TOKEN")
+        or os.environ.get("QUANT_TUSHARE_TOKEN")
+        or ""
+    ).strip()
+
+
+def require_pro():
+    """调用 pro_api 前校验 token；缺失则 stderr 提示并以非零退出。"""
+    tok = resolve_tushare_token()
+    if not tok:
+        print(
+            "缺少 TUSHARE_TOKEN / QUANT_TUSHARE_TOKEN："
+            "本脚本依赖 Tushare，请设置环境变量后重试（勿在源码写入 token）。",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return ts.pro_api(tok)
+
+
+# 模块导入时不初始化 pro（避免无 token 时静默用默认串或误调 API）。
+# main() 入口通过 require_pro() 显式失败或拿到实例。
+TOKEN = ""
+pro = None
 
 START, END = "20190101", "20260915"
 RATE_PER_MIN = 400          # 令牌桶速率（低于实测上限，留安全余量）
@@ -197,6 +221,8 @@ def fetch_daily_multithread(dates: list[str]) -> pd.DataFrame:
 
 
 def main():
+    global pro
+    pro = require_pro()
     t0 = time.time()
     print("=" * 78, flush=True)
     print("全A 历史行情拉取 —— %s ~ %s" % (START, END), flush=True)
