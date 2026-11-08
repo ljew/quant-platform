@@ -1,0 +1,19 @@
+{
+  "_说明": "市场资讯报告的外部搜索源凭证。配了哪个就调哪个，没配自动跳过、不报错、不写进待补清单。",
+  "_使用": "复制本文件为 search_sources.json 再填 key；search_sources.json 已被 .gitignore 排除，不会入库。",
+  "metaso": {
+    "api_key": "",
+    "endpoint": "",
+    "note": "秘塔搜索。需在 metaso.cn 开放平台申请；endpoint 以申请页给的为准（各家版本不同，不猜）。"
+  },
+  "tavily": {
+    "api_key": "",
+    "endpoint": "https://api.tavily.com/search",
+    "note": "Tavily。tavily.com 注册即得 key，免费额度约 1000 次/月；POST JSON: {api_key, query, max_results, search_depth}。"
+  },
+  "anysearch": {
+    "api_key": "",
+    "endpoint": "",
+    "note": "AnySearch。服务形态待确认（是 API 还是 MCP），确认后按同结构填。"
+  }
+}
