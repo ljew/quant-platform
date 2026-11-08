@@ -1,22 +1,67 @@
 import { useEffect, useRef } from "react";
-import * as echarts from "echarts";
+import { BarChart, CandlestickChart, HeatmapChart, LineChart, ScatterChart } from "echarts/charts";
+import {
+  AriaComponent,
+  AxisPointerComponent,
+  DatasetComponent,
+  DataZoomComponent,
+  GraphicComponent,
+  GridComponent,
+  LegendComponent,
+  MarkAreaComponent,
+  MarkLineComponent,
+  MarkPointComponent,
+  TitleComponent,
+  ToolboxComponent,
+  TooltipComponent,
+  TransformComponent,
+  VisualMapComponent,
+} from "echarts/components";
+import { init, use, type EChartsType } from "echarts/core";
+import { CanvasRenderer } from "echarts/renderers";
+import type { EChartsOption } from "echarts";
 import { useTheme } from "../theme";
+
+// 只注册项目实际使用的图表与组件，避免完整 ECharts 进入首屏及公共包。
+use([
+  BarChart,
+  CandlestickChart,
+  HeatmapChart,
+  LineChart,
+  ScatterChart,
+  AriaComponent,
+  AxisPointerComponent,
+  DatasetComponent,
+  DataZoomComponent,
+  GraphicComponent,
+  GridComponent,
+  LegendComponent,
+  MarkAreaComponent,
+  MarkLineComponent,
+  MarkPointComponent,
+  TitleComponent,
+  ToolboxComponent,
+  TooltipComponent,
+  TransformComponent,
+  VisualMapComponent,
+  CanvasRenderer,
+]);
 
 /** ECharts 封装：传入 option 自动渲染/更新；自动注入主题背景与文字色。 */
 export default function EChart({
   option,
   height = 360,
 }: {
-  option: echarts.EChartsOption;
+  option: EChartsOption;
   height?: number | string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<echarts.ECharts | null>(null);
+  const chartRef = useRef<EChartsType | null>(null);
   const { colors } = useTheme();
 
   useEffect(() => {
     if (!ref.current) return;
-    const chart = echarts.init(ref.current);
+    const chart = init(ref.current);
     chartRef.current = chart;
     const onResize = () => chart.resize();
     window.addEventListener("resize", onResize);
@@ -29,7 +74,7 @@ export default function EChart({
 
   useEffect(() => {
     if (!chartRef.current) return;
-    const themed: echarts.EChartsOption = {
+    const themed: EChartsOption = {
       backgroundColor: colors.chartBg,
       textStyle: { color: colors.text },
       ...option,

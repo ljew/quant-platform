@@ -62,13 +62,13 @@ def _run(sell_date: str) -> PortfolioBacktestEngine:
 
 class TestSuspendedNoFill:
     def test_suspended_sell_blocked(self):
-        """D3 是 B 的停牌日：卖出必须被拦截，持仓保留。"""
-        eng = _run(D3)
+        """D2 信号在 D3 停牌日开盘执行：卖出必须被拦截。"""
+        eng = _run(D2)
         assert eng.positions["B"] > 0, "停牌日卖出了实盘卖不掉的持仓"
 
     def test_tradable_sell_filled(self):
-        """对照组（防拦截过度）：D2 正常交易日卖出必须成交。"""
-        eng = _run(D2)
+        """D3 信号在 D4 复牌日成交：正常卖出必须成交。"""
+        eng = _run(D3)
         assert eng.positions["B"] == 0, "正常交易日卖出被误拦"
 
     def test_tradable_set_rebuilt_daily(self):
@@ -82,7 +82,8 @@ class TestSuspendedNoFill:
             return orig(ctx, symbol, target_shares, signal_type, signal_reason)
 
         eng._order_target = spy
-        eng.run(_BuyThenSell, {})
+        cls = type("_S", (_BuyThenSell,), {"sell_date": D2})
+        eng.run(cls, {})
 
         assert "B" not in captured.get(D3, set()), \
             "停牌日 B 不应出现在可成交集合里"
@@ -91,21 +92,17 @@ class TestSuspendedNoFill:
 
     def test_estimate_still_uses_ffill(self):
         """只拦成交不拦估值：停牌期间持仓仍按 ffill 价计入净值。"""
-        eng = _run(D3)
+        eng = _run(D2)
         assert eng.positions["B"] > 0
         assert eng._last_close["B"] == 20.0, "停牌标的应保留 ffill 定价用于估值"
 
     def test_buy_suspended_blocked(self):
-        """买入方向同样受限：停牌日无法建仓。"""
-        class _BuyOnSuspended(_BuyThenSell):
-            sell_date = "9999-01-01"   # 永不卖出，只观察买入
-
-        cls = type("_B", (_BuyOnSuspended,), {})
+        """D2 买入信号在 D3 停牌日执行，不得建仓。"""
         eng = _engine(rebalance_period=1)
 
         class _BuyBOnD3(_BuyThenSell):
             def rebalance(self, ctx, date):
-                if date == D3:
+                if date == D2:
                     ctx.order_target_percent("B", 0.5)
 
         eng.run(_BuyBOnD3, {})

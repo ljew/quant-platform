@@ -21,7 +21,8 @@ import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import DATA_DIR
@@ -83,6 +84,48 @@ def _new_run(db: Session, job: str, trigger: str):
     return run
 
 
+def _claim_scheduled_run(db: Session, job: str, schedule_key: str,
+                         retry_minutes: int = 15):
+    """原子占用一个调度键；成功/运行中不重复，失败退避后原位重试。
+
+    唯一约束防止多进程同时建运行；带状态条件的 UPDATE 防止两个进程同时
+    重试同一失败记录。attempt 保留重试次数，手动运行不使用调度键。
+    """
+    from app.models import AutoResearchRun
+
+    run = db.execute(select(AutoResearchRun).where(
+        AutoResearchRun.job == job,
+        AutoResearchRun.schedule_key == schedule_key,
+    )).scalar_one_or_none()
+    now = datetime.now()
+    if run is not None:
+        retry_before = now - timedelta(minutes=retry_minutes)
+        if run.status != "FAILED" or not run.finished_at or run.finished_at > retry_before:
+            return None
+        result = db.execute(update(AutoResearchRun).where(
+            AutoResearchRun.id == run.id,
+            AutoResearchRun.status == "FAILED",
+            AutoResearchRun.finished_at <= retry_before,
+        ).values(status="RUNNING", started_at=now, finished_at=None,
+                 summary_json="{}", report_path=None, error=None,
+                 attempt=AutoResearchRun.attempt + 1))
+        db.commit()
+        if result.rowcount != 1:
+            return None
+        return db.get(AutoResearchRun, run.id)
+
+    run = AutoResearchRun(job=job, trigger="scheduler", status="RUNNING",
+                          schedule_key=schedule_key)
+    db.add(run)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()       # 另一进程已抢先占用该调度键
+        return None
+    db.refresh(run)
+    return run
+
+
 def _finish_run(db: Session, run_id: int, ok: bool, summary: dict,
                 report_path: str | None = None, error: str | None = None,
                 status: str | None = None) -> None:
@@ -112,6 +155,7 @@ def latest_runs(db: Session, limit: int = 20) -> list[dict]:
     ).scalars().all()
     return [
         {"id": r.id, "job": r.job, "trigger": r.trigger, "status": r.status,
+         "schedule_key": r.schedule_key, "attempt": r.attempt,
          "summary": json.loads(r.summary_json or "{}"),
          "report_path": r.report_path, "error": r.error,
          "started_at": r.started_at.isoformat(timespec="seconds") if r.started_at else None,
@@ -156,6 +200,14 @@ def _mining_body(db: Session, run_id: int, cfg: dict) -> dict:
         if rating not in ("优秀", "可用"):
             skipped.append({"name": row.name, "rating": rating})
             continue
+        # 自动研究与手工 toggle 共用同一套生产门禁，禁止绕过 OOS/WF/PIT。
+        from app.services.factor_lab_gate import assert_enable_allowed
+        try:
+            assert_enable_allowed(db, expr=row.expr, source_id=row.id)
+        except ValueError as exc:
+            skipped.append({"name": row.name, "rating": rating,
+                            "gate": str(exc)})
+            continue
         # 登记进注册表（同名幂等）
         exist = db.execute(select(FactorRegistry).where(
             FactorRegistry.name == row.name)).scalar()
@@ -197,7 +249,7 @@ def _mining_body(db: Session, run_id: int, cfg: dict) -> dict:
     }
 
 
-def run_mining(trigger: str = "manual") -> int:
+def run_mining(trigger: str = "manual", schedule_key: str | None = None) -> int:
     """启动一次自动挖矿（后台线程）。返回 run_id，跳过时返回 0。
 
     ⚠️ GP 熔断（M2-1，2026-10-08）期间，**定时触发直接不跑、也不建记录**。
@@ -214,9 +266,12 @@ def run_mining(trigger: str = "manual") -> int:
 
     db0 = SessionLocal()
     try:
-        run = _new_run(db0, "mining", trigger)
+        run = (_claim_scheduled_run(db0, "mining", schedule_key)
+               if schedule_key else _new_run(db0, "mining", trigger))
     finally:
         db0.close()
+    if run is None:
+        return 0
 
     def _bg() -> None:
         if not _RUN_LOCK.acquire(blocking=False):
@@ -372,15 +427,18 @@ def _render_review_html(s: dict) -> str:
 </div></body></html>"""
 
 
-def run_review(trigger: str = "manual") -> int:
+def run_review(trigger: str = "manual", schedule_key: str | None = None) -> int:
     """启动一次自动复盘（后台线程）。返回 run_id。"""
     from app.database import SessionLocal
 
     db0 = SessionLocal()
     try:
-        run = _new_run(db0, "review", trigger)
+        run = (_claim_scheduled_run(db0, "review", schedule_key)
+               if schedule_key else _new_run(db0, "review", trigger))
     finally:
         db0.close()
+    if run is None:
+        return 0
 
     def _bg() -> None:
         if not _RUN_LOCK.acquire(blocking=False):
@@ -426,30 +484,6 @@ def scheduler_state() -> dict:
         "review_next": f"周{'一二三四五六日'[cfg['review_weekday']]} {cfg['review_time']}",
         "last_error": _STATE["last_error"],
     }
-
-
-def _already_ran_today(job: str) -> bool:
-    """DB 级幂等：今天是否已有该任务的运行记录（防止进程重启后重复补跑）。
-
-    进程级 _STATE 在重启后丢失，而本服务由 launchd KeepAlive 托管，
-    崩溃/重启频繁——补跑判据必须以 DB 运行记录为准。
-    """
-    from app.database import SessionLocal
-    from app.models import AutoResearchRun
-
-    db = SessionLocal()
-    try:
-        today = date.today()
-        row = db.execute(
-            select(AutoResearchRun.id).where(
-                AutoResearchRun.job == job,
-                AutoResearchRun.started_at >= datetime.combine(today, datetime.min.time()),
-            ).limit(1)).first()
-        return row is not None
-    except Exception:  # noqa: BLE001
-        return True  # 查询失败时宁可不跑（保守），下分钟再试
-    finally:
-        db.close()
 
 
 def _reap_zombie_runs(older_than_hours: int = 2) -> int:
@@ -503,35 +537,27 @@ def start_auto_scheduler() -> None:
                 now = datetime.now()
                 today = now.date().isoformat()
 
-                # 每日挖矿：交易日，过了设定时点且今天没跑过（DB 级判重）
-                if cfg["mining_enabled"] and _STATE["mining_last"] != today:
+                # 数据库调度键是唯一判重依据；内存状态不再阻断重启补跑或失败重试。
+                if cfg["mining_enabled"]:
                     hh, mm = _hm(cfg["mining_time"])
                     if (now.hour, now.minute) >= (hh, mm):
                         from app.core.trading_calendar import is_trading_day
 
                         if is_trading_day(now.date()):
-                            if _already_ran_today("mining"):
-                                _STATE["mining_last"] = today  # 今天已跑过（含上次进程）
-                            else:
+                            run_id = run_mining(trigger="scheduler", schedule_key=today)
+                            if run_id:
                                 _STATE["mining_last"] = today
-                                run_mining(trigger="scheduler")
-                                logger.info("自动挖矿已触发（%s）", today)
+                                logger.info("自动挖矿已触发（%s，run=%s）", today, run_id)
 
-                # 每周复盘：设定 weekday，过了时点且【今天】没跑过（DB 级判重）
-                # 2026-10-03 修复：原先按"本周已跑"判重，周三一次手动复盘导致周六
-                # 正式复盘被跳过。周级任务的正确判重粒度是"当天"——既防多进程/重启
-                # 重复触发，又不会误杀周末的正式运行。
+                # 手动运行没有 schedule_key，不会占用周六正式复盘；失败记录退避后重试。
                 week_key = f"{now.isocalendar().year}-W{now.isocalendar().week}"
-                if (cfg["review_enabled"] and _STATE["review_last"] != week_key
-                        and now.weekday() == cfg["review_weekday"]):
+                if cfg["review_enabled"] and now.weekday() == cfg["review_weekday"]:
                     hh, mm = _hm(cfg["review_time"])
                     if (now.hour, now.minute) >= (hh, mm):
-                        if _already_ran_today("review"):
+                        run_id = run_review(trigger="scheduler", schedule_key=today)
+                        if run_id:
                             _STATE["review_last"] = week_key
-                        else:
-                            _STATE["review_last"] = week_key
-                            run_review(trigger="scheduler")
-                            logger.info("自动复盘已触发（%s）", week_key)
+                            logger.info("自动复盘已触发（%s，run=%s）", week_key, run_id)
             except Exception as exc:  # noqa: BLE001
                 _STATE["last_error"] = str(exc)[:300]
             time.sleep(60)

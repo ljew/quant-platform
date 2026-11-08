@@ -3,8 +3,7 @@
 设计要点：
 - 逐根 K 线驱动：每根 bar 调用一次策略 on_bar(ctx, bar)，策略通过 ctx 下单；
 - 多头单一标的、按目标仓位（百分比）调仓，long-only；
-- 撮合采用「下一根开盘/当前收盘」近似：本引擎使用当前 bar 收盘价成交（简化模型），
-  并计入佣金与滑点；
+- 信号在当前 bar 收盘后确认，下一根 bar 开盘成交，并计入佣金、滑点与税费；
 - 输出权益曲线、成交明细与绩效归因（总收益/年化/最大回撤/夏普/胜率）；
 - 与策略 SDK（StandardStrategy）共用同一套策略代码，仅运行时 ctx 不同。
 - 成交记录 Trade 携带 signal_type，用于标注触发该笔的信号类型（如缠论 buy1/buy3）。
@@ -248,12 +247,9 @@ class BacktestEngine:
     ):
         """事件驱动回测引擎（单标的、long-only）。
 
-        成交口径（T4，2026-10-08 显式化）：**信号当日收盘价成交**。
-        这是简化模型——真实交易应为「信号 bar i 确认 → bar i+1 开盘成交」，
-        差异来自隔夜跳空与日内波动。本引擎未实现次日开盘，故其结果会比
-        xq/portfolio.py（T+1 开盘成交，组合镜像口径）**偏乐观**。
-        两者对比时须记住这一差异，不要横向直接比较夏普。
-        （改为次日开盘属 M3 范畴，届时需同步 portfolio 与本引擎。）
+        成交口径：**信号 bar i 确认 → bar i+1 开盘成交**。
+        与 xq/portfolio.py 及通用组合回测一致，避免使用信号日收盘后才确定的信息
+        在同一收盘价成交。停牌与涨跌停均在实际成交日判断；最后 bar 的信号不成交。
         """
         # bars: 升序的日 K 线列表，字段含 open/high/low/close/volume/date
         self.bars = bars
@@ -279,6 +275,8 @@ class BacktestEngine:
         self.cash = self.initial_cash
         self.shares = 0.0
         self.avg_cost = 0.0
+        # 信号日只缓存目标仓位；下一根 bar 开盘才撮合，避免收盘价前视。
+        self._pending_order: dict | None = None
 
         self.trades: List[Trade] = []
         self.equity_curve: List[EquityPoint] = []
@@ -296,7 +294,10 @@ class BacktestEngine:
         target_value = equity * pct
         target_shares = target_value / price
         delta = target_shares - self.shares
-        self._execute(ctx, delta, price, self.prev_close, signal_type, signal_reason)
+        self._pending_order = {
+            "delta": delta, "signal_type": signal_type,
+            "signal_reason": signal_reason,
+        }
 
     def _execute(self, ctx: StrategyContext, delta_shares: float, price: float, prev_close: float = 0.0, signal_type: str = "manual", signal_reason: str = "") -> None:
         if abs(delta_shares) < 1e-6:
@@ -383,6 +384,13 @@ class BacktestEngine:
             # 上一根收盘价作为当日"昨收"，用于涨跌停判断
             self.prev_close = float(self.bars[i - 1]["close"]) if i > 0 else float(bar["open"])
             ctx.set_bar(bar, i)
+            if self._pending_order is not None:
+                pending = self._pending_order
+                self._pending_order = None
+                self._execute(
+                    ctx, pending["delta"], float(bar["open"]), self.prev_close,
+                    pending["signal_type"], pending["signal_reason"],
+                )
             strat.on_bar(ctx, bar)
             price = float(bar["close"])
             equity = self.cash + self.shares * price
@@ -403,7 +411,7 @@ class BacktestEngine:
         annual_return = ((eq[-1] / eq[0]) ** (252.0 / n) - 1) if n > 1 else 0.0
 
         rets = [eq[i] / eq[i - 1] - 1 for i in range(1, n)] if n > 1 else []
-        if rets:
+        if len(rets) >= 2:
             m = sum(rets) / len(rets)
             var = sum((r - m) ** 2 for r in rets) / (len(rets) - 1)
             std = math.sqrt(var)
