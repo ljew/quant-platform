@@ -230,5 +230,5 @@ class TestCostModel:
 
     def test_buy_cost_includes_all_fees(self):
         c = pf._buy_cost(10.0, 1000, pf.DEFAULT_CONFIG)
-        # 10*1.001*1000=10010 + 佣金 max(2.5025,5)=5 + 过户费 0.1001
-        assert c == pytest.approx(10015.10, abs=0.01)
+        # 10*1.0001*1000=10001 + 佣金 max(2.50025,5)=5 + 过户费 0.10001
+        assert c == pytest.approx(10006.10, abs=0.01)
