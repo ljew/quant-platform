@@ -79,6 +79,36 @@ export interface StockItem {
   list_date?: string | null;
 }
 
+export interface CostProfile {
+  commission?: number;
+  slippage?: number;
+  stamp_tax?: number;
+  min_commission?: number;
+  risk_free_rate?: number;
+  source?: string;
+  label?: string;
+}
+
+export interface ValuationPit {
+  mode?: string;
+  coverage?: number;
+  note?: string | null;
+}
+
+export interface PeadPit {
+  mode?: string;
+  scale?: string;
+  aligned_with?: string;
+  note?: string | null;
+}
+
+export interface EvalOos {
+  enabled?: boolean;
+  verdict?: string;
+  oos_ratio?: number;
+  [k: string]: unknown;
+}
+
 export interface BacktestResult {
   id: number;
   symbol: string;
@@ -106,6 +136,10 @@ export interface BacktestResult {
   factor_analysis?: { factors: Record<string, { ic_mean?: number }> };
   risk_limits?: Record<string, number> | null;
   risk_clamps?: unknown[];
+  cost_profile?: CostProfile | null;
+  valuation_pit?: ValuationPit | null;
+  pead_pit?: PeadPit | null;
+  oos?: EvalOos | null;
 }
 
 // —— 业务 API ——
@@ -139,7 +173,7 @@ export const api = {
     del<{ ok: boolean }>(`/strategy/optimize/async/${jobId}`),
   // 模拟盘
   paperTasks: () => get<PaperTask[]>("/paper/tasks"),
-  paperCreate: (body: Record<string, unknown>) => post<PaperTask>("/paper/tasks", body),
+  paperCreate: (body: Record<string, unknown>) => post<PaperTask & { ok?: boolean; commission?: number; slippage?: number; cost_profile?: CostProfile; valuation_pit?: ValuationPit; pead_pit?: PeadPit }>("/paper/tasks", body),
   paperRun: (id: number) => post<{ ok: boolean }>(`/paper/tasks/${id}/run`, {}),
   paperToggle: (id: number) => post<PaperTask>(`/paper/tasks/${id}/toggle`, {}),
   paperDelete: async (id: number) => {
@@ -546,6 +580,10 @@ export interface FactorMineReport {
   /** 命中重复表达式时，指向已存在的那条历史记录 id（本次未重算、未落库） */
   duplicate_of?: number;
   duplicate_created_at?: string | null;
+  cost_profile?: CostProfile | null;
+  valuation_pit?: ValuationPit | null;
+  pead_pit?: PeadPit | null;
+  oos?: EvalOos | null;
 }
 
 export interface FactorMineSummary {
@@ -610,6 +648,10 @@ export interface OptimizeTrial {
   neighbor_count: number;
   neighbor_sharpe: number | null;
   robustness: number | null;
+  cost_profile?: CostProfile | null;
+  valuation_pit?: ValuationPit | null;
+  pead_pit?: PeadPit | null;
+  oos?: EvalOos | null;
 }
 
 /** 大网格异步寻优任务的状态（GET /strategy/optimize/async/{job_id}） */
@@ -636,6 +678,11 @@ export interface PaperTask {
   index_code: string;
   enabled: boolean;
   initial_cash: number;
+  commission?: number;
+  slippage?: number;
+  cost_profile?: CostProfile | null;
+  valuation_pit?: ValuationPit | null;
+  pead_pit?: PeadPit | null;
   equity: number;
   pnl: number;
   pnl_pct: number;

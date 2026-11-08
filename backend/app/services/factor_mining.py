@@ -12,6 +12,8 @@
 """
 from __future__ import annotations
 
+from app.core.eval_profile import build_eval_profile_for_mining
+
 import math
 from datetime import date, datetime, timedelta
 
@@ -570,10 +572,17 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
         attrs_tl = {}
     if attrs_tl:
         _cover = len(attrs_tl) / max(1, len(syms))
+        _val_mode = "asof"
+        _val_note = None
         if progress:
             progress(0.06, f"估值 PIT 时序已载入：{len(attrs_tl)} 只（覆盖 {_cover:.0%}）")
     else:
+        # W45-5：无估值日频时退回 stocks 最新快照 —— 显式标 fallback，禁止静默
         _cover = 0.0
+        _val_mode = "fallback"
+        _val_note = "stock_valuation_daily 无数据，估值因子退回 stocks 最新快照（有前视）"
+        if progress:
+            progress(0.06, "⚠️ 估值口径=最新快照（有前视）；请回填 stock_valuation_daily")
     es_map = _es_map(db, syms)
     # 财务（PIT 口径）：一次全量预载到内存（14 万行 ≈ 数 MB），
     # 之后按「公告日 ≤ 截面日」逐点选取，避免前视。
@@ -807,6 +816,11 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
             "demote_note": f"因样本外检验「{oos_verdict}」，评级 {rating_before_oos} → {rating}",
         }
 
+    _eval = build_eval_profile_for_mining(
+        valuation_mode=_val_mode,
+        valuation_coverage=_cover,
+        valuation_note=_val_note,
+    )
     return {
         "ok": True,
         "name": name,
@@ -833,6 +847,7 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
         "factor_stats": _factor_stats(all_vals, len(ic_list)),
         "n_stocks": len(syms),
         "forward_days": forward,
+        **_eval,
     }
 
 

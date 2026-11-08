@@ -13,6 +13,7 @@ from app.models import PaperTask, PaperTrade, PaperSnapshot
 from app.core.strategies.registry import get_strategy, STRATEGY_REGISTRY
 from app.core.engine.paper_engine import run_paper_task, get_paper_task_detail
 from app.core.cost_defaults import COMMISSION, SLIPPAGE
+from app.core.eval_profile import build_eval_profile_for_paper
 
 router = APIRouter(prefix="/paper", tags=["paper"])
 
@@ -78,7 +79,14 @@ def create_task(req: PaperTaskCreate, db=Depends(get_db)):
     db.add(t)
     db.commit()
     db.refresh(t)
-    return {"ok": True, "id": t.id}
+    prof = build_eval_profile_for_paper(req, multi_asset=(kind == "portfolio"))
+    return {
+        "ok": True,
+        "id": t.id,
+        "commission": t.commission,
+        "slippage": t.slippage,
+        **prof,
+    }
 
 
 @router.get("/tasks")

@@ -3,6 +3,7 @@ import EChart from "../components/EChart";
 import { api, BacktestResult, StockItem, StrategyInfo } from "../api/client";
 import { useTheme } from "../theme";
 import { Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
+import EvalBadges from "../components/EvalBadges";
 import { signalLabel } from "../signalLabel";
 import ParamPanel, { ParamMap, changedKeys, defaultParams } from "../components/ParamPanel";
 
@@ -286,6 +287,13 @@ export default function BacktestPage() {
 
           {result && (
             <>
+              <EvalBadges
+                cost_profile={result.cost_profile}
+                valuation_pit={result.valuation_pit}
+                pead_pit={result.pead_pit}
+                oos={result.oos}
+                colors={colors}
+              />
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
                 <KpiCard label="总收益" value={`${(result.total_return * 100).toFixed(2)}%`}
                   tone={result.total_return >= 0 ? "up" : "down"} colors={colors} />

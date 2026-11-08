@@ -3,6 +3,7 @@ import EChart from "../components/EChart";
 import { api, PaperDetail, PaperTask, StrategyInfo } from "../api/client";
 import { useTheme } from "../theme";
 import { PageHeader } from "../components/ui";
+import EvalBadges from "../components/EvalBadges";
 import { signalLabel } from "../signalLabel";
 
 /** 模拟盘（任务列表 + 创建 + 详情：净值曲线/成交）。 */
@@ -10,6 +11,11 @@ export default function PaperPage() {
   const [tasks, setTasks] = useState<PaperTask[]>([]);
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
   const [detail, setDetail] = useState<PaperDetail | null>(null);
+  const [createBadges, setCreateBadges] = useState<{
+    cost_profile?: import("../api/client").CostProfile | null;
+    valuation_pit?: import("../api/client").ValuationPit | null;
+    pead_pit?: import("../api/client").PeadPit | null;
+  } | null>(null);
   const [error, setError] = useState("");
   const { colors } = useTheme();
 
@@ -55,6 +61,11 @@ export default function PaperPage() {
         index_code: isPortfolio ? indexCode : "",
         initial_cash: cash,
         params_json: "{}",
+      });
+      setCreateBadges({
+        cost_profile: task.cost_profile,
+        valuation_pit: task.valuation_pit,
+        pead_pit: task.pead_pit,
       });
       await api.paperRun(task.id);
       refresh();
@@ -137,6 +148,16 @@ export default function PaperPage() {
       </div>
       <button onClick={create} style={btnStyle}>创建并运行</button>
       <button onClick={refresh} style={{ ...btnStyle, background: colors.muted }}>刷新</button>
+      {createBadges && (
+        <div style={{ margin: "10px 0" }}>
+          <EvalBadges
+            cost_profile={createBadges.cost_profile}
+            valuation_pit={createBadges.valuation_pit}
+            pead_pit={createBadges.pead_pit}
+            colors={colors}
+          />
+        </div>
+      )}
       {error && <div style={{ color: colors.up, margin: "8px 0" }}>{error}</div>}
       {progressHint && !error && <div style={{ color: colors.muted, margin: "8px 0", fontSize: 13 }}>{progressHint}</div>}
 
