@@ -230,6 +230,20 @@ def _run_text_update() -> None:
     finally:
         db.close()
 
+    # 政策原文：财联社快讯做触发器 → site: 反查部委官网 → fetch 正文
+    # 每天 8 条上限，成本约 0.08 元；产出少（正式文件一天 0~3 篇），
+    # 但都是「预期差」的源头，值得留着跑。
+    db = SessionLocal()
+    try:
+        from app.services.policy_doc import collect as collect_policy
+        stat = collect_policy(db, days=2, limit=8)
+        if stat.get("hit"):
+            logger.info("政策原文入库 %d 篇（候选 %d）", stat["hit"], stat["candidates"])
+    except Exception as e:  # noqa: BLE001
+        logger.warning("政策原文采集失败：%s", str(e)[:120])
+    finally:
+        db.close()
+
     backend = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     env = dict(os.environ)
     env["PYTHONPATH"] = backend
