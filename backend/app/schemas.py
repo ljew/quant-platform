@@ -121,6 +121,8 @@ class BacktestRequest(BaseModel):
     commission: float = COMMISSION
     slippage: float = SLIPPAGE
     adj: str = "qfq"
+    # W46-1：网格选格写回；省略则按 commission/slippage 是否显式推断 default/user
+    cost_source: str | None = None  # default|user|grid_pick（写入侧由 eval_profile 归一）
 
 
 class TradePoint(BaseModel):
@@ -256,3 +258,63 @@ class OptimizeTrial(BaseModel):
     valuation_pit: dict | None = None
     pead_pit: dict | None = None
     oos: dict | None = None
+
+
+# ===== W46-1 / M3-7 成本敏感网格 =====
+class CostSensitivityRequest(BaseModel):
+    """与 BacktestRequest 同名同义的回测身份字段 + 网格轴。stamp_tax 不上轴。"""
+    symbol: str
+    start: str
+    end: str
+    strategy: str
+    params: dict = {}
+    initial_cash: float = 1_000_000.0
+    adj: str = "qfq"
+    mode: str = "grid"  # grid | multipliers
+    commissions: list[float] | None = None
+    slippages: list[float] | None = None
+    multipliers: list[float] | None = None
+    base_commission: float | None = None
+    base_slippage: float | None = None
+    metric: str = "excess_return"  # excess_return | sharpe | total_return
+
+
+class CostGridCell(BaseModel):
+    commission: float
+    slippage: float
+    multiplier: float | None = None
+    is_default: bool = False
+    total_return: float = 0.0
+    annual_return: float = 0.0
+    sharpe: float = 0.0
+    max_drawdown: float = 0.0
+    excess_return: float = 0.0
+    trade_count: int = 0
+    final_equity: float = 0.0
+
+
+class CostSensitivitySummary(BaseModel):
+    default_cell_ok: bool = False
+    double_cost_excess_positive: bool = False
+    fragile: bool = False
+    note: str = ""
+
+
+class CostSensitivityAxes(BaseModel):
+    commissions: list[float] | None = None
+    slippages: list[float] | None = None
+    multipliers: list[float] | None = None
+
+
+class CostSensitivityResult(BaseModel):
+    mode: str
+    metric: str
+    base_cost_profile: dict
+    axes: CostSensitivityAxes
+    cells: list[CostGridCell]
+    summary: CostSensitivitySummary
+    strategy_key: str
+    symbol: str
+    start: str
+    end: str
+

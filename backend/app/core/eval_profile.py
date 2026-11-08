@@ -23,13 +23,23 @@ PEAD_ALIGNED_WITH = "multi_factor._pit_earnings_surprise"
 
 
 def cost_source_from_request(req: Any) -> str:
-    """请求是否显式传了 commission/slippage → user，否则 default。"""
+    """按 §5.2 判定 cost_profile.source（default / user / grid_pick）。
+
+    - commission/slippage 均未显式传入 → default
+    - 显式传入且 req.cost_source ∈ {user, grid_pick} → 用该值
+    - 显式传入但无 cost_source → user
+    - 数值恰好等于 defaults 且非 grid_pick → 归一为 default（在 build_cost_profile 侧）
+    """
     fields = getattr(req, "model_fields_set", None)
     if fields is None:
         fields = getattr(req, "__fields_set__", set()) or set()
-    if "commission" in fields or "slippage" in fields:
-        return "user"
-    return "default"
+    explicit_cost = ("commission" in fields) or ("slippage" in fields)
+    if not explicit_cost:
+        return "default"
+    cs = getattr(req, "cost_source", None)
+    if cs in ("user", "grid_pick"):
+        return cs
+    return "user"
 
 
 def build_cost_profile(
@@ -41,10 +51,19 @@ def build_cost_profile(
     min_commission: float | None = None,
     risk_free_rate: float | None = None,
 ) -> dict[str, Any]:
-    """组装 cost_profile；省略参数时落到 cost_defaults。"""
+    """组装 cost_profile；省略参数时落到 cost_defaults。
+
+    W46-1：允许 source=grid_pick；数值等于默认且非 grid_pick 时归一为 default；
+    grid_pick 的 label 加「网格选中·」前缀（主文案仍由前端显示「成本·自定义」）。
+    """
     c = COMMISSION if commission is None else float(commission)
     s = SLIPPAGE if slippage is None else float(slippage)
-    src = source if source in ("default", "user") else "default"
+    src = source if source in ("default", "user", "grid_pick") else "default"
+    if src != "grid_pick" and c == COMMISSION and s == SLIPPAGE:
+        src = "default"
+    label = COST_LABEL
+    if src == "grid_pick":
+        label = f"网格选中·{COST_LABEL}"
     return {
         "commission": c,
         "slippage": s,
@@ -52,7 +71,7 @@ def build_cost_profile(
         "min_commission": MIN_COMMISSION if min_commission is None else float(min_commission),
         "risk_free_rate": RISK_FREE_RATE if risk_free_rate is None else float(risk_free_rate),
         "source": src,
-        "label": COST_LABEL,
+        "label": label,
     }
 
 

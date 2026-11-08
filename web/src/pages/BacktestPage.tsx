@@ -4,6 +4,7 @@ import { api, BacktestResult, StockItem, StrategyInfo } from "../api/client";
 import { useTheme } from "../theme";
 import { Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
 import EvalBadges from "../components/EvalBadges";
+import CostSensitivityPanel from "../components/CostSensitivityPanel";
 import { signalLabel } from "../signalLabel";
 import ParamPanel, { ParamMap, changedKeys, defaultParams } from "../components/ParamPanel";
 
@@ -328,6 +329,22 @@ export default function BacktestPage() {
                   <EChart option={equityOption as never} height={380} />
                 </Card>
               )}
+
+              {/* W46-1：成本敏感网格（净值块下方；滚动 OOS 留给 W46-2） */}
+              <CostSensitivityPanel
+                symbol={symbol}
+                start={start}
+                end={end}
+                strategy={key}
+                params={params}
+                colors={colors}
+                disabled={running}
+                onApplied={(r) => {
+                  setResult(r);
+                  setProgress("已应用网格成本并重跑");
+                  api.backtestHistory(20).then(setHistory).catch(() => {});
+                }}
+              />
 
               {result.risk_limits && Object.keys(result.risk_limits).length > 0 && (
                 <Card title="风险硬上限" colors={colors}>

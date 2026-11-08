@@ -2,6 +2,7 @@
 
 - GET  /strategy/strategies   列出可用策略模板（含参数 schema，供前端动态渲染）
 - POST /strategy/backtest      运行一次回测（落库并返回结果）
+- POST /strategy/backtest/cost-sensitivity  成本敏感网格（W46-1；同步；长任务限制见路由注释）
 - GET  /strategy/backtests     回测历史列表
 - GET  /strategy/backtests/{id} 回测详情
 - POST /strategy/optimize      网格寻优（同步，≤400 组）
@@ -47,6 +48,8 @@ from app.schemas import (
     BacktestRequest,
     BacktestResult,
     BacktestSummary,
+    CostSensitivityRequest,
+    CostSensitivityResult,
     EquityPointModel,
     OptimizeRequest,
     OptimizeTrial,
@@ -79,6 +82,45 @@ def strategies():
 def run_backtest(req: BacktestRequest, db: Session = Depends(get_db)):
     """同步回测（原型/前端现有调用）。"""
     return _do_backtest(req, db)
+
+
+@router.post("/backtest/cost-sensitivity", response_model=CostSensitivityResult)
+def run_cost_sensitivity(req: CostSensitivityRequest, db: Session = Depends(get_db)):
+    """W46-1 / M3-7 成本敏感网格（同步）。
+
+    循环调用既有 `_run_single` / `_run_portfolio`，不复制成交逻辑，不落每格净值/成交。
+    **本切片未做 async 变体**：默认 4×4 短区间单标的可用；长区间 / 组合策略可能墙钟超时，
+    请缩小区间或改 mode=multipliers。后续可镜像 `/backtest/async`。
+    stamp_tax 不上扫描轴，锁 cost_defaults。
+    """
+    from app.services.cost_sensitivity import run_cost_sensitivity as _run_cs
+
+    try:
+        meta = get_strategy(req.strategy)
+    except KeyError:
+        raise HTTPException(status_code=400, detail=f"未知策略: {req.strategy}")
+
+    params = dict(meta["default_params"])
+    params.update({k: v for k, v in (req.params or {}).items() if v is not None})
+    multi = meta.get("multi_asset", False)
+
+    def runner(commission: float, slippage: float):
+        bt = BacktestRequest(
+            symbol=req.symbol,
+            start=req.start,
+            end=req.end,
+            strategy=req.strategy,
+            params=params,
+            initial_cash=req.initial_cash,
+            commission=commission,
+            slippage=slippage,
+            adj=req.adj,
+        )
+        if multi:
+            return _run_portfolio(db, bt, meta, params)
+        return _run_single(db, bt, meta, params)
+
+    return _run_cs(req, runner)
 
 
 def _do_backtest(req: BacktestRequest, db: Session, progress_cb=None) -> BacktestResult:
