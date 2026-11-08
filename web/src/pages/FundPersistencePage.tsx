@@ -57,6 +57,52 @@ interface FreqCost {
   rows: FreqRow[]; n_months: number; n_funds: number;
   cost_per_trade: number; note: string;
 }
+interface TransHItem {
+  h: number; name: string; n_pairs: number; matrix: number[][];
+  diag_top5: number; top5_to_bot30: number; bot30_stay: number;
+  avg_diag: number; diag_excess: number;
+}
+interface TransitionH {
+  keys: string[]; labels: string[]; items: TransHItem[];
+  n_months: number; random_baseline: number;
+}
+interface Stat5 {
+  mean: number; t: number; p: number; pos: number; n: number;
+  ann?: number; median?: number; min?: number; max?: number;
+}
+interface CopyHoldings {
+  periods: number; span: string; avail_range: string;
+  topn: number; lag_days: number; stock_cost: number; fund_cost: number;
+  port_gross: Stat5; port_net: Stat5; bench_net: Stat5; fund_net: Stat5;
+  sel_effect: Stat5;
+  selection_loo: { dropped: string; dropped_val: number; mean: number; t: number; pos: number; n: number };
+  ex_fund_net: Stat5; ex_fund_matched: Stat5;
+  expo_mean: number; beta_vs_fund: number; corr_vs_fund: number;
+  jensen_alpha: number; jensen_t: number; jensen_p: number; jensen_r2: number;
+  yearly: { period: string; port: number; bench: number; fund: number;
+    exc: number; expo: number; n: number }[];
+  avg_stocks: number; avg_funds: number; avg_pool: number;
+}
+interface Brinson {
+  periods: number; span: string; note: string;
+  actual: Stat5; alloc: Stat5; select: Stat5;
+  avg_pool: number; avg_sel: number; share_alloc: number | null;
+  yearly: { period: string; actual: number; alloc: number; select: number; n: number }[];
+  overweight: { industry: string; active: number; ret: number }[];
+  underweight: { industry: string; active: number; ret: number }[];
+}
+interface CopyQ {
+  periods: number; span: string; build_range: string; topn: number;
+  port_ann: number; bench_ann: number; fund_ann: number;
+  port_net: Stat5; bench_net: Stat5; fund_net: Stat5;
+  sel_effect: Stat5; vs_fund_raw: Stat5;
+  beta: number; alpha: number; alpha_t: number; r2: number;
+  mdd: number; sharpe: number;
+  avg_pool: number; avg_sel: number; avg_covered: number;
+  median_note: string;
+  by_year: { year: number; n: number; port: number; bench: number;
+    fund: number; exc: number; partial: boolean }[];
+}
 interface Payload {
   ok: boolean; error?: string; generated_at?: string; period?: string;
   census?: Census[]; tiers?: Tier[]; transition?: Transition;
@@ -65,7 +111,8 @@ interface Payload {
     ann: number; excess: number; t: number; p: number; pos: number; tot: number; avg_n: number;
   }>; hold_attr?: HoldAttr;
   hold_lag?: { diff: number; t: number; p: number; pos: number; n: number; years: string };
-  freq_cost?: FreqCost;
+  freq_cost?: FreqCost; transition_h?: TransitionH;
+  copy_holdings?: CopyHoldings; brinson?: Brinson; copy_q?: CopyQ;
   cached_at?: string;
 }
 
@@ -118,9 +165,11 @@ export default function FundPersistencePage() {
   const mgr = data?.manager_tiers || [];
   const sz = data?.size;
   const sbt = data?.size_backtest;
-  const ha = data?.hold_attr;
-  const hl = data?.hold_lag;
   const fq = data?.freq_cost;
+  const transH = data?.transition_h;
+  const ch = data?.copy_holdings;
+  const cq = data?.copy_q;
+  const br = data?.brinson;
   const bTiny = sz?.bands.find((b) => b.band === "<2亿");
   const bSweet = sz?.bands.find((b) => b.band === "2-10亿");
   const bBig = sz?.bands.find((b) => b.band === ">80亿");
@@ -139,18 +188,18 @@ export default function FundPersistencePage() {
       xAxis: {
         type: "category", name: "次年", nameLocation: "middle", nameGap: 34,
         nameTextStyle: { fontSize: 11, color: colors.muted },
-        data: tr.labels, splitArea: { show: true }, axisLabel: { fontSize: 11 },
+        data: tr.labels, splitArea: { show: true }, axisLabel: { fontSize: 11, color: colors.muted },
       },
       yAxis: {
         type: "category", name: "上年", nameLocation: "middle", nameGap: 70, nameRotate: 90,
         nameTextStyle: { fontSize: 11, color: colors.muted },
-        data: tr.labels, inverse: true, splitArea: { show: true }, axisLabel: { fontSize: 11 },
+        data: tr.labels, inverse: true, splitArea: { show: true }, axisLabel: { fontSize: 11, color: colors.muted },
       },
       visualMap: {
         min: 0, max: 36, show: false,
         inRange: {
           color: mode === "dark"
-            ? ["#1c2331", "#4a2622", "#8f332b", "#d4553f"]
+            ? ["#2a3242", "#6b2d26", "#a83c30", "#e6674c"]
             : ["#ffffff", "#fbdfd9", "#f0a496", "#c0392b"],
         },
       },
@@ -269,6 +318,60 @@ export default function FundPersistencePage() {
             </div>
             {heatOption && <EChart option={heatOption} height={380} />}
           </Card>
+
+          {transH && transH.items.length > 0 && (
+            <Card
+              title="排名的保鲜期：持有多久才算「还有信息」"
+              colors={colors}
+              extra={<span style={{ fontSize: 12, color: colors.muted }}>
+                {transH.n_months} 个月度截面 · 滚动持有期 · 随机基线 前5%=5% / 后30%=30%
+              </span>}
+            >
+              <div style={{ fontSize: 12.5, color: colors.muted, marginBottom: 8 }}>
+                年度矩阵只有 10 个观测，回答不了「排名多久失效」。换成月度口径后有 {transH.n_months} 期，
+                同一个排名信号在三个持有期上各算一遍：
+                前 5% 的留存率从 1 个月的 <b style={{ color: colors.text }}>{transH.items[0]?.diag_top5}%</b>{" "}
+                衰减到 12 个月的 <b style={{ color: colors.text }}>{transH.items[transH.items.length - 1]?.diag_top5}%</b>。
+                <b style={{ color: colors.text }}>但「留存概率高于随机」和「能赚到钱」是两件事</b>——
+                即使 1 个月，也有近 9 成的冠军下个月就不在前 5%。
+              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <th style={{ ...th, textAlign: "left" }}>持有期</th>
+                    <th style={th}>前5% 留存</th>
+                    <th style={th}>÷ 随机(5%)</th>
+                    <th style={th}>前5% → 后30%</th>
+                    <th style={th}>后30% 留存</th>
+                    <th style={th}>÷ 随机(30%)</th>
+                    <th style={th}>样本对</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {transH.items.map((it) => (
+                    <tr key={it.h} style={{ borderBottom: `1px solid ${colors.border}` }}>
+                      <td style={{ ...td, textAlign: "left", fontWeight: 600 }}>{it.name}</td>
+                      <td style={td}><b>{it.diag_top5.toFixed(1)}%</b></td>
+                      <td style={{ ...td, color: colors.muted }}>{(it.diag_top5 / 5).toFixed(1)}×</td>
+                      <td style={td}><Pct v={it.top5_to_bot30} /></td>
+                      <td style={td}><b>{it.bot30_stay.toFixed(1)}%</b></td>
+                      <td style={{ ...td, color: colors.muted }}>{(it.bot30_stay / 30).toFixed(2)}×</td>
+                      <td style={{ ...td, color: colors.muted }}>{it.n_pairs}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={{ marginTop: 10, padding: "10px 12px", background: colors.tableStripe, borderRadius: 8, fontSize: 12.5, lineHeight: 1.75 }}>
+                <b style={{ color: colors.text }}>怎么读：</b>
+                前 5% 的相对留存（÷随机）远高于后 30% ——
+                1 个月 {((transH.items[0]?.diag_top5 ?? 0) / 5).toFixed(1)}× vs{" "}
+                {((transH.items[0]?.bot30_stay ?? 0) / 30).toFixed(2)}×。
+                也就是说<b style={{ color: colors.text }}>「好基金」的排名比「差基金」更稳</b>，
+                这跟年度矩阵给人的印象相反（年度看后 30% 留存 34% 很高，但它的随机基线本来就是 30%）。
+                不过相对留存高并不等于超额收益高——收益率检验在下面几块。
+              </div>
+            </Card>
+          )}
 
           <Card
             title="各梯队 → 次年绝对超额"
@@ -505,67 +608,179 @@ export default function FundPersistencePage() {
             </Card>
           )}
 
-          {ha && ha.yearly.length > 0 && (
+          {cq && (
             <Card
-              title="持仓归因：超额来自选股，还是交易"
+              title="抄作业复核：副本能不能跑赢正本"
               colors={colors}
-              extra={<span style={{ fontSize: 12, color: colors.muted }}>披露持仓加权 · 占净值比中位 {ha.cover_median}%</span>}
+              extra={<span style={{ fontSize: 12, color: colors.muted }}>
+                {cq.periods} 期 · 季度调仓 · 全组合（披露 + 结转）· 持股 {cq.topn} 只
+              </span>}
             >
               <div style={{ fontSize: 12.5, color: colors.muted, marginBottom: 8 }}>
-                上年 Top5% 的<b style={{ color: colors.text }}>持仓组合</b>次年跑赢全池持仓{" "}
-                <b style={{ color: colors.up }}>{ha.hold_diff > 0 ? "+" : ""}{ha.hold_diff}%</b>（t={ha.hold_t}，{ha.hold_pos}/{ha.n_years} 年为正）；
-                但同一批基金的<b style={{ color: colors.text }}>实际净值</b>只跑赢{" "}
-                <b style={{ color: colors.up }}>+{ha.fund_diff}%</b>（t={ha.fund_t}，{ha.fund_pos}/{ha.n_years}）。
-                差额 <b style={{ color: colors.down }}>{ha.gap}%</b> 是<b style={{ color: colors.text }}>仓位、交易与择时的合计损耗</b>。
+                用每只基金<b style={{ color: colors.text }}>完整组合</b>重做：Q2/Q4 是半年报/年报全披露（约 100%），
+                Q1/Q3 是前十大披露 + 从上次全披露结转（合计约 75%，正好等于股票仓位）。
+                这才是抄作业者实盘能拿到的组合，比只用回归隐含那 35% 更接近真实。
+                建仓按披露期限推后：Q1/Q3 后 15 个交易日、半年报 45、年报 60。
+                <br />
+                抄 Top5% 年化 <b style={{ color: colors.text }}>{cq.port_ann}%</b>，
+                抄全市场组合 {cq.bench_ann}%，直接买 Top5% 基金 {cq.fund_ann}%。
+                <b style={{ color: colors.up }}>看着抄作业赢，但赢的是 β。</b>
               </div>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
-                    <th style={{ ...th, textAlign: "left" }}>次年</th>
-                    <th style={th}>样本</th>
-                    <th style={th}>持仓组合差</th>
-                    <th style={th}>实际净值差</th>
-                    <th style={th}>差额</th>
+                    <th style={{ ...th, textAlign: "left" }}>年度</th>
+                    <th style={th}>期数</th>
+                    <th style={th}>抄 Top5% 持仓</th>
+                    <th style={th}>抄全市场组合</th>
+                    <th style={th}>买 Top5% 基金</th>
+                    <th style={th}>抄 − 抄全市场</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {ha.yearly.map((r) => {
-                    const gap = r.top_fund - r.rest_fund - (r.top_hold - r.rest_hold);
-                    return (
-                      <tr key={r.year} style={{ borderBottom: `1px solid ${colors.border}` }}>
-                        <td style={{ ...td, textAlign: "left", fontWeight: 600 }}>{r.year}</td>
-                        <td style={{ ...td, color: colors.muted }}>{r.n_top}</td>
-                        <td style={td}><Pct v={r.top_hold - r.rest_hold} /></td>
-                        <td style={td}><Pct v={r.top_fund - r.rest_fund} /></td>
-                        <td style={td}><Pct v={gap} /></td>
-                      </tr>
-                    );
-                  })}
+                  {cq.by_year.map((r) => (
+                    <tr key={r.year} style={{ borderBottom: `1px solid ${colors.border}` }}>
+                      <td style={{ ...td, textAlign: "left", fontWeight: 600 }}>
+                        {r.year}{r.partial ? <span style={{ color: colors.muted, fontWeight: 400 }}>（不足 4 期）</span> : ""}
+                      </td>
+                      <td style={{ ...td, color: colors.muted }}>{r.n}</td>
+                      <td style={td}><Pct v={r.port} /></td>
+                      <td style={td}><Pct v={r.bench} /></td>
+                      <td style={td}><Pct v={r.fund} /></td>
+                      <td style={td}><Pct v={r.exc} bold={Math.abs(r.exc) >= 5} /></td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
-              <div style={{ marginTop: 10, padding: "10px 12px", background: colors.tableStripe, borderRadius: 8, fontSize: 12.5, lineHeight: 1.7 }}>
-                <b style={{ color: colors.text }}>怎么读：</b>持仓层面的优势（t={ha.hold_t}）比实际兑现的（t={ha.fund_t}）更强也更稳，
-                说明「选出来的股票确实更好，但没有完整兑现」。最典型是 2019 年：持仓组合只跑输 1.4%，
-                实际净值却跑输 19.9%——<b style={{ color: colors.text }}>差在仓位上，不是选股上</b>。
-                这也解释了为什么按排名选基抓不住超额——<b style={{ color: colors.text }}>能力在持仓里，损耗在仓位上。</b>
-                {hl && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginTop: 12 }}>
+                <div style={{ padding: "10px 12px", background: colors.tableStripe, borderRadius: 8 }}>
+                  <div style={{ fontSize: 11.5, color: colors.muted }}>选股效应（抄Top5% − 抄全市场）</div>
+                  <div style={{ fontSize: 17, fontWeight: 700, color: cq.sel_effect.mean >= 0 ? colors.up : colors.down }}>
+                    {cq.sel_effect.mean > 0 ? "+" : ""}{cq.sel_effect.mean}%/期
+                  </div>
+                  <div style={{ fontSize: 11.5, color: colors.muted }}>
+                    t={cq.sel_effect.t} · {cq.sel_effect.pos}/{cq.sel_effect.n} 期为正 · p={cq.sel_effect.p}
+                  </div>
+                </div>
+                <div style={{ padding: "10px 12px", background: colors.tableStripe, borderRadius: 8 }}>
+                  <div style={{ fontSize: 11.5, color: colors.muted }}>抄 − 买（不做风险调整）</div>
+                  <div style={{ fontSize: 17, fontWeight: 700, color: cq.vs_fund_raw.mean >= 0 ? colors.up : colors.down }}>
+                    {cq.vs_fund_raw.mean > 0 ? "+" : ""}{cq.vs_fund_raw.mean}%/期
+                  </div>
+                  <div style={{ fontSize: 11.5, color: colors.muted }}>
+                    t={cq.vs_fund_raw.t} · {cq.vs_fund_raw.pos}/{cq.vs_fund_raw.n} 期为正
+                  </div>
+                </div>
+                <div style={{ padding: "10px 12px", border: `1px solid ${colors.up}33`, borderLeft: `3px solid ${colors.up}`, borderRadius: 8 }}>
+                  <div style={{ fontSize: 11.5, color: colors.muted }}>β 调整后 alpha（对基金回归）</div>
+                  <div style={{ fontSize: 17, fontWeight: 700, color: cq.alpha >= 0 ? colors.up : colors.down }}>
+                    {cq.alpha > 0 ? "+" : ""}{cq.alpha}%/期
+                  </div>
+                  <div style={{ fontSize: 11.5, color: colors.muted }}>
+                    t={cq.alpha_t} · β={cq.beta} · R²={cq.r2}
+                  </div>
+                </div>
+              </div>
+              <div style={{ marginTop: 10, padding: "10px 12px", border: `1px solid ${colors.up}33`, borderLeft: `3px solid ${colors.up}`, borderRadius: 8, fontSize: 12.5, lineHeight: 1.75 }}>
+                <b style={{ color: colors.up }}>为什么第二格有数、第三格归零：</b>
+                组合是 100% 股票，基金平均股票暴露约 75%。直接比等于「满仓打七五折」，牛市必胜、熊市必败——
+                测的是仓位不是选股。按风险调整后：组合对基金的 β=<b>{cq.beta}</b>、R²={cq.r2}、
+                α=<b style={{ color: colors.down }}>{cq.alpha}%/期</b>（t={cq.alpha_t}）。
+                <b style={{ color: colors.text }}>抄出来的是「高 β 版本的同一只基金」，α 在 0 附近且为负。</b>
+                <br />
+                再看一个细节：<b>{cq.median_note}</b>。顺便看风险：最大回撤 {cq.mdd}%、季度波动约 20%，
+                比买基金疼得多——多出来的收益本来就是拿波动换的。
+                {ch && (
                   <>
                     <br />
-                    <b style={{ color: colors.text }}>去掉前视再看一遍：</b>年报要次年 3 月底才披露，上面的算法用了 1–3 月的收益。
-                    改成「次年 4/15 建仓」后，Top5% 持仓组合仍跑赢{" "}
-                    <b style={{ color: colors.up }}>+{hl.diff}%</b>（t={hl.t}，{hl.pos}/{hl.n} 年为正，{hl.years}）——
-                    <b style={{ color: colors.text }}>只掉了 0.66pp，前视偏差不大，但样本少一年、仍不显著。</b>
+                    <b style={{ color: colors.text }}>交叉验证：</b>换一套完全独立的构造（半年频、只用回归隐含的 35%、16 期），
+                    得到 β={ch.beta_vs_fund}、R²={ch.jensen_r2}、α={ch.jensen_alpha}%/期（t={ch.jensen_t}）——
+                    <b style={{ color: colors.text }}>两条路都指向同一个答案：没有 alpha。</b>
                   </>
                 )}
               </div>
             </Card>
           )}
 
+          {br && (
+            <Card
+              title="超额来自行业押注，还是选股"
+              colors={colors}
+              extra={<span style={{ fontSize: 12, color: colors.muted }}>
+                {br.periods} 个半年期 · 只用 Q2/Q4 全披露行业权重
+              </span>}
+            >
+              <div style={{ fontSize: 12.5, color: colors.muted, marginBottom: 8 }}>
+                季报只露前十大（约覆盖净值的 55%），把 55% 归一化到 100% 会把没披露的部分硬摊到已知行业上，
+                白白放大第一大行业。所以这里只用半年报/年报的 100% 全披露，按真实披露期限滞后
+                （半年报 45 个交易日、年报 60 个）。
+                <br />
+                分解结果：Top5% 相对全体基金，下期实际超额 <b style={{ color: colors.text }}>{br.actual.mean}%</b>
+                （t={br.actual.t}），其中行业配置 <b>{br.alloc.mean}%</b>（t={br.alloc.t}）、
+                选股 <b>{br.select.mean}%</b>（t={br.select.t}）。
+                <b style={{ color: colors.text }}>两个来源都不显著——不是「选股赢但被行业拖累」，是根本没超额。</b>
+              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <th style={{ ...th, textAlign: "left" }}>半年期</th>
+                    <th style={th}>实际超额</th>
+                    <th style={th}>行业配置</th>
+                    <th style={th}>选股（残差）</th>
+                    <th style={th}>样本</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {br.yearly.map((r) => (
+                    <tr key={r.period} style={{ borderBottom: `1px solid ${colors.border}` }}>
+                      <td style={{ ...td, textAlign: "left", fontWeight: 600 }}>
+                        {r.period.slice(0, 4)}H{r.period.slice(4) === "0630" ? "1" : "2"}
+                      </td>
+                      <td style={td}><Pct v={r.actual} bold={Math.abs(r.actual) >= 5} /></td>
+                      <td style={td}><Pct v={r.alloc} /></td>
+                      <td style={td}><Pct v={r.select} /></td>
+                      <td style={{ ...td, color: colors.muted }}>{r.n}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
+                <div style={{ padding: "10px 12px", background: colors.tableStripe, borderRadius: 8, fontSize: 12.5, lineHeight: 1.7 }}>
+                  <b style={{ color: colors.up }}>平均超配</b>
+                  {br.overweight.map((o) => (
+                    <span key={o.industry} style={{ marginLeft: 8 }}>
+                      {o.industry} <b>{o.active > 0 ? "+" : ""}{o.active}pp</b>
+                    </span>
+                  ))}
+                </div>
+                <div style={{ padding: "10px 12px", background: colors.tableStripe, borderRadius: 8, fontSize: 12.5, lineHeight: 1.7 }}>
+                  <b style={{ color: colors.down }}>平均低配</b>
+                  {br.underweight.map((o) => (
+                    <span key={o.industry} style={{ marginLeft: 8 }}>
+                      {o.industry} <b>{o.active}pp</b>
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div style={{ marginTop: 10, padding: "10px 12px", background: colors.tableStripe, borderRadius: 8, fontSize: 12.5, lineHeight: 1.75 }}>
+                <b style={{ color: colors.text }}>和之前那版的区别：</b>
+                旧结论说「超配半导体/电子/白酒，是成长风格押注」，那是用残缺披露算的。全披露口径下，
+                Top5% 的超配其实分散在有色、电力设备、银行、电子、煤炭上——
+                <b style={{ color: colors.text }}>既有成长也有周期和金融，不是单一的成长暴露</b>。
+                所以「冠军=买了创业板」这个说法，在行业层面站不住。
+              </div>
+            </Card>
+          )}
+
           <div style={{ fontSize: 11.5, color: colors.muted, lineHeight: 1.8, padding: "4px 2px" }}>
-            口径：tushare <code>adj_nav</code> 复权净值 · 场外 · 份额去重 · 含清盘基金 · 已剔除纯被动指数 ·
-            分组按上年收益分位 · 超额 = 次年收益 − 次年全体中位数 · t 基于年度序列（10 个观测）。
+            口径：净值取自 <code>fund_research.db.fund_nav_daily</code> 日频复权净值，按「每月/每年最后一个有净值的交易日」折叠；
+            与旧年截面表在重叠区偏差为 0。场外 · 含清盘 · 已剔除纯被动指数 · 分组按上年收益分位 ·
+            超额 = 次年收益 − 次年全体中位数 · 显著性一律用「年度等权序列」，不用 pooled 观测。
             <br />
-            统计功效：10 年样本能可靠否定「明显有效」，不足以断定「一定无效」。
+            持仓类结论（抄作业 / 行业归因）只用 <code>fund_regression_holdings</code> 与 <code>fund_industry_exposure</code>，
+            建仓日一律推到披露截止之后，避免前视。
+            <br />
+            统计功效：年度 10 期、半年 16–18 期——能可靠否定「明显有效」，不足以断定「一定无效」。
             缓存生成于 {data.generated_at}。
           </div>
         </>
