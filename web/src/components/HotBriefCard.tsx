@@ -64,7 +64,9 @@ function highlight(text: string, colors: ThemeColors): React.ReactNode[] {
 /** 单条来源标签（可点击）。 */
 function SourceTag({ item }: { item: HotBriefItem }) {
   const { colors } = useTheme();
-  const isSearch = (item.source_kind || "").includes("搜索");
+  const kind = item.source_kind || "";
+  const isSearch = kind.includes("搜索");
+  const isForeign = kind.includes("境外");
   const pill: React.CSSProperties = {
     fontSize: 10.5,
     fontWeight: 400,
@@ -72,7 +74,7 @@ function SourceTag({ item }: { item: HotBriefItem }) {
     padding: "0 5px",
     borderRadius: 3,
     border: `1px solid ${colors.border}`,
-    color: isSearch ? colors.accent : colors.muted,
+    color: isSearch ? colors.accent : isForeign ? "#16a085" : colors.muted,
     textDecoration: "none",
     whiteSpace: "nowrap",
   };
@@ -309,14 +311,18 @@ export default function HotBriefCard({
   const [loading, setLoading] = useState(true);
   const [showAllItems, setShowAllItems] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
+  const [llmConfigured, setLlmConfigured] = useState<boolean | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
     api
       .hotBriefToday()
-      .then((d) => setBrief(d && (d.n_items || d.summary) ? d : null))
+      .then((d) => setBrief(d && (d.n_items || d.summary || d.error) ? d : null))
       .catch(() => setBrief(null))
       .finally(() => setLoading(false));
+    api.llmProviders()
+      .then((r) => setLlmConfigured(!!r?.active?.configured))
+      .catch(() => setLlmConfigured(null));
   }, []);
 
   useEffect(() => {
@@ -331,7 +337,7 @@ export default function HotBriefCard({
   );
   const shownItems = showAllItems ? items : items.slice(0, ITEMS_PREVIEW);
   const split = brief?.source_split || {};
-  const splitText = ["快讯", "搜索", "混合", "未标注"]
+  const splitText = ["快讯", "境外", "搜索", "混合", "未标注"]
     .filter((k) => (split[k] || 0) > 0)
     .map((k) => `${k} ${split[k]}`)
     .join(" · ");
@@ -367,7 +373,19 @@ export default function HotBriefCard({
     >
       {!brief && (
         <div style={{ color: colors.muted, fontSize: 12.5, padding: "10px 2px" }}>
-          {loading ? "加载中…" : "尚无简报 —— 交易日 7/9/10/11/13/14/16/21 点各生成一轮"}
+          {loading
+            ? "加载中…"
+            : llmConfigured === false
+              ? "未配置 LLM，仅列表不总结 —— 请到因子挖掘页配置大模型通道后再生成简报"
+              : "尚无简报 —— 交易日 7/9/10/11/13/14/16/21 点各生成一轮"}
+        </div>
+      )}
+
+      {brief?.error && !brief?.summary && !(brief?.n_items) && (
+        <div style={{ color: colors.up || "#c0392b", fontSize: 12.5, padding: "8px 2px" }}>
+          {(brief.error || "").includes("未配置") || (brief.error || "").includes("大模型")
+            ? "未配置 LLM，仅列表不总结"
+            : brief.error}
         </div>
       )}
 
@@ -457,13 +475,15 @@ export default function HotBriefCard({
       )}
 
       <div style={{ marginTop: 9, fontSize: 11, color: colors.muted, lineHeight: 1.6 }}>
-        输入 = 财联社一手快讯（时效）+ DeepSeek 网页搜索（覆盖广度），模型只做筛选与判断；
+        输入 = 财联社快讯 + 境外日爬（RSS/X）+ DeepSeek 搜索；模型只做筛选与判断。
         交易日 7/9/10/11/13/14/16/21 点各生成一轮（非交易日 9/21 点），
-        每轮的取数窗口是「距上一个时段」——早 7 点那轮会把隔夜消息一起带上。
-        「今日主题」是全天合并去重后的全貌；哪条是新入库的，到「全部资讯」看标题前的「新」标。
+        每轮取数窗对齐「距上一时段」；早 7 / 晚 21 点吃到境外三槽入库。
+        {llmConfigured === false && (
+          <span style={{ color: colors.up || "#c0392b" }}> 未配置 LLM，仅列表不总结。</span>
+        )}
         {columns === 1 && (
           <>
-            {" "}来源标签：灰色「财联社电报」= 一手快讯，蓝色「DeepSeek · 站点」= 网页搜索（可点开原文）。
+            {" "}来源：灰=财联社快讯，青=境外日爬，蓝=DeepSeek 搜索。
           </>
         )}
         {" "}
@@ -472,6 +492,17 @@ export default function HotBriefCard({
           style={{ color: colors.accent, textDecoration: "none", whiteSpace: "nowrap" }}
         >
           全部原始资讯 →
+        </a>
+        {" · "}
+        <a
+          href="#foreign-news"
+          onClick={(e) => {
+            e.preventDefault();
+            window.dispatchEvent(new CustomEvent("quant-nav", { detail: { tab: "foreign-news" } }));
+          }}
+          style={{ color: colors.accent, textDecoration: "none", whiteSpace: "nowrap" }}
+        >
+          境外资讯 →
         </a>
       </div>
     </Card>

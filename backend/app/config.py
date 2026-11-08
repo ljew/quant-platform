@@ -56,13 +56,13 @@ class Settings(BaseSettings):
     # —— 大模型（因子自然语言生成）——
     # 走 OpenAI 兼容协议：DeepSeek / 火山方舟(豆包) / DashScope 兼容模式 都适用。
     # 例：
-    #   DeepSeek   base_url=https://api.deepseek.com/v1        model=deepseek-chat
+    #   DeepSeek   base_url=https://api.deepseek.com/v1        model=deepseek-flash
     #   火山方舟    base_url=https://ark.cn-beijing.volces.com/api/v3  model=<推理接入点ID>
     #   通义千问    base_url=https://dashscope.aliyuncs.com/compatible-mode/v1  model=qwen-plus
     # 留空 llm_api_key 即关闭该功能：前端自动隐藏 AI 模式，手写表达式路径不受影响。
     llm_base_url: str = "https://api.deepseek.com/v1"
     llm_api_key: str = ""
-    llm_model: str = "deepseek-chat"
+    llm_model: str = "deepseek-flash"
 
     # —— CORS ——
     cors_origins: list[str] = ["*"]

@@ -574,9 +574,8 @@ class NewsFeedItem(Base):
 class HotBrief(Base):
     """每小时热点简报（非结构化资讯 → LLM 筛选解读）。
 
-    输入是两条腿：① 平台自采一手快讯（财联社电报，时效最强）；
-    ② DeepSeek 网页搜索 `/v1/tools/search`（覆盖快讯发不到的地方：
-    部委原文、行业数据、券商观点、隔夜外盘）。
+    输入是三腿：① 财联社一手快讯；② 境外日爬（news_feed fn_* / O*）；
+    ③ DeepSeek 网页搜索 `/v1/tools/search`（覆盖兜底）。
     模型只负责按「对 A 股有没有实质影响」筛选判断。
 
     ⚠️ 2026-11-07 我曾误判「DeepSeek API 无联网能力」——当时只试了
@@ -596,6 +595,7 @@ class HotBrief(Base):
     n_input: Mapped[int] = mapped_column(Integer, default=0)      # 输入资讯条数（快讯+搜索）
     n_flash: Mapped[int] = mapped_column(Integer, default=0)      # 其中：财联社一手快讯
     n_search: Mapped[int] = mapped_column(Integer, default=0)     # 其中：DeepSeek 网页搜索
+    n_foreign: Mapped[int] = mapped_column(Integer, default=0)    # 其中：境外日爬 fn_*
     n_items: Mapped[int] = mapped_column(Integer, default=0)      # 模型保留条数
     items_json: Mapped[str] = mapped_column(Text, default="[]")
     # 本轮喂给模型的**原始输入快照**（编号/来源/时间/标题/链接）。

@@ -197,3 +197,16 @@ def foreign_sync_status():
     from app.core.foreign_news_scheduler import get_status
 
     return get_status()
+
+
+@router.get("/foreign/digest")
+def foreign_digest(
+    hours: int = Query(24, ge=1, le=24 * 120, description="最近 N 小时"),
+    limit: int = Query(40, ge=1, le=80),
+    db=Depends(get_db),
+):
+    """境外日摘要：标题列表 + 短拼接文本；不强制调 LLM（OPS-FN-1b）。"""
+    from app.services import foreign_news
+
+    return foreign_news.digest(db, hours=hours, limit=limit)
+

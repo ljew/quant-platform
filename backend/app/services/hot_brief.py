@@ -52,18 +52,18 @@ SYSTEM_PROMPT = """你是一名 A 股量化投研分析师，服务于一个只�
 6. 同一件事在不同来源重复出现时，合并成一条，不要输出两遍。
 """
 
-USER_TEMPLATE = """下面是两个来源的资讯。
+USER_TEMPLATE = """下面是多个来源的资讯（顺序：快讯 → 境外日爬 → 搜索）。
 
 【一】一手快讯（财联社电报，过去 {minutes} 分钟，共 {n_flash} 条）
 {flash_corpus}
-{search_block}{recent_block}
+{foreign_block}{search_block}{recent_block}
 请筛出**对 A 股有实质影响**的，按下述结构输出。
 
 筛选标准（严格执行）：
 - 能落到「行业 / 板块 / 个股 / 资金面」的才留
 - 剔除：纯人物动态、无数据的产品发布、重复报道、无具体数字的预测性喊话
-- 两个来源说的是同一件事，合并成一条
-- 来源二里明显是旧闻（事件发生时间早于最近 3 天）直接丢弃
+- 多个来源说的是同一件事，合并成一条
+- 搜索腿里明显是旧闻（事件发生时间早于最近 3 天）直接丢弃
 - 优先：货币政策、财政、监管、产业政策；有金额/增速/产能/价格数字的
 - 最多 8 条
 
@@ -75,7 +75,7 @@ USER_TEMPLATE = """下面是两个来源的资讯。
 - horizon: 1-3日 / 1-4周 / 长期
 - why: 影响路径，一句话说清「因为什么 → 所以什么」，不超过 40 字
 - strength: 1-5 整数，1=可忽略，5=可能改变趋势
-- src: 这条来自哪些输入条目，用输入的编号，例如 "F3"、"S2"、"F1,S2"。
+- src: 这条来自哪些输入条目，用输入的编号，例如 "F3"、"S2"、"O1"、"F1,O2"。
   合并了多个来源就把编号都写上，用英文逗号分隔。**必须填真实编号，不要编造。**
 
 另外给两个整体判断：
@@ -84,7 +84,7 @@ USER_TEMPLATE = """下面是两个来源的资讯。
 - summary：**今日综述**，**350~600 字**，分 3~5 个自然段，依次覆盖：
   ① 政策与宏观（货币 / 财政 / 监管，有数字就写数字）
   ② 产业与板块（哪些方向在动、驱动是什么、持续性如何）
-  ③ 海外与外部（只写能传导到 A 股的，传不到的一律不提）
+  ③ 海外与外部（只写能传导到 A 股的；若【境外日爬】为空须写明「境外源本轮无新增或未配置」，**禁止编造外盘新闻**）
   ④ 资金面与风险（成交、两融、北向等可见口径，以及最该盯的变量）
   要求：写判断，不写复述；不要罗列条目清单（上面 items 已有）；
   不要写「综上所述」「值得关注」这类空话；
@@ -95,12 +95,22 @@ USER_TEMPLATE = """下面是两个来源的资讯。
 """
 
 SEARCH_BLOCK = """
-【二】网页搜索补充（共 {n_search} 条；可能含二手转载，注意核对时效）
+【三】网页搜索补充（共 {n_search} 条；可能含二手转载，注意核对时效）
 {corpus}
 """
 
+FOREIGN_BLOCK = """
+【二】境外日爬（平台自持 RSS/X，过去 {hours} 小时，共 {n_foreign} 条）
+{corpus}
+"""
+
+FOREIGN_BLOCK_EMPTY = """
+【二】境外日爬（平台自持 RSS/X，过去 {hours} 小时，共 0 条）
+（境外源本轮无新增或未配置 —— 禁止编造外盘新闻）
+"""
+
 RECENT_BLOCK = """
-【三】今日已经报过的主题（前面各轮累计，共 {n_prev} 条）
+【四】今日已经报过的主题（前面各轮累计，共 {n_prev} 条）
 {themes}
 
 除非出现**实质新增信息**（新数字、新进展、方向反转），否则不要重复输出上面的主题。
@@ -121,6 +131,7 @@ MERGE_PROMPT = """下面是今日已收录的 A 股主题（编号 + 主题 + �
       都是同一次冷空气过程，合并
   例：「央行连续24个月增持黄金」「10月外储回升、黄金连增24月」是同一批数据，合并
   例：「美制裁中企与中方严正关切」「美方制裁两家中国企业」是同一事件，合并
+  例：「Fed 维持利率不变」「美联储按兵不动」与境外日爬/搜索同一声明，合并
 - 不同对象、不同数据、不同政策措施 → 都保留
   例：「国常会定调稳市机制」与「券商互换便利落地」相关但抓手不同，保留
   例：「中央企业外资利用超1200亿美元」与「央企前三季进口同比增5.1%」是不同数据，保留
@@ -219,18 +230,70 @@ def collect_search(queries: tuple[str, ...] | list[str] | None = None,
     return out
 
 
+def collect_foreign(hours: float = 1.0, limit: int = 40) -> list[dict]:
+    """读 news_feed 中境外源（source like fn_%），按 published_at 倒序，编号留给调用方打 O*。
+
+    hours 与 HotBrief 取数窗对齐：盘中约 1h，隔夜窗用 max(minutes/60,1) 且 cap 12h。
+    """
+    from sqlalchemy import select
+    from app.database import SessionLocal
+    from app.models import NewsFeedItem
+
+    hours = max(float(hours), 0.25)
+    hours = min(hours, 12.0)
+    limit = max(1, min(int(limit or 40), 40))
+    cutoff = datetime.now() - timedelta(hours=hours)
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            select(NewsFeedItem)
+            .where(NewsFeedItem.source.like("fn_%"))
+            .where(NewsFeedItem.published_at >= cutoff)
+            .order_by(NewsFeedItem.published_at.desc().nullslast(),
+                      NewsFeedItem.id.desc())
+            .limit(limit)
+        ).scalars().all()
+    except Exception as e:  # noqa: BLE001
+        logger.info("境外日爬取数失败：%s", str(e)[:80])
+        return []
+    finally:
+        db.close()
+
+    out: list[dict] = []
+    for r in rows:
+        title = (r.title or "").strip()
+        body = (r.summary or "").strip()
+        if _noise_filter(title + body):
+            continue
+        ts = int(r.published_at.timestamp()) if r.published_at else 0
+        out.append({
+            "src": "境外",
+            "ts": ts,
+            "title": title,
+            "body": body[:1500],
+            "url": r.url or "",
+            "site": r.source_label or r.source or "境外",
+            "source_key": r.source or "",
+        })
+    return out
+
+
 def collect_inputs(minutes: int = 60, limit: int | None = None,
                    use_search: bool | None = None) -> dict:
-    """两条腿取数。返回 {"flash": [...], "search": [...]}。
+    """三腿取数。返回 {"flash": [...], "foreign": [...], "search": [...]}。
 
-    `limit=None` 交给 collect_flash 按窗口自动定（60 分钟 60 条，隔夜 120 条）。
+    顺序：快讯 → 境外日爬 → 搜索。`limit=None` 交给 collect_flash 按窗口自动定。
+    境外 hours = max(minutes/60, 1) 且 cap 12h，与隔夜窗对齐。
     """
     if use_search is None:
         use_search = os.getenv("QUANT_HOT_BRIEF_SEARCH", "1") != "0"
     flash = collect_flash(minutes=minutes, limit=limit)
+    foreign_hours = min(12.0, max(minutes / 60.0, 1.0))
+    foreign = collect_foreign(hours=foreign_hours, limit=40)
     # 搜索的 after: 也要跟着窗口走（见 collect_search 注释）
     search = collect_search(minutes=minutes) if use_search else []
-    return {"flash": flash, "search": search}
+    return {"flash": flash, "foreign": foreign, "search": search,
+            "foreign_hours": foreign_hours}
 
 
 def _strip_fence(s: str) -> str:
@@ -264,24 +327,27 @@ def _too_similar(a: str, b: str, thresh: float = 0.32) -> bool:
     return len(x & y) / len(x | y) >= thresh
 
 
-def _inputs_snapshot(flash: list[dict], search: list[dict]) -> list[dict]:
+def _inputs_snapshot(flash: list[dict], search: list[dict],
+                     foreign: list[dict] | None = None) -> list[dict]:
     """本轮输入的定位信息 + 正文快照。
 
-    2026-11-07 老刘要求「把原始 fetch 下来的文章也显示出来」——之前只存
-    标题和链接，想看内容得点出去跳走，等于没存。现在多存一列 `body`：
+    - 快讯 F*：财联社电报正文（已截 1500）
+    - 境外 O*：RSS/X 摘要（截 1500）
+    - 搜索 S*：DeepSeek `/v1/tools/search` 返回的 summary
 
-    - 快讯：财联社电报正文（已截 1500）
-    - 搜索：DeepSeek `/v1/tools/search` 返回的 `summary`（600~800 字，
-      是那一篇的正文摘要，不是全网总结）
-
-    体积：约 20KB/轮 × 24 轮/天 ≈ 480KB/天，由 `_prune_old_inputs` 在
-    3 天后剥掉 body 只留定位信息，稳态几 MB。
+    体积由 `_prune_old_inputs` 在 3 天后剥掉 body 只留定位信息。
     """
     out: list[dict] = []
     for i, x in enumerate(flash, 1):
         out.append({"ref": f"F{i}", "kind": "快讯", "ts": int(x.get("ts") or 0),
                     "title": str(x.get("title") or "")[:140],
                     "site": "财联社电报", "url": "",
+                    "body": str(x.get("body") or "")[:1500]})
+    for i, x in enumerate(foreign or [], 1):
+        out.append({"ref": f"O{i}", "kind": "境外", "ts": int(x.get("ts") or 0),
+                    "title": str(x.get("title") or "")[:140],
+                    "site": str(x.get("site") or "境外"),
+                    "url": str(x.get("url") or ""),
                     "body": str(x.get("body") or "")[:1500]})
     for i, x in enumerate(search, 1):
         out.append({"ref": f"S{i}", "kind": "搜索", "ts": int(x.get("ts") or 0),
@@ -367,15 +433,20 @@ def input_detail(db: Session, ref: str, run_id: int | None = None,
     return out
 
 
-def _ref_map(flash: list[dict], search: list[dict]) -> dict[str, dict]:
-    """输入编号 → 人类可读来源。F=财联社快讯，S=DeepSeek 搜索。
+def _ref_map(flash: list[dict], search: list[dict],
+             foreign: list[dict] | None = None) -> dict[str, dict]:
+    """输入编号 → 人类可读来源。F=快讯，O=境外日爬，S=DeepSeek 搜索。
 
     让模型回填编号、由代码翻译成来源，而不是让它直接写「据财联社」——
-    后者模型会编（把 S 条目写成「财联社」是常见幻觉）。
+    后者模型会编（把 S/O 条目写成「财联社」是常见幻觉）。
     """
     m: dict[str, dict] = {}
     for i, _ in enumerate(flash, 1):
         m[f"F{i}"] = {"kind": "快讯", "label": "财联社电报", "url": ""}
+    for i, x in enumerate(foreign or [], 1):
+        site = (x.get("site") or "境外").strip()
+        m[f"O{i}"] = {"kind": "境外", "label": site,
+                      "url": x.get("url") or ""}
     for i, x in enumerate(search, 1):
         site = (x.get("site") or "网页").strip()
         m[f"S{i}"] = {"kind": "搜索", "label": f"DeepSeek · {site}",
@@ -385,7 +456,7 @@ def _ref_map(flash: list[dict], search: list[dict]) -> dict[str, dict]:
 
 def _resolve_src(raw, ref_map: dict[str, dict]) -> dict:
     """把模型给的 "F2,S1" 解析成 {kind, label, url, refs}。"""
-    refs = re.findall(r"[FSfs]\s*\d+", str(raw or ""))
+    refs = re.findall(r"[FSOfso]\s*\d+", str(raw or ""))
     refs = [r.replace(" ", "").upper() for r in refs]
     known = [(r, ref_map[r]) for r in refs if r in ref_map]
     if not known:
@@ -524,10 +595,23 @@ def _today_themes(db: Session, limit: int = 40) -> tuple[list[str], int]:
 
 def _build_prompt(flash: list[dict], search: list[dict], minutes: int,
                   recent: list[str] | None = None,
-                  n_prev: int = 0) -> str:
+                  n_prev: int = 0,
+                  foreign: list[dict] | None = None,
+                  foreign_hours: float = 1.0) -> str:
     flash_corpus = "\n".join(
         f"[F{i}] {x['title']}｜{x['body'][:300]}" for i, x in enumerate(flash, 1)
     ) or "（本轮无新快讯）"
+    foreign = foreign or []
+    fh = max(1, int(round(foreign_hours)))
+    if foreign:
+        foreign_corpus = "\n".join(
+            f"[O{i}] {x['title']}｜{x.get('site') or '境外'}｜{str(x.get('body') or '')[:300]}"
+            for i, x in enumerate(foreign, 1)
+        )
+        foreign_block = FOREIGN_BLOCK.format(
+            hours=fh, n_foreign=len(foreign), corpus=foreign_corpus)
+    else:
+        foreign_block = FOREIGN_BLOCK_EMPTY.format(hours=fh)
     if search:
         search_corpus = "\n".join(
             f"[S{i}] {x['title']}（{x['site'] or '-'} {x['ts'] and datetime.fromtimestamp(x['ts']).strftime('%m-%d') or '-'}）"
@@ -546,6 +630,7 @@ def _build_prompt(flash: list[dict], search: list[dict], minutes: int,
         recent_block = ""
     return USER_TEMPLATE.format(minutes=minutes, n_flash=len(flash),
                                 flash_corpus=flash_corpus,
+                                foreign_block=foreign_block,
                                 search_block=search_block,
                                 recent_block=recent_block)
 
@@ -557,10 +642,15 @@ def run_brief(db: Session, minutes: int = 60,
 
     inputs = collect_inputs(minutes=minutes, use_search=use_search)
     flash, search = inputs["flash"], inputs["search"]
-    rec = HotBrief(created_at=datetime.now(), n_input=len(flash) + len(search),
+    foreign = inputs.get("foreign") or []
+    foreign_hours = float(inputs.get("foreign_hours") or max(minutes / 60.0, 1.0))
+    rec = HotBrief(created_at=datetime.now(),
+                   n_input=len(flash) + len(foreign) + len(search),
                    n_flash=len(flash), n_search=len(search),
+                   n_foreign=len(foreign),
                    n_items=0, items_json="[]",
-                   inputs_json=json.dumps(_inputs_snapshot(flash, search), ensure_ascii=False),
+                   inputs_json=json.dumps(
+                       _inputs_snapshot(flash, search, foreign), ensure_ascii=False),
                    model="")
     # 让「全部资讯」页里也有 DeepSeek 这个分类：搜索结果本就是原始资讯，
     # 之前只存在 hot_brief.inputs_json 里，无法按来源检索。
@@ -578,8 +668,8 @@ def run_brief(db: Session, minutes: int = 60,
         except Exception as e:  # noqa: BLE001
             logger.info("灌入 DeepSeek 结果失败：%s", str(e)[:60])
 
-    if not flash and not search:
-        rec.error = "窗口内没有任何资讯（快讯与搜索均为空）"
+    if not flash and not foreign and not search:
+        rec.error = "窗口内没有任何资讯（快讯 / 境外 / 搜索均为空）"
         db.add(rec)
         db.commit()
         return {"ok": False, "error": rec.error, "id": rec.id}
@@ -596,7 +686,8 @@ def run_brief(db: Session, minutes: int = 60,
         rec.window_end = datetime.fromtimestamp(flash[-1]["ts"])
 
     recent, n_prev = _today_themes(db)
-    prompt = _build_prompt(flash, search, minutes, recent=recent, n_prev=n_prev)
+    prompt = _build_prompt(flash, search, minutes, recent=recent, n_prev=n_prev,
+                           foreign=foreign, foreign_hours=foreign_hours)
 
     try:
         text = chat(cfg, [
@@ -614,7 +705,7 @@ def run_brief(db: Session, minutes: int = 60,
         db.commit()
         return {"ok": False, "error": rec.error, "id": rec.id}
 
-    items, mainline, summary = _parse(text, _ref_map(flash, search))
+    items, mainline, summary = _parse(text, _ref_map(flash, search, foreign))
     # 代码兜底去重：与**今日累计**主题高度相似的丢掉（提示词约束不住时这里收口）。
     # 只跟「上一轮」比是不够的 —— 会让搜索类和快讯类条目轮流复活（见 _today_themes 注释）。
     if items and recent:
@@ -680,6 +771,7 @@ def run_brief(db: Session, minutes: int = 60,
     ran_ok = bool(items) or bool(mainline) or bool(summary)
     return {"ok": ran_ok, "id": rec.id, "n_input": rec.n_input,
             "n_flash": rec.n_flash, "n_search": rec.n_search,
+            "n_foreign": getattr(rec, "n_foreign", 0) or 0,
             "n_items": len(items), "mainline": mainline,
             "summary_len": len(summary), "error": rec.error}
 
@@ -737,15 +829,19 @@ def today_brief(db: Session) -> dict:
 
     # 「未标注」是加来源功能之前生成的旧条目（source_kind 为空），单独计数，
     # 否则四个数字加起来对不上总数，看着像丢数据。
-    split = {"快讯": 0, "搜索": 0, "混合": 0, "未标注": 0}
+    split = {"快讯": 0, "境外": 0, "搜索": 0, "混合": 0, "未标注": 0}
     for it in merged:
         k = it.get("source_kind") or ""
         if "+" in k:
             split["混合"] += 1
+        elif "境外" in k and "快讯" not in k and "搜索" not in k:
+            split["境外"] += 1
         elif "搜索" in k:
             split["搜索"] += 1
         elif "快讯" in k:
             split["快讯"] += 1
+        elif "境外" in k:
+            split["境外"] += 1
         else:
             split["未标注"] += 1
 
@@ -772,6 +868,7 @@ def today_brief(db: Session) -> dict:
         "n_input": last.n_input,
         "n_flash": last.n_flash,
         "n_search": last.n_search,
+        "n_foreign": getattr(last, "n_foreign", 0) or 0,
         "model": last.model,
         "error": "" if merged or summary else (last.error or ""),
     }
@@ -814,6 +911,7 @@ def _to_dict(r: HotBrief, with_body: bool = True) -> dict:
         "n_input": r.n_input,
         "n_flash": r.n_flash,
         "n_search": r.n_search,
+        "n_foreign": getattr(r, "n_foreign", 0) or 0,
         "n_items": r.n_items,
         "items": items,
         "inputs": inputs,

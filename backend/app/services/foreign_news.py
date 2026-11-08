@@ -231,3 +231,37 @@ def sources_status(db: Session, hours: int = 72) -> list[dict[str, Any]]:
             row["configured"] = bool(x_ok)  # 仅布尔，无密钥
         out.append(row)
     return out
+
+
+def digest(db: Session, hours: int = 24, limit: int = 40) -> dict:
+    """境外日摘要：最近 hours 标题列表 + 可选短拼接文本；不强制调 LLM。
+
+    供 WorkBuddy / 人工粘贴 / Reports 链出。1b 交付。
+    """
+    hours = max(0, min(int(hours or 24), 24 * 120))
+    limit = max(1, min(int(limit or 40), 80))
+    got = query_foreign(db, hours=hours, limit=limit, offset=0)
+    items = []
+    for it in got.get("items") or []:
+        items.append({
+            "title": it.get("title") or "",
+            "source": it.get("source") or "",
+            "source_label": it.get("source_label") or "",
+            "published_at": it.get("published_at"),
+            "url": it.get("url") or "",
+            "summary": (it.get("summary") or "")[:200],
+        })
+    lines = [
+        f"- [{x['source_label'] or x['source']}] {x['title']}"
+        for x in items if x.get("title")
+    ]
+    text = "\n".join(lines)
+    return {
+        "hours": hours,
+        "count": len(items),
+        "total": got.get("total", len(items)),
+        "items": items,
+        "text": text,
+        "llm": False,  # 本接口不调 LLM
+    }
+

@@ -36,8 +36,8 @@ VENDOR_PRESETS: list[dict] = [
     {
         "vendor": "deepseek", "label": "DeepSeek",
         "base_url": "https://api.deepseek.com/v1",
-        "models": ["deepseek-chat", "deepseek-reasoner"],
-        "note": "OpenAI 兼容，性价比高",
+        "models": ["deepseek-flash", "deepseek-v4-pro"],
+        "note": "默认 deepseek-flash；重活可回退 deepseek-v4-pro。旧 deepseek-chat/reasoner 已退役",
     },
     {
         "vendor": "ark", "label": "火山方舟 · 豆包",
@@ -73,6 +73,9 @@ VENDOR_PRESETS: list[dict] = [
 
 # .env 迁移出来的记录用这个名字，便于用户分辨来源
 ENV_PROVIDER_NAME = "来自 .env"
+
+# 已从预设移除的旧 DeepSeek 模型名；不自动改写用户 DB，连通失败时提示手改。
+RETIRED_DEEPSEEK_MODELS = frozenset({"deepseek-chat", "deepseek-reasoner"})
 
 
 # ============ 脱敏 ============
@@ -308,9 +311,12 @@ def test_connection(cfg: dict, *, timeout: int = 20) -> dict:
             "model": cfg.get("model"), "reply": (msg or "").strip()[:80],
         }
     except LLMUnavailable as e:
+        err = str(e)
+        if (cfg.get("model") or "").strip() in RETIRED_DEEPSEEK_MODELS:
+            err = f"{err}（旧模型已退役，请改为 deepseek-flash）"
         return {
             "ok": False, "ms": int((time.time() - t0) * 1000),
-            "model": cfg.get("model"), "error": str(e),
+            "model": cfg.get("model"), "error": err,
         }
 
 
