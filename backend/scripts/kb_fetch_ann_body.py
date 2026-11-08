@@ -33,6 +33,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -78,18 +79,33 @@ def fetch_body(art_code: str, timeout: int = 20) -> tuple[str, bool]:
 
 
 def _one(row):
-    """抓单条：返回 (doc_id, body, status)。网络异常由调用方计数。"""
+    """抓单条：返回 (doc_id, body, status)。
+
+    ⚠️ 东财对高频请求返回 **HTTP 567**（非标准状态码，就是限流）。
+    遇到 567/429 先退避 5 秒再重试一次，仍失败才记 fail —— 否则并发一高，
+    几千条会被瞬间打成失败（2026-11-08 实测：并发 10 时 3490 条 fail）。
+    """
     doc_id, src_id = row[0], row[1]
     art = str(src_id or "").replace("ann_", "").strip()
     if not art.startswith("AN"):
         return doc_id, "", "skip"
-    try:
-        body, pdf_only = fetch_body(art)
-    except Exception:  # noqa: BLE001
-        return doc_id, "", "fail"
-    if body:
-        return doc_id, body, "ok"
-    return doc_id, "", ("pdf_only" if pdf_only else "no_content")
+    for attempt in range(2):
+        try:
+            body, pdf_only = fetch_body(art)
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 567) and attempt == 0:
+                time.sleep(5)
+                continue
+            return doc_id, "", "fail"
+        except Exception:  # noqa: BLE001
+            if attempt == 0:
+                time.sleep(2)
+                continue
+            return doc_id, "", "fail"
+        if body:
+            return doc_id, body, "ok"
+        return doc_id, "", ("pdf_only" if pdf_only else "no_content")
+    return doc_id, "", "fail"
 
 
 def main() -> int:
@@ -97,7 +113,7 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=500)
     ap.add_argument("--since-days", type=int, default=0,
                     help="只补最近 N 天发布的公告（0=不限）")
-    ap.add_argument("--workers", type=int, default=8, help="并发抓取数")
+    ap.add_argument("--workers", type=int, default=4, help="并发抓取数（>5 易被东财限流）")
     ap.add_argument("--min-len", type=int, default=100,
                     help="body_len 小于此值视为只有标题")
     args = ap.parse_args()

@@ -255,7 +255,10 @@ def _run_text_update() -> None:
         return
     try:
         proc = run_with_timeout(
-            [sys.executable, script, "--limit", "1200", "--workers", "8"],
+            # 并发必须低：东财对高频请求返回 HTTP 567 / 直接断连。
+            # 实测并发 10 打几千条就被封，并发 3 稳定。每天补 1000 条，
+            # 两万条历史靠每日调度慢慢消化，不追求一次性补齐。
+            [sys.executable, script, "--limit", "1000", "--workers", "3"],
             env=env, cwd=backend, timeout=900,
         )
         tail = (proc.stdout or "").strip().split("\n")[-1][:200]
