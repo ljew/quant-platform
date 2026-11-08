@@ -1479,3 +1479,42 @@ class FundNav(Base):
 
     def __repr__(self) -> str:
         return f"<FundNav {self.ts_code} {self.nav_date}>"
+
+# ───────────── 券商研报（2026-11-08 补）─────────────
+# 为什么值得单独建表：这是唯一同时带「评级 + 三年盈利预测 + 机构」的公开源。
+# 盈利预测修正是 A 股最强的单因子之一，而此前平台完全没有这类数据。
+
+class ResearchReport(Base):
+    """个股研报元数据（东方财富研报中心 reportapi）。
+
+    正文在 PDF 里（`pdf.dfcfw.com/pdf/H3_{info_code}_1.pdf`），本表只存结构化
+    字段 + info_code：先把「谁在什么时候把评级/盈利预测改成了什么」这个最有用
+    的部分拿下来，正文按需再抓。
+
+    ⚠️ `publish_date` 接口给的是 `2026-11-08 00:00:00.000`，统一截成 date。
+    """
+
+    __tablename__ = "research_report"
+
+    info_code: Mapped[str] = mapped_column(String(32), primary_key=True)
+    title: Mapped[str] = mapped_column(String(300), default="")
+    stock_code: Mapped[str] = mapped_column(String(8), index=True, default="")
+    stock_name: Mapped[str] = mapped_column(String(32), default="")
+    org_code: Mapped[str] = mapped_column(String(16), default="")
+    org_name: Mapped[str] = mapped_column(String(64), default="")
+    org_sname: Mapped[str] = mapped_column(String(32), default="")     # 机构简称
+    publish_date: Mapped[date] = mapped_column(Date, index=True)
+    rating: Mapped[str] = mapped_column(String(16), default="")       # 买入/增持/中性…
+    industry: Mapped[str] = mapped_column(String(32), default="")
+    # 三年盈利预测（EPS 元 / PE 倍）。用于「预测上调幅度」因子。
+    eps_this: Mapped[float | None] = mapped_column(Float, nullable=True)
+    eps_next: Mapped[float | None] = mapped_column(Float, nullable=True)
+    eps_next2: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pe_this: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pe_next: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pe_next2: Mapped[float | None] = mapped_column(Float, nullable=True)
+    url: Mapped[str] = mapped_column(String(300), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+    def __repr__(self) -> str:
+        return f"<ResearchReport {self.stock_name} {self.rating} {self.publish_date}>"

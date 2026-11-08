@@ -239,10 +239,13 @@ def insert_docs(conn, df: pd.DataFrame) -> int:
             "trade_date_applicable", "market_scope", "link_status", "extract_status",
             "quality_flag", "raw_json"]
     payload = df[cols].astype(object).where(pd.notna(df[cols]), None).to_dict("records")
+    # ⚠️ 每批不能太大：17 个字段 × 2000 行 = 34000 个绑定变量，超过 SQLite 的
+    # 32766 上限会直接报错；而且单条事务持锁太久，会把并发的写者饿死
+    # （2026-11-08 实测：和公告正文回补同时跑就是 database is locked）。
     n = 0
-    for i in range(0, len(payload), 2000):
-        conn.execute(text(INSERT_SQL), payload[i:i + 2000])
-        n += len(payload[i:i + 2000])
+    for i in range(0, len(payload), 500):
+        conn.execute(text(INSERT_SQL), payload[i:i + 500])
+        n += len(payload[i:i + 500])
     conn.commit()
     return n
 
