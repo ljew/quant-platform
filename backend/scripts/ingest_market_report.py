@@ -138,15 +138,19 @@ def parse_report(path: Path) -> dict:
                 bullets.append(b.strip())
     summary = " | ".join(bullets)[:1500]
 
-    # 第 8 节资讯条数（只数主表 | 1 | 形式的行）
-    sec8 = re.search(r"^## 8\..*?$(.*?)(?=^## 9\.)", text, re.M | re.S)
-    news_count = len(re.findall(r"^\|\s*\d+\s*\|", sec8.group(1), re.M)) if sec8 else 0
+    # 资讯条数：按**节标题**定位，不依赖编号
+    # （v1.4 起资讯是第 6 节，v1.2/v1.3 是第 8 节；写死编号会在改版后静默算成 0）
+    sec_news = re.search(r"^## \d+\. 资讯简述.*?$(.*?)(?=^## \d+\. )", text, re.M | re.S)
+    news_count = len(re.findall(r"^\|\s*\d+\s*\|", sec_news.group(1), re.M)) if sec_news else 0
 
     # 兼容「冲突字段：6」与「冲突字段数：6」两种写法（模板第 6 节用的是后者）
     cm = re.search(r"冲突字段(?:数)?[：:]\s*(\d+)", text)
-    conflict_count = int(cm.group(1)) if cm else text.count("[源冲突⚠]")
+    # 兜底：数**表格行**里的标记（正文叙述里的标记不算，避免重复计数）
+    _rows = [ln for ln in text.splitlines() if ln.strip().startswith("|")]
+    conflict_count = int(cm.group(1)) if cm else sum("[源冲突⚠]" in ln for ln in _rows)
     mm = re.search(r"计数[：:]\s*(\d+)\s*项", text)
-    missing_count = int(mm.group(1)) if mm else 0
+    # v1.4 起不再有缺失清单表，改为数表格行里的 [待补⚠]（每个缺失字段占一行）
+    missing_count = int(mm.group(1)) if mm else sum("[待补⚠]" in ln for ln in _rows)
 
     tags = ["市场资讯", slot, "休市" if "休市" in status else "交易日"]
     for kw, tag in (("股票", "股票"), ("债券", "债券"), ("利率", "利率"),
