@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import TodayPage from "./pages/TodayPage";
 import NewsFeedPage from "./pages/NewsFeedPage";
+import ForeignNewsPage from "./pages/ForeignNewsPage";
 import ReportsPage from "./pages/ReportsPage";
 import MarketPage from "./pages/MarketPage";
 import BacktestOptimizePage from "./pages/BacktestOptimizePage";
@@ -30,6 +31,8 @@ const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; lab
     { key: "today", label: "今日观点" },
     // 全部资讯：各来源原文归一（原始信息）。首页只放简报（判断），原文来这看。
     { key: "news", label: "全部资讯" },
+    // 境外资讯：RSS + 可选 X 日爬（OPS-FN-1a）
+    { key: "foreign-news", label: "境外资讯" },
     // 报告：四时段跨市场资讯简报，生成即入库（market_reports），可检索可读全文
     { key: "reports", label: "报告" },
     { key: "market", label: "行情看板" },
@@ -65,6 +68,8 @@ const LEGACY_TAB_MAP: Record<string, string> = {
   etf: "etfflow",
   report: "reports",      // 市场资讯报告
   market_report: "reports",
+  foreign: "foreign-news",
+  overseas_news: "foreign-news",
 };
 
 function findHub(sub: string): { hub: HubKey; sub: string } | null {
@@ -85,6 +90,7 @@ function HubContent({ sub }: { sub: string }) {
   switch (sub) {
     case "today": return <TodayPage />;
     case "news": return <NewsFeedPage />;
+    case "foreign-news": return <ForeignNewsPage />;
     case "reports": return <ReportsPage />;
     case "market": return <MarketPage />;
     case "etfflow": return <EtfFlowPage />;

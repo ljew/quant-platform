@@ -1063,6 +1063,41 @@ export interface NewsSourceStat {
   latest: string | null;
 }
 
+/** 境外源状态条（OPS-FN-1a）；密钥只回传 configured 布尔 */
+export interface ForeignSourceStatus {
+  source: string;
+  label: string;
+  kind?: string;
+  enabled: boolean;
+  last_ok_at?: string | null;
+  last_count?: number;
+  last_error?: string;
+  status: "ok" | "degraded" | "unconfigured" | "fail" | "disabled" | string;
+  count?: number;
+  latest?: string | null;
+  configured?: boolean;  // 仅 fn_x
+}
+
+export interface ForeignSyncResult {
+  added: number;
+  status: string;
+  error?: string;
+}
+
+export interface ForeignSyncStatus {
+  enabled: boolean;
+  last_run_at?: string | null;
+  last_result?: string | null;
+  last_error?: string | null;
+  runs_total?: number;
+  last_slot?: string | null;
+  slots?: string[];
+  timezone?: string;
+  done_today?: string[];
+  next_slot?: string;
+  sources?: Record<string, { added?: number; status?: string; error?: string }>;
+}
+
 export const newsApi = {
   feed: (refresh = false) => get<NewsFeed>(`/news/feed${refresh ? "?refresh=true" : ""}`),
   stock: (symbol: string) =>
@@ -1081,6 +1116,50 @@ export const newsApi = {
   feedSources: (hours = 0) => get<NewsSourceStat[]>(`/news/sources?hours=${hours}`),
   /** 手动触发一次同步 */
   feedSync: () => post<Record<string, number>>("/news/sync", {}),
+
+  /** 境外资讯列表 */
+  foreignItems: (p: {
+    sources?: string;
+    q?: string;
+    hours?: number;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    if (p.sources) qs.set("sources", p.sources);
+    if (p.q) qs.set("q", p.q);
+    if (p.hours !== undefined) qs.set("hours", String(p.hours));
+    qs.set("limit", String(p.limit ?? 60));
+    qs.set("offset", String(p.offset ?? 0));
+    return get<{ items: NewsFeedItem[]; total: number; has_more: boolean }>(
+      `/news/foreign/items?${qs}`,
+    );
+  },
+  /** 境外源状态条 */
+  foreignSources: (hours = 72) =>
+    get<ForeignSourceStatus[]>(`/news/foreign/sources?hours=${hours}`),
+  /** 手动全源同步（整批 ≤90s；前端超时 100s） */
+  foreignSync: async () => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 100_000);
+    try {
+      const r = await fetch(`${BASE}/news/foreign/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+        signal: ctrl.signal,
+      });
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({ detail: r.statusText }));
+        throw new Error(e.detail || r.statusText);
+      }
+      return (await r.json()) as Record<string, ForeignSyncResult>;
+    } finally {
+      clearTimeout(timer);
+    }
+  },
+  /** 境外调度器状态 */
+  foreignSyncStatus: () => get<ForeignSyncStatus>("/news/foreign/sync-status"),
 };
 
 // —— 自动研究闭环（/auto/*）——
