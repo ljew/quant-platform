@@ -30,6 +30,33 @@ from app.core.engine.factor_library import (
 )
 
 
+def _pit_fund_attrs(snaps, as_of: str) -> dict:
+    """Point-in-time 成长/质量三字段：roe / revenue_yoy / profit_yoy（W45-4）。
+
+    snaps: [{report_date: date, roe, revenue_yoy, profit_yoy}, ...]；as_of: 'YYYY-MM-DD'。
+    取 report_date <= as_of 的**最近一期**；无则返回空 dict（调用方勿回退 stocks 最新快照）。
+
+    数据源：FundamentalsHistory（仅有 report_date）。与 PEAD 同 residual：
+    公告日 ann_date 前视可能仍在，迁 ann_date 属中期项，本轮诚实披露。
+    """
+    if not snaps:
+        return {}
+    try:
+        ad = datetime.strptime(as_of, "%Y-%m-%d").date()
+    except Exception:
+        return {}
+    pts = [s for s in snaps if hasattr(s.get("report_date"), "year") and s["report_date"] <= ad]
+    if not pts:
+        return {}
+    pts.sort(key=lambda x: x["report_date"])
+    cur = pts[-1]
+    out = {}
+    for k in ("roe", "revenue_yoy", "profit_yoy"):
+        if cur.get(k) is not None:
+            out[k] = cur[k]
+    return out
+
+
 def _pit_earnings_surprise(snaps, as_of: str):
     """Point-in-time 盈余惊喜（PEAD 核心）：最新报告期利润增速 − 历史利润增速均值。
 
@@ -166,16 +193,19 @@ class EnhancedFactorStrategy(PortfolioStrategy):
             # 截面属性（估值/市值/质量/成长）
             attrs = ctx.engine.attributes.get(sym, {}) or {}
             # point-in-time 盈余惊喜（PEAD）：仅用报告期<=今日的快照，杜绝前视
-            es = _pit_earnings_surprise(ctx.engine.fundamentals.get(sym), date)
+            fund_snaps = ctx.engine.fundamentals.get(sym)
+            es = _pit_earnings_surprise(fund_snaps, date)
+            # W45-4：成长三因子截面 as-of，禁止 attrs 上 stocks 最新快照
+            fund_attrs = _pit_fund_attrs(fund_snaps, date)
             ns = {
                 "c_m": closes_m, "c_r": closes_r, "c_v": closes_v,
                 "c_b": closes_b, "c_t": closes_t, "mkt_b": mkt_b,
                 "pe_ttm": attrs.get("pe_ttm"),
                 "pb": attrs.get("pb"),
                 "market_cap": attrs.get("market_cap"),
-                "roe": attrs.get("roe"),
-                "revenue_yoy": attrs.get("revenue_yoy"),
-                "profit_yoy": attrs.get("profit_yoy"),
+                "roe": fund_attrs.get("roe"),
+                "revenue_yoy": fund_attrs.get("revenue_yoy"),
+                "profit_yoy": fund_attrs.get("profit_yoy"),
                 "earnings_surprise": es,
                 "industry": attrs.get("industry"),
             }

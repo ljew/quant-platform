@@ -350,11 +350,12 @@ def _core_universe(db: Session) -> list[str]:
 
 
 def _attrs_map(db: Session, syms: list[str]) -> dict:
-    """静态属性（行业/质量/成长）—— 这些来自 stock_basic / 财报，取最新值即可。
+    """静态属性底稿（行业 + stocks 最新估值/成长快照）。
 
-    估值与市值**不在这里**：`_attrs_timeline` 提供的 PIT 时序才是正确口径。
-    保留 market_cap/pe_ttm/pb 仅为向后兼容（旧表达式引用时给出最新值，
-    并在 factor_stats 里标注口径）。
+    估值与市值：截面上必须经 `_attrs_asof`（StockValuationDaily）做 PIT 时序覆盖。
+    成长三字段 roe/revenue_yoy/profit_yoy：截面上必须经 `_fund_asof`
+    （FundamentalsHistory，W45-4）覆盖——禁止把本函数返回的最新快照
+    直接复用到历史截面（前视）。industry 仍可取最新。
     """
     rows = db.execute(
         select(Stock.symbol, Stock.industry, Stock.market_cap, Stock.pe_ttm, Stock.pb,
@@ -459,6 +460,72 @@ def _es_asof(tl: dict[str, list[tuple[date, float]]], sym: str, as_of: date) -> 
 
 # 设计稿别名：_es_timeline ≡ _es_map（返回时序，禁止当静态值用）
 _es_timeline = _es_map
+
+_GROWTH_KEYS = ("roe", "revenue_yoy", "profit_yoy")
+
+
+def _fund_timeline(db: Session, syms: list[str]) -> dict[str, list[tuple[date, dict]]]:
+    """预载成长三因子时序（FundamentalsHistory，按 report_date 升序）。
+
+    返回 {symbol: [(report_date, {roe, revenue_yoy, profit_yoy}), ...]}。
+    真正取值必须经 `_fund_asof` 按截面日过滤——禁止把 stocks 最新快照
+    复用到历史截面（W45-4 / P1-1）。
+    """
+    if not syms:
+        return {}
+    rows = db.execute(
+        select(
+            FundamentalsHistory.symbol,
+            FundamentalsHistory.report_date,
+            FundamentalsHistory.roe,
+            FundamentalsHistory.revenue_yoy,
+            FundamentalsHistory.profit_yoy,
+        )
+        .where(FundamentalsHistory.symbol.in_(syms))
+        .order_by(FundamentalsHistory.symbol, FundamentalsHistory.report_date)
+    ).all()
+    out: dict[str, list[tuple[date, dict]]] = {}
+    for sym, rd, roe, rev, prof in rows:
+        if rd is None:
+            continue
+        fields = {}
+        if roe is not None:
+            fields["roe"] = float(roe)
+        if rev is not None:
+            fields["revenue_yoy"] = float(rev)
+        if prof is not None:
+            fields["profit_yoy"] = float(prof)
+        if not fields:
+            continue
+        out.setdefault(sym, []).append((rd, fields))
+    return out
+
+
+def _fund_asof(tl: dict[str, list[tuple[date, dict]]], sym: str, as_of: date) -> dict | None:
+    """截面 as-of：取 report_date ≤ as_of 最近一期的 roe/yoy。
+
+    对齐 multi_factor._pit_fund_attrs；无可见报告则 None（调用方应清空
+    stocks 最新值，禁止前视回退）。
+    """
+    from app.core.strategies.multi_factor import _pit_fund_attrs
+
+    pts = tl.get(sym) or []
+    if not pts:
+        return None
+    snaps = [{"report_date": rd, **fields} for rd, fields in pts]
+    as_of_s = as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of)
+    out = _pit_fund_attrs(snaps, as_of_s)
+    return out or None
+
+
+def _apply_fund_asof(attrs: dict, fund_tl: dict, sym: str, snap: date) -> dict:
+    """覆盖 attrs 成长三字段为 PIT；无历史则置 None（禁止 Stock 最新前视）。"""
+    for k in _GROWTH_KEYS:
+        attrs[k] = None
+    fv = _fund_asof(fund_tl, sym, snap)
+    if fv:
+        attrs.update(fv)
+    return attrs
 
 
 def _closes_for(db: Session, syms: list[str], sd: date, ed: date) -> dict[str, list[float]]:
@@ -584,6 +651,8 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
         if progress:
             progress(0.06, "⚠️ 估值口径=最新快照（有前视）；请回填 stock_valuation_daily")
     es_map = _es_map(db, syms)
+    # W45-4：成长三因子 FundamentalsHistory 时序（report_date as-of）
+    fund_tl = _fund_timeline(db, syms)
     # 财务（PIT 口径）：一次全量预载到内存（14 万行 ≈ 数 MB），
     # 之后按「公告日 ≤ 截面日」逐点选取，避免前视。
     fin_hist = fin_hist_map(db.execute(
@@ -697,6 +766,8 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
                 _pv = _attrs_asof(attrs_tl, sym, snap)
                 if _pv:
                     a.update(_pv)
+            # W45-4：成长三因子截面 as-of（无历史则清空，禁止 Stock 最新前视）
+            _apply_fund_asof(a, fund_tl, sym, snap)
             ns = make_ns(
                 seg, mkt_b, a,
                 news=news_lookup(sym, snap) if news_lookup else None,
@@ -765,7 +836,7 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
     corr_table = _corr_with_existing(
         db, expr, syms, attrs, es_map, aligned, axis_dates, bench_aligned,
         vol_aligned=vol_aligned, amt_aligned=amt_aligned,
-        fin_hist=fin_hist, news_lookup=news_lookup,
+        fin_hist=fin_hist, news_lookup=news_lookup, fund_tl=fund_tl,
     )
 
     # 有效性评级（含多重检验校正：批量挖掘时抬高 t 门槛）
@@ -853,7 +924,7 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
 
 def _corr_with_existing(db, expr, syms, attrs, es_map, aligned, axis_dates, bench_aligned,
                         vol_aligned=None, amt_aligned=None, fin_hist=None,
-                        news_lookup=None) -> dict:
+                        news_lookup=None, fund_tl=None) -> dict:
     """最新截面：新因子与 factor_daily 现有 14 因子 Spearman 相关。"""
     latest = db.execute(
         select(FactorDaily.trade_date).order_by(FactorDaily.trade_date.desc()).limit(1)
@@ -892,8 +963,11 @@ def _corr_with_existing(db, expr, syms, attrs, es_map, aligned, axis_dates, benc
         mkt_b = bench_aligned[i0: idx + 1][-len(seg):]
         if len(mkt_b) != len(seg):
             continue
+        a = dict(attrs.get(sym, {}) or {})
+        if fund_tl is not None:
+            _apply_fund_asof(a, fund_tl, sym, snap)
         ns = make_ns(
-            seg, bench_aligned[i0: idx + 1], attrs.get(sym, {}) or {},
+            seg, bench_aligned[i0: idx + 1], a,
             news=news_lookup(sym, snap) if news_lookup else None,
             esv=_es_asof(es_map, sym, snap), vols=vseg, amts=aseg,
             fin=fin_asof(fin_hist, sym, snap),

@@ -162,7 +162,8 @@ def build_context(db: Session, start: str, end: str, forward: int, step: int,
                   pool_size: int | None = 200) -> dict:
     """一次性加载评估所需数据（多候选共享）。pool_size 抽样加速。"""
     from app.services.factor_mining import (_core_universe, _attrs_map, _es_map, _es_asof,
-                                           _dates_in_range, _attrs_timeline, _attrs_asof)
+                                           _dates_in_range, _attrs_timeline, _attrs_asof,
+                                           _fund_timeline, _apply_fund_asof)
 
     ed = date.fromisoformat(end) if end else date.today()
     sd = date.fromisoformat(start) if start else ed - timedelta(days=400)
@@ -176,6 +177,7 @@ def build_context(db: Session, start: str, end: str, forward: int, step: int,
     # 估值 PIT 时序（B1，2026-10-08）：GP 侧同样修复「2019 截面用 2026 年 PE」
     attrs_tl = _attrs_timeline(db, syms, sd, ed)
     es_map = _es_map(db, syms)
+    fund_tl = _fund_timeline(db, syms)
     load_from = sd - timedelta(days=300)
 
     # 财务（PIT）：全量预载一次，按公告日逐截面选取
@@ -272,6 +274,7 @@ def build_context(db: Session, start: str, end: str, forward: int, step: int,
                     _pv = _attrs_asof(attrs_tl, sym, snap)
                     if _pv:
                         a.update(_pv)
+                _apply_fund_asof(a, fund_tl, sym, snap)
                 ns = make_ns(seg, bench_aligned[i0: idx + 1], a,
                              esv=_es_asof(es_map, sym, snap), vols=vseg, amts=aseg,
                              fin=fin_asof(fin_hist, sym, snap))
@@ -300,6 +303,7 @@ def build_context(db: Session, start: str, end: str, forward: int, step: int,
 
     return {
         "syms": syms, "attrs": attrs, "attrs_tl": attrs_tl, "es_map": es_map,
+        "fund_tl": fund_tl,
         "aligned": aligned,
         "vol_aligned": vol_aligned, "amt_aligned": amt_aligned, "fin_hist": fin_hist,
         "axis_dates": axis_dates, "bench_aligned": bench_aligned, "snap_pairs": snap_pairs,
@@ -355,7 +359,7 @@ def evaluate_candidate(expr: str, ctx: dict, groups: int,
     # ⚠️ 必须在这里导入：_attrs_asof 只在 build_context 内局部导入，
     # 本函数作用域没有它 → 一旦 ctx 带 attrs_tl（有属性时间线时必然带）
     # 就抛 NameError，整批 GP 候选全灭（2026-11-02 pyflakes 扫出）。
-    from app.services.factor_mining import _attrs_asof, _es_asof
+    from app.services.factor_mining import _attrs_asof, _es_asof, _apply_fund_asof
 
     ok, err, _ = validate_expr(expr)
     if not ok:
@@ -394,6 +398,7 @@ def evaluate_candidate(expr: str, ctx: dict, groups: int,
                 _pv = _attrs_asof(ctx["attrs_tl"], sym, snap)
                 if _pv:
                     a.update(_pv)
+            _apply_fund_asof(a, ctx.get("fund_tl") or {}, sym, snap)
             ns = make_ns(seg, bench_seg_raw, a,
                          news=ctx["news_lookup"](sym, snap),
                          esv=_es_asof(ctx["es_map"], sym, snap), vols=vseg, amts=aseg,
