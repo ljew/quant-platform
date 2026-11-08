@@ -3,6 +3,7 @@
 - GET  /factor/functions          表达式函数库与变量参考（前端提示）
 - POST /factor/validate           校验表达式（受限命名空间试算）
 - POST /factor/mine               因子挖掘（同步，返回检验报告；落库可查）
+- POST /factor/mine/horizons      多 horizon IC 热力（复用 mine_factor）
 - GET  /factor/mine/results       历史挖掘结果列表
 - GET  /factor/mine/results/{id}  挖掘结果详情
 - POST /factor/mine/results/{id}/delete  删除
@@ -83,6 +84,17 @@ class MinePayload(BaseModel):
     groups: int = Field(5, ge=2, le=10)
     forward: int = Field(20, ge=1, le=60)
     force: bool = Field(False, description="忽略重复表达式提示，强制重算并另存一条记录")
+
+
+class HorizonsPayload(BaseModel):
+    expr: str = Field(..., min_length=1, description="因子表达式")
+    name: str = "自定义因子"
+    start: str = ""
+    end: str = ""
+    groups: int = Field(5, ge=2, le=10)
+    forwards: list[int] = Field(default_factory=lambda: [5, 10, 20, 40],
+                                description="未来收益窗口列表")
+    force: bool = False
 
 
 @router.get("/functions")
@@ -187,6 +199,50 @@ def mine(payload: MinePayload, db: Session = Depends(get_db)):
     db.refresh(row)
     result["id"] = row.id
     return result
+
+
+@router.post("/mine/horizons")
+def mine_horizons(payload: HorizonsPayload, db: Session = Depends(get_db)):
+    """多 horizon IC 热力：对每个 forward 复用 mine_factor，只汇总关键指标。
+
+    不落库、不复活 GP。默认 forwards=[5,10,20,40]。
+    """
+    expr = payload.expr.strip()
+    forwards = sorted({int(f) for f in (payload.forwards or [5, 10, 20, 40]) if int(f) >= 1})
+    if len(forwards) < 1:
+        raise HTTPException(status_code=400, detail="forwards 不能为空")
+    if len(forwards) > 8:
+        raise HTTPException(status_code=400, detail="forwards 最多 8 个窗口")
+
+    rows: list[dict] = []
+    for fwd in forwards:
+        result = mine_factor(
+            db, expr, name=payload.name,
+            start=payload.start, end=payload.end,
+            groups=payload.groups, forward=fwd,
+        )
+        if not result.get("ok"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"horizon={fwd} 失败：{result.get('error', '挖掘失败')}",
+            )
+        oos = result.get("oos") or {}
+        rows.append({
+            "horizon": fwd,
+            "ic_mean": result.get("ic_mean"),
+            "icir": result.get("icir"),
+            "t_stat": result.get("t_stat"),
+            "rating": result.get("rating"),
+            "oos": {
+                "verdict": oos.get("verdict") if isinstance(oos, dict) else None,
+                "enabled": oos.get("enabled") if isinstance(oos, dict) else None,
+            },
+            "n_periods": result.get("n_periods"),
+            "pead_pit": result.get("pead_pit"),
+            "valuation_pit": result.get("valuation_pit"),
+            "cost_profile": result.get("cost_profile"),
+        })
+    return {"ok": True, "expr": expr, "name": payload.name, "horizons": rows}
 
 
 @router.post("/mine/{rid}/save")
@@ -358,13 +414,22 @@ def registry_list(db: Session = Depends(get_db), status: str = ""):
 
 @router.post("/registry/register")
 def registry_register(payload: RegistryPayload, db: Session = Depends(get_db)):
-    """登记因子（candidate）；同名重复登记返回已有 id。"""
+    """登记因子（candidate）；同名重复登记返回已有 id。
+
+    W45-lab 门禁：最近一次 mine report 须 OOS 通过且评级优秀/可用；
+    依赖 earnings_surprise 时 pead_pit 不可为 legacy_static。
+    """
     from app.models import FactorRegistry
+    from app.services.factor_lab_gate import assert_enable_allowed
 
     exist = db.execute(select(FactorRegistry).where(
         FactorRegistry.name == payload.name)).scalar()
     if exist:
         return {"ok": True, "id": exist.id, "status": exist.status, "existed": True}
+    try:
+        assert_enable_allowed(db, expr=payload.expr, source_id=payload.source_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     row = FactorRegistry(name=payload.name, expr=payload.expr,
                          direction=payload.direction, category=payload.category,
                          source_id=payload.source_id, ic_mean=payload.ic_mean,
@@ -377,17 +442,26 @@ def registry_register(payload: RegistryPayload, db: Session = Depends(get_db)):
 
 @router.post("/registry/{rid}/toggle")
 def registry_toggle(rid: int, db: Session = Depends(get_db)):
-    """candidate<->enabled 切换；enabled 才进入每日计算。"""
+    """candidate<->enabled 切换；enabled 才进入每日计算。
+
+    W45-lab：切入 enabled 时走与 register 相同的挖掘报告门禁；切出不校验。
+    """
     from app.models import FactorRegistry
+    from app.services.factor_lab_gate import assert_enable_allowed
 
     row = db.get(FactorRegistry, rid)
     if not row:
         raise HTTPException(status_code=404, detail="不存在")
     if row.status == "candidate":
+        try:
+            assert_enable_allowed(db, expr=row.expr, source_id=row.source_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
         row.status = "enabled"
     elif row.status == "enabled":
         row.status = "disabled"
     else:
+        # disabled → candidate（待评估），不启用，无需门禁
         row.status = "candidate"
     db.commit()
     return {"ok": True, "id": rid, "status": row.status}

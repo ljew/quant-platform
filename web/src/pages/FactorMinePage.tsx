@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import EChart from "../components/EChart";
 import HotBriefCard from "../components/HotBriefCard";
 import LlmConfigModal from "../components/LlmConfigModal";
@@ -6,7 +6,7 @@ import { Badge, Btn, Card, KpiCard, PageHeader, inputStyle } from "../components
 import EvalBadges from "../components/EvalBadges";
 import {
   api, AiExplainResult, AiGenerateResult, AiStatus,
-  FactorMineReport, FactorMineSummary, GpMineResult, NewsEventReport,
+  FactorHorizonRow, FactorMineReport, FactorMineSummary, GpMineResult, NewsEventReport,
 } from "../api/client";
 import { useTheme, ThemeColors } from "../theme";
 
@@ -643,7 +643,7 @@ lsof -ti:8000 -sTCP:LISTEN | xargs kill
       </div>
 
       {/* —— 报告 —— */}
-      {report ? <MineReport report={report} colors={colors} onForce={() => runMine(true)} /> : (
+      {report ? <MineReport report={report} colors={colors} start={start} end={end} onForce={() => runMine(true)} /> : (
         <Card colors={colors} pad={40}>
           <div style={{ textAlign: "center", color: colors.muted, fontSize: 13.5, lineHeight: 2 }}>
             输入表达式并点击「开始挖掘」<br />
@@ -719,15 +719,169 @@ function fmtNum(v: number | null | undefined): string {
   return v.toFixed(4);
 }
 
-function MineReport({ report, colors, onForce }: { report: FactorMineReport; colors: ThemeColors; onForce?: () => void }) {
+function MineReport({ report, colors, start, end, onForce }: { report: FactorMineReport; colors: ThemeColors; start: string; end: string; onForce?: () => void }) {
   const fs = report.factor_stats;
+  const [horizons, setHorizons] = useState<FactorHorizonRow[] | null>(null);
+  const [horizonsBusy, setHorizonsBusy] = useState(false);
+  const [horizonsErr, setHorizonsErr] = useState("");
+  const [lifeMsg, setLifeMsg] = useState("");
+  const [regId, setRegId] = useState<number | null>(null);
+  const [regStatus, setRegStatus] = useState<string | null>(null);
+
+  const loadHorizons = useCallback(async () => {
+    setHorizonsBusy(true);
+    setHorizonsErr("");
+    try {
+      const r = await api.factorMineHorizons({
+        expr: report.expr,
+        name: report.name,
+        start,
+        end,
+        forwards: [5, 10, 20, 40],
+        // 与主报告同区间/分组，避免热力与 IC 时序口径漂移
+        groups: report.groups,
+      });
+      setHorizons(r.horizons || []);
+    } catch (e) {
+      setHorizonsErr((e as Error).message);
+      setHorizons(null);
+    } finally {
+      setHorizonsBusy(false);
+    }
+  }, [report.expr, report.name, report.groups, start, end]);
+
+  useEffect(() => {
+    loadHorizons();
+  }, [loadHorizons]);
+
+  useEffect(() => {
+    // 查注册表是否已有同名/同源条目，驱动生命周期按钮
+    api.factorRegistryList()
+      .then((rows) => {
+        const hit = rows.find((r) => r.source_id === report.id)
+          || rows.find((r) => r.expr === report.expr)
+          || rows.find((r) => r.name === report.name);
+        if (hit) {
+          setRegId(hit.id);
+          setRegStatus(hit.status);
+        } else {
+          setRegId(null);
+          setRegStatus(null);
+        }
+      })
+      .catch(() => {});
+  }, [report.id, report.expr, report.name]);
+
+  const lifeLabel = (() => {
+    if (!regStatus) return "待评估（未登记）";
+    if (regStatus === "candidate") return "待评估（candidate）";
+    if (regStatus === "enabled") return "已采纳（enabled）";
+    if (regStatus === "disabled") return "已拒绝（disabled）";
+    return regStatus;
+  })();
+
+  const registerFactor = async () => {
+    setLifeMsg("");
+    try {
+      const r = await api.factorRegistryRegister({
+        name: report.name, expr: report.expr, category: "mined",
+        source_id: report.id, ic_mean: report.ic_mean,
+      });
+      setRegId(r.id);
+      setRegStatus(r.status);
+      setLifeMsg(r.existed ? `已在注册表 (#${r.id}, ${r.status})` : `已登记 (#${r.id}, ${r.status})`);
+    } catch (e) {
+      setLifeMsg(`登记失败: ${(e as Error).message}`);
+    }
+  };
+
+  const adoptFactor = async () => {
+    setLifeMsg("");
+    try {
+      let id = regId;
+      if (id == null) {
+        const r = await api.factorRegistryRegister({
+          name: report.name, expr: report.expr, category: "mined",
+          source_id: report.id, ic_mean: report.ic_mean,
+        });
+        id = r.id;
+        setRegId(r.id);
+        setRegStatus(r.status);
+      }
+      // 若已是 enabled 则无需再 toggle；candidate/disabled → 需要走到 enabled
+      if (regStatus !== "enabled") {
+        // disabled 先回 candidate，再 toggle → enabled（两次）
+        if (regStatus === "disabled") {
+          const mid = await api.factorRegistryToggle(id!);
+          setRegStatus(mid.status);
+        }
+        const cur = await api.factorRegistryList();
+        const row = cur.find((x) => x.id === id);
+        if (row && row.status === "candidate") {
+          const out = await api.factorRegistryToggle(id!);
+          setRegStatus(out.status);
+          setLifeMsg(`已采纳 → ${out.status}`);
+        } else if (row && row.status === "enabled") {
+          setRegStatus("enabled");
+          setLifeMsg("已是 enabled");
+        } else {
+          setLifeMsg(`当前状态 ${row?.status ?? "未知"}，请刷新后再试`);
+        }
+      } else {
+        setLifeMsg("已是 enabled");
+      }
+    } catch (e) {
+      setLifeMsg(`采纳失败: ${(e as Error).message}`);
+    }
+  };
+
+  const rejectFactor = async () => {
+    setLifeMsg("");
+    try {
+      let id = regId;
+      if (id == null) {
+        // 无门禁要求的「拒绝」：先登记再禁用会撞门禁。改为仅提示——
+        // 拒绝路径：若已登记且 enabled → toggle 到 disabled；若 candidate → 直接记 disabled 需两步。
+        setLifeMsg("尚未登记。过拟合/不合格因子可不必入库；若需留痕请先在 OOS 通过后登记再拒绝。");
+        return;
+      }
+      if (regStatus === "enabled") {
+        const out = await api.factorRegistryToggle(id);
+        setRegStatus(out.status);
+        setLifeMsg(`已拒绝 → ${out.status}`);
+      } else if (regStatus === "candidate") {
+        // candidate → enabled 会被门禁拦住；我们需要 candidate → disabled。
+        // 当前 toggle：candidate→enabled, enabled→disabled, else→candidate。
+        // 无直接 candidate→disabled；用 notes 场景下先尝试启用失败则只能提示人工。
+        // 简化：若 OOS 未过，启用会 400；此时前端标记本地「拒绝」文案，并建议保留 candidate。
+        try {
+          const out = await api.factorRegistryToggle(id);
+          if (out.status === "enabled") {
+            const out2 = await api.factorRegistryToggle(id);
+            setRegStatus(out2.status);
+            setLifeMsg(`已拒绝 → ${out2.status}`);
+          } else {
+            setRegStatus(out.status);
+            setLifeMsg(`状态 → ${out.status}`);
+          }
+        } catch (e) {
+          setLifeMsg(`无法经启用再拒绝（门禁）：${(e as Error).message}。可保留 candidate，禁止 enabled。`);
+        }
+      } else {
+        setLifeMsg(`当前已是 ${regStatus}`);
+      }
+    } catch (e) {
+      setLifeMsg(`拒绝失败: ${(e as Error).message}`);
+    }
+  };
+
   const statCells: [string, number | null][] = fs ? [
     ["均值", fs.mean], ["标准差", fs.std], ["最小值", fs.min], ["P25", fs.p25],
     ["中位数", fs.p50], ["P75", fs.p75], ["最大值", fs.max], ["偏度", fs.skew],
   ] : [];
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      {/* 重复表达式提示：本次是历史回放，没有重算 —— 否则用户会以为「挖了新的却没变化」 */}
       {report.duplicate_of != null && (
         <div style={{
           display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
@@ -750,7 +904,7 @@ function MineReport({ report, colors, onForce }: { report: FactorMineReport; col
           )}
         </div>
       )}
-      {/* 评级横幅 */}
+
       <Card colors={colors}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
           <Badge text={report.rating} color={ratingColor(report.rating)} />
@@ -765,32 +919,9 @@ function MineReport({ report, colors, onForce }: { report: FactorMineReport; col
           <code style={{ fontSize: 12.5, color: colors.muted, background: colors.tableStripe, padding: "4px 10px", borderRadius: 6 }}>{report.expr}</code>
           <span style={{ flex: 1 }} />
           <span style={{ fontSize: 12, color: colors.muted }}>{report.n_periods} 期截面 · {report.n_stocks} 只 · 未来 {report.forward_days} 日</span>
-          {report.id && (
-            <span style={{ flex: 1 }} />
-          )}
-          {report.id && (
-            <button
-              onClick={async () => {
-                try {
-                  const r = await api.factorRegistryRegister({
-                    name: report.name, expr: report.expr, category: "mined",
-                    source_id: report.id, ic_mean: report.ic_mean,
-                  });
-                  window.alert(r.existed ? "该因子已在注册表中" : `已登记入因子库 (#${r.id}, ${r.status})`);
-                } catch (e) {
-                  window.alert(`登记失败: ${(e as Error).message}`);
-                }
-              }}
-              style={{ padding: "4px 12px", borderRadius: 6, border: `1px solid ${colors.accent}`,
-                       background: "transparent", color: colors.accent, cursor: "pointer", fontSize: 12 }}
-            >
-              登记入因子库
-            </button>
-          )}
         </div>
       </Card>
 
-      {/* KPI */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
         <KpiCard label="IC 均值" value={report.ic_mean.toFixed(4)} sub=">0 正向选股能力"
           tone={Math.abs(report.ic_mean) >= 0.02 ? "accent" : "neutral"} colors={colors} />
@@ -805,7 +936,6 @@ function MineReport({ report, colors, onForce }: { report: FactorMineReport; col
           tone={report.mono_score >= 0.6 ? "down" : "neutral"} colors={colors} />
       </div>
 
-      {/* 因子值统计：IC 是秩相关、对缩放/平移/单调变换免疫，这里是参数调整唯一可见的反馈 */}
       {report.factor_stats && (
         <Card title="因子值统计（全区间全部样本）" colors={colors}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(100px,1fr))", gap: 7 }}>
@@ -822,47 +952,150 @@ function MineReport({ report, colors, onForce }: { report: FactorMineReport; col
           <div style={{ marginTop: 9, fontSize: 12, color: colors.muted, lineHeight: 1.7 }}>
             样本 <b>{report.factor_stats.n_values}</b> 个（{report.n_periods} 期 × 平均 {report.factor_stats.n_per_period} 只）
             {" · "}取值 <b>{report.factor_stats.n_unique}</b> 种
-            <br />
-            提示：IC 只看因子值的<b>排序</b>，对整体缩放、加减常数、套 log/sqrt 等单调变换完全不敏感。
-            若你调整的是这类参数，IC 不会变；请对照本卡片确认因子数值是否真的变了。
           </div>
         </Card>
       )}
 
-      {/* 图表三宫格 */}
+      {/* —— 五块报告层（W45-lab）—— */}
+      <div style={{ fontSize: 13, fontWeight: 600, color: colors.muted, letterSpacing: 0.3 }}>实验室报告层</div>
+
+      {/* 1. IC 时序 */}
+      <Card title="① IC 时序（虚线=均值）" colors={colors} pad={8}>
+        <IcChart report={report} colors={colors} />
+      </Card>
+
+      {/* 2. 多 horizon 热力 */}
+      <Card title="② 多 Horizon IC 热力（5 / 10 / 20 / 40）" colors={colors}>
+        {horizonsBusy && <div style={{ fontSize: 12.5, color: colors.muted }}>计算中…</div>}
+        {horizonsErr && (
+          <div style={{ fontSize: 12.5, color: colors.up }}>
+            热力失败：{horizonsErr}{" "}
+            <button onClick={loadHorizons} style={{ marginLeft: 8, fontSize: 12, cursor: "pointer" }}>重试</button>
+          </div>
+        )}
+        {horizons && horizons.length > 0 && <HorizonHeat rows={horizons} colors={colors} />}
+        {!horizonsBusy && !horizonsErr && (!horizons || horizons.length === 0) && (
+          <div style={{ fontSize: 12.5, color: colors.muted }}>暂无 horizon 数据</div>
+        )}
+      </Card>
+
+      {/* 3. 分层收益 */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-        <Card title="IC 时序（虚线=均值）" colors={colors} pad={8}><IcChart report={report} colors={colors} /></Card>
-        <Card title={`分组未来收益（${report.groups} 组，低→高）`} colors={colors} pad={8}><GroupChart report={report} colors={colors} /></Card>
-      </div>
-      <Card title="多空组合累计收益（Top − Bottom）" colors={colors} pad={8}><LsChart report={report} colors={colors} /></Card>
-
-      {/* 相关性 */}
-      {Object.keys(report.corr_with_existing || {}).length > 0 && (
-        <Card title="与现有 14 因子的截面相关性（冗余度分析）" colors={colors}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(96px,1fr))", gap: 7 }}>
-            {Object.entries(report.corr_with_existing)
-              .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
-              .map(([k, v]) => {
-                const strong = Math.abs(v) > 0.5;
-                return (
-                  <div key={k} style={{
-                    textAlign: "center", padding: "8px 4px", borderRadius: 8,
-                    background: strong ? `${colors.up}14` : colors.tableStripe,
-                    border: `1px solid ${strong ? colors.up : colors.border}`,
-                  }}>
-                    <div style={{ fontSize: 11, color: colors.muted }}>{factorCn(k)}</div>
-                    <div style={{ fontSize: 16, fontWeight: 700, fontVariantNumeric: "tabular-nums", color: strong ? colors.up : colors.text }}>{v.toFixed(2)}</div>
-                  </div>
-                );
-              })}
-          </div>
-          <div style={{ marginTop: 8, fontSize: 12, color: colors.muted }}>
-            最大 |ρ| = <b>{report.max_abs_corr}</b> —{" "}
-            {report.max_abs_corr > 0.7 ? "⚠ 与现有因子高度重复，建议放弃或改造" :
-             report.max_abs_corr > 0.5 ? "⚠ 中度重复，可考虑正交化处理" : "✓ 与现有因子独立性良好"}
-          </div>
+        <Card title={`③ 分层收益（${report.groups} 组，低→高）`} colors={colors} pad={8}>
+          <GroupChart report={report} colors={colors} />
         </Card>
-      )}
+        <Card title="③ 多空累计（Top − Bottom）" colors={colors} pad={8}>
+          <LsChart report={report} colors={colors} />
+        </Card>
+      </div>
+
+      {/* 4. 相关矩阵热力 */}
+      <Card title="④ 与现有因子相关矩阵（热力）" colors={colors}>
+        {Object.keys(report.corr_with_existing || {}).length > 0 ? (
+          <>
+            <CorrHeat corr={report.corr_with_existing} colors={colors} />
+            <div style={{ marginTop: 8, fontSize: 12, color: colors.muted }}>
+              最大 |ρ| = <b>{report.max_abs_corr}</b> —{" "}
+              {report.max_abs_corr > 0.7 ? "⚠ 与现有因子高度重复，建议放弃或改造" :
+               report.max_abs_corr > 0.5 ? "⚠ 中度重复，可考虑正交化处理" : "✓ 与现有因子独立性良好"}
+            </div>
+          </>
+        ) : (
+          <div style={{ fontSize: 12.5, color: colors.muted }}>暂无相关矩阵（可能缺少 factor_daily）</div>
+        )}
+      </Card>
+
+      {/* 5. 生命周期 */}
+      <Card title="⑤ 生命周期（pending_eval → adopted | rejected）" colors={colors}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+          <Badge text={lifeLabel} color={regStatus === "enabled" ? "#3ba272" : regStatus === "disabled" ? "#d92c2c" : colors.accent} />
+          <span style={{ fontSize: 12.5, color: colors.muted }}>
+            映射：candidate=待评估 · enabled=采纳 · disabled=拒绝。启用须 OOS 通过且评级优秀/可用。
+          </span>
+          <span style={{ flex: 1 }} />
+          <button onClick={registerFactor} style={lifeBtn(colors)}>登记（candidate）</button>
+          <button onClick={adoptFactor} style={lifeBtn(colors, true)}>采纳（enabled）</button>
+          <button onClick={rejectFactor} style={lifeBtn(colors)}>拒绝（disabled）</button>
+        </div>
+        {lifeMsg && (
+          <div style={{ marginTop: 10, fontSize: 12.5, color: lifeMsg.includes("失败") || lifeMsg.includes("无法") ? colors.up : colors.muted }}>
+            {lifeMsg}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function lifeBtn(colors: ThemeColors, primary = false): CSSProperties {
+  return {
+    padding: "5px 12px", borderRadius: 6,
+    border: `1px solid ${colors.accent}`,
+    background: primary ? colors.accent : "transparent",
+    color: primary ? "#fff" : colors.accent,
+    cursor: "pointer", fontSize: 12,
+  };
+}
+
+function HorizonHeat({ rows, colors }: { rows: FactorHorizonRow[]; colors: ThemeColors }) {
+  const vals = rows.map((r) => r.ic_mean ?? 0);
+  const maxAbs = Math.max(0.01, ...vals.map((v) => Math.abs(v)));
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${rows.length}, minmax(72px, 1fr))`, gap: 8 }}>
+        {rows.map((r) => {
+          const v = r.ic_mean ?? 0;
+          const intensity = Math.min(1, Math.abs(v) / maxAbs);
+          const bg = v >= 0
+            ? `rgba(217,44,44,${0.12 + 0.55 * intensity})`
+            : `rgba(26,138,72,${0.12 + 0.55 * intensity})`;
+          return (
+            <div key={r.horizon} style={{
+              textAlign: "center", padding: "12px 6px", borderRadius: 8,
+              background: bg, border: `1px solid ${colors.border}`,
+            }}>
+              <div style={{ fontSize: 11, color: colors.muted }}>{r.horizon} 日</div>
+              <div style={{ fontSize: 16, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
+                {r.ic_mean == null ? "—" : r.ic_mean.toFixed(4)}
+              </div>
+              <div style={{ fontSize: 11, color: colors.muted, marginTop: 4 }}>
+                ICIR {r.icir == null ? "—" : r.icir.toFixed(2)} · t {r.t_stat == null ? "—" : r.t_stat.toFixed(2)}
+              </div>
+              <div style={{ fontSize: 11, marginTop: 4 }}>
+                {r.oos?.verdict || "—"}{r.rating ? ` · ${r.rating}` : ""}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CorrHeat({ corr, colors }: { corr: Record<string, number>; colors: ThemeColors }) {
+  const entries = Object.entries(corr).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(96px,1fr))", gap: 7 }}>
+      {entries.map(([k, v]) => {
+        const intensity = Math.min(1, Math.abs(v));
+        const bg = v >= 0
+          ? `rgba(217,44,44,${0.08 + 0.5 * intensity})`
+          : `rgba(26,138,72,${0.08 + 0.5 * intensity})`;
+        const strong = Math.abs(v) > 0.5;
+        return (
+          <div key={k} style={{
+            textAlign: "center", padding: "8px 4px", borderRadius: 8,
+            background: bg,
+            border: `1px solid ${strong ? colors.up : colors.border}`,
+          }}>
+            <div style={{ fontSize: 11, color: colors.muted }}>{factorCn(k)}</div>
+            <div style={{
+              fontSize: 16, fontWeight: 700, fontVariantNumeric: "tabular-nums",
+              color: strong ? colors.up : colors.text,
+            }}>{v.toFixed(2)}</div>
+          </div>
+        );
+      })}
     </div>
   );
 }
