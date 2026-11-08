@@ -1,19 +1,51 @@
 {
-  "_说明": "市场资讯报告的外部搜索源凭证。配了哪个就调哪个，没配自动跳过、不报错、不写进待补清单。",
-  "_使用": "复制本文件为 search_sources.json 再填 key；search_sources.json 已被 .gitignore 排除，不会入库。",
-  "metaso": {
-    "api_key": "",
-    "endpoint": "",
-    "note": "秘塔搜索。需在 metaso.cn 开放平台申请；endpoint 以申请页给的为准（各家版本不同，不猜）。"
-  },
+  "_说明": "市场资讯报告的外部搜索源凭证与调用口径。复制本文件为 search_sources.json 再填 key；后者已被 .gitignore 排除，不会入库。",
+  "_实测": "2026-11-08 三个源均连通；Tavily 为主力（带时间过滤），秘塔辅助，AnySearch 仅作线索（无发布时间）。",
   "tavily": {
+    "enabled": false,
     "api_key": "",
     "endpoint": "https://api.tavily.com/search",
-    "note": "Tavily。tavily.com 注册即得 key，免费额度约 1000 次/月；POST JSON: {api_key, query, max_results, search_depth}。"
+    "method": "POST",
+    "auth": "body 内 api_key（Bearer 也通）",
+    "payload": {
+      "api_key": "<key>",
+      "query": "<检索词>",
+      "max_results": 8,
+      "search_depth": "basic",
+      "topic": "news",
+      "days": 3
+    },
+    "response": "results[] → {title, url, content, score, published_date}",
+    "note": "唯一自带时间过滤（topic=news + days）的源，返回项带 published_date。资讯报告优先用它。注册：tavily.com，免费额度约 1000 次/月。"
+  },
+  "metaso": {
+    "enabled": false,
+    "api_key": "",
+    "endpoint": "https://metaso.cn/api/v1/search",
+    "method": "POST",
+    "auth": "Header: Authorization: Bearer <key>",
+    "payload": {
+      "q": "<检索词>",
+      "scope": "webpage",
+      "size": "10",
+      "includeSummary": false,
+      "includeRawContent": false,
+      "conciseSnippet": true
+    },
+    "response": "webpages[] → {title, link, snippet, date, score, authorityDomain}；另带 total / credits",
+    "note": "有 date 但为中文格式（2026年02月17日），排序按相关性不按时间——取 size=10~20 后自行解析日期、筛掉 3 天前旧文。"
   },
   "anysearch": {
+    "enabled": false,
     "api_key": "",
-    "endpoint": "",
-    "note": "AnySearch。服务形态待确认（是 API 还是 MCP），确认后按同结构填。"
+    "endpoint": "https://api.anysearch.com/v1/search",
+    "method": "POST",
+    "auth": "Header: Authorization: Bearer <key>",
+    "payload": {
+      "query": "<检索词>",
+      "max_results": 10
+    },
+    "response": "data.results[] → {title, url, snippet}；data.metadata.total_results / search_time_ms",
+    "note": "返回无发布时间字段，不能直接进资讯表（表要求每条带时间并倒排）。只能当线索源：命中后回溯原站确认时间与出处。"
   }
 }
