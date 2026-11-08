@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -21,17 +22,17 @@ for _k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY"
 import pandas as pd  # noqa: E402
 import tushare as ts  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _tushare_token import require_token  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "data" / "research" / "sw_industry_daily.csv"
-TOKEN = os.getenv(
-    "TUSHARE_TOKEN",
-    "d2684763c95c5f46e0cf65dee253d0559ad6ed2ec0b05b12ae557e99",
-)
+# token 由 _tushare_token 统一解析（环境变量 → 项目根 .env），源码内不留明文。
 
 
 def main() -> None:
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    pro = ts.pro_api(TOKEN)
+    pro = ts.pro_api(require_token())
     l1 = pro.index_classify(level="L1", src="SW2021")
     frames = []
     for code, name in zip(l1.index_code, l1.industry_name):

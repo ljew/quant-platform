@@ -58,6 +58,9 @@ for _k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY"
 
 import tushare as ts  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _tushare_token import require_token  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "data" / "holdings"
 DB = ROOT / "data" / "quant_dev.db"
@@ -72,10 +75,8 @@ LOCK = DATA / "fetch.lock"
 SINCE = "20150101"
 UNTIL = "20261231"
 
-TOKEN = os.getenv(
-    "TUSHARE_TOKEN",
-    "d2684763c95c5f46e0cf65dee253d0559ad6ed2ec0b05b12ae557e99",
-)
+# token 由 _tushare_token 统一解析（环境变量 → 项目根 .env），源码内不留明文。
+# 注意：变量名必须从 QUANT_TUSHARE_TOKEN 读，容器注入的就是这个名字。
 FIELDS = [
     "ts_code", "ann_date", "end_date", "symbol",
     "mkv", "amount", "stk_mkv_ratio", "stk_float_ratio",
@@ -194,7 +195,7 @@ def main() -> None:
         return
 
     acquire_lock()
-    pro = ts.pro_api(TOKEN)
+    pro = ts.pro_api(require_token())
     todo = [c for c in codes if c not in done]
     if args.limit:
         todo = todo[: args.limit]
