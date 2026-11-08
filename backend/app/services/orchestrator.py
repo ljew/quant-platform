@@ -33,7 +33,11 @@ from app.config import BASE_DIR
 from app.models import AgentEvent, ResearchRun, SignalAction
 
 # 人工闸门默认倒计时（秒）；驾驶舱确认后可提前放行/否决
-GATE_COUNTDOWN_SEC = int(os.getenv("QUANT_GATE_SECONDS", "300"))
+# 人工闸门倒计时（秒）。默认 **0 = 不挂起**：这是单人自用的平台，没有第二个人
+# 来签字，原来每天 17:30 都要 pending 5 分钟等「人工审查」，页面上就是一条
+# 黄条，纯噪音（老刘 2026-11-08：「发布审查啥意思，一直警告」）。
+# 想恢复人工确认：QUANT_GATE_SECONDS=300。
+GATE_COUNTDOWN_SEC = int(os.getenv("QUANT_GATE_SECONDS", "0"))
 DATA_STEP_TIMEOUT = 1800
 
 STEPS: list[dict] = [
@@ -290,8 +294,17 @@ def _step_risk_gate(db: Session, run_id: int) -> bool:
     返回 True=放行（继续 publish），False=否决（终止）。
     """
     dist = _action_distribution(db)
-    deadline = datetime.now() + timedelta(seconds=GATE_COUNTDOWN_SEC)
     run = db.get(ResearchRun, run_id)
+    if GATE_COUNTDOWN_SEC <= 0:
+        # 免审查：直接放行，只在 run 上留一行说明（不再置 pending，避免页面闪黄条）
+        run.gate_status = "approved"
+        run.gate_note = f"免审查直接放行（动作分布 {dist}）"
+        _event(db, run_id, "risk", f"发布审查：自动放行（{dist}）",
+               step="risk", status="ok")
+        db.commit()
+        return True
+
+    deadline = datetime.now() + timedelta(seconds=GATE_COUNTDOWN_SEC)
     run.gate_status = "pending"
     run.gate_note = f"待审查：动作分布 {dist}"
     run.gate_deadline = deadline
