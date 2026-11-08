@@ -777,6 +777,23 @@ def _persist(db, req, meta, params, result) -> Backtest:
     return record
 
 
+def _num(v):
+    """数值字段容错：历史脏数据里可能有非数字（JSON/meta 被写错列）。
+
+    2026-11-08 实测：backtests 有 5 条 `info_ratio` 存的是 meta JSON
+    （`{"benchmark": "全池等权不复平衡", ...}`），pydantic 校验直接抛
+    ValidationError → **整个列表接口 500**，因子实验室整页打不开。
+    脏数据已清，这里再兜一层，避免以后同类问题再炸整页。
+    """
+    if v is None:
+        return None
+    try:
+        f = float(v)
+        return f if f == f else None      # NaN 也当缺失
+    except (TypeError, ValueError):
+        return None
+
+
 @router.get("/backtests", response_model=list[BacktestSummary])
 def list_backtests(limit: int = 50, db: Session = Depends(get_db)):
     stmt = select(Backtest).order_by(Backtest.created_at.desc()).limit(limit)
@@ -793,15 +810,15 @@ def list_backtests(limit: int = 50, db: Session = Depends(get_db)):
                 multi_asset=r.multi_asset,
                 start_date=r.start_date,
                 end_date=r.end_date,
-                total_return=r.total_return,
-                annual_return=r.annual_return,
-                max_drawdown=r.max_drawdown,
-                sharpe=r.sharpe,
-                win_rate=r.win_rate,
+                total_return=_num(r.total_return),
+                annual_return=_num(r.annual_return),
+                max_drawdown=_num(r.max_drawdown),
+                sharpe=_num(r.sharpe),
+                win_rate=_num(r.win_rate),
                 trade_count=r.trade_count,
-                benchmark_total_return=r.benchmark_total_return,
-                excess_return=r.excess_return,
-                info_ratio=r.info_ratio,
+                benchmark_total_return=_num(r.benchmark_total_return),
+                excess_return=_num(r.excess_return),
+                info_ratio=_num(r.info_ratio),
                 created_at=r.created_at.isoformat() if r.created_at else None,
             )
         )
@@ -1147,6 +1164,22 @@ def _to_result(r: Backtest, name: str, multi: bool) -> BacktestResult:
     except Exception:
         params = {}
     hedged = extra.get("hedged", {})
+    # 净值点兼容两套历史格式：逐日 `{date, equity, benchmark}` 与
+    # 年频近似 `{year, equity}`（jk 系列早期做过年频 sharpe 估算）。
+    # 后者没有 date/benchmark，直接喂 EquityPointModel 会 ValidationError → 详情页 500。
+    eq_points = []
+    for e in equity:
+        if not isinstance(e, dict):
+            continue
+        d = e.get("date") or (f"{e['year']}-12-31" if e.get("year") else None)
+        if not d:
+            continue
+        eq_points.append(EquityPointModel(
+            date=str(d),
+            equity=float(e.get("equity") or 0),
+            benchmark=float(e.get("benchmark") or 0),
+            hedged=float(e.get("hedged") or 0),
+        ))
     return BacktestResult(
         id=r.id,
         symbol=r.symbol,
@@ -1158,20 +1191,20 @@ def _to_result(r: Backtest, name: str, multi: bool) -> BacktestResult:
         universe_size=r.universe_size,
         symbols_used=r.symbols_used,
         params=params,
-        initial_cash=r.initial_cash,
-        final_equity=r.final_equity,
-        total_return=r.total_return,
-        annual_return=r.annual_return,
-        max_drawdown=r.max_drawdown,
-        sharpe=r.sharpe,
-        win_rate=r.win_rate,
-        trade_count=r.trade_count,
-        round_trips=r.round_trips,
+        initial_cash=_num(r.initial_cash),
+        final_equity=_num(r.final_equity),
+        total_return=_num(r.total_return),
+        annual_return=_num(r.annual_return),
+        max_drawdown=_num(r.max_drawdown),
+        sharpe=_num(r.sharpe),
+        win_rate=_num(r.win_rate),
+        trade_count=int(_num(r.trade_count) or 0),
+        round_trips=int(_num(r.round_trips) or 0),
         benchmark_symbol=r.benchmark_symbol or "",
-        benchmark_total_return=r.benchmark_total_return,
-        excess_return=r.excess_return,
-        info_ratio=r.info_ratio,
-        equity_curve=[EquityPointModel(**e) for e in equity],
+        benchmark_total_return=_num(r.benchmark_total_return),
+        excess_return=_num(r.excess_return),
+        info_ratio=_num(r.info_ratio),
+        equity_curve=eq_points,
         trades=[TradePoint(**t) for t in trades],
         holdings=extra.get("holdings", []),
         industry_distribution=extra.get("industry_distribution", {}),
