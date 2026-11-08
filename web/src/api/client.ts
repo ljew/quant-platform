@@ -46,6 +46,8 @@ export interface StrategyInfo {
   default_params: Record<string, unknown>;
   param_schema: ParamField[];
   multi_asset?: boolean;
+  /** paper/strategies 返回 single|portfolio */
+  kind?: "single" | "portfolio" | string;
   index_name?: string | null;
   /** 该策略的基准指数行情代码（如 sh000300）。回测页切策略时用来自动填标的。 */
   index_symbol?: string | null;
@@ -875,6 +877,12 @@ export interface PaperDetail {
   risk_limits?: Record<string, number> | null;
   risk_clamps?: unknown[];
   error_msg?: string | null;
+  /** W47-1：任务落库费率 / 成本徽章 */
+  commission?: number;
+  slippage?: number;
+  cost_profile?: CostProfile | null;
+  /** 仅佣金累计（不含印花税分项） */
+  fees_paid_commission?: number;
 }
 
 export interface DataflowReport {

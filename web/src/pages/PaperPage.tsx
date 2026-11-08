@@ -1,10 +1,25 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import EChart from "../components/EChart";
-import { api, PaperDetail, PaperTask, StrategyInfo } from "../api/client";
+import { api, CostProfile, PaperDetail, PaperTask, StrategyInfo } from "../api/client";
 import { useTheme } from "../theme";
 import { PageHeader } from "../components/ui";
 import EvalBadges from "../components/EvalBadges";
 import { signalLabel } from "../signalLabel";
+
+/** W47-1：创建前本地预览徽章（与 cost_defaults / 回测默认同契约） */
+const DEFAULT_COST_PROFILE: CostProfile = {
+  commission: 0.00025,
+  slippage: 0.0001,
+  stamp_tax: 0.0005,
+  min_commission: 5.0,
+  risk_free_rate: 0.025,
+  source: "default",
+  label: "万2.5+万1滑点+卖出万5印花税",
+};
+
+/** 产品定稿口径句（勿改字） */
+const COST_DISCLAIMER = "与回测默认成本同契约，非券商实盘";
+
 
 /** 模拟盘（任务列表 + 创建 + 详情：净值曲线/成交）。 */
 export default function PaperPage() {
@@ -34,7 +49,7 @@ export default function PaperPage() {
     refresh();
     api.strategies().then((s) => {
       setStrategies(s);
-      const single = s.filter((x) => !x.default_params?.multi_asset);
+      const single = s.filter((x) => !(x.multi_asset || x.default_params?.multi_asset));
       if (single.length) setSkey(single[0].key);
     });
   }, [refresh]);
@@ -50,9 +65,26 @@ export default function PaperPage() {
 
   const create = async () => {
     setError("");
+    const meta = strategies.find((s) => s.key === skey);
+    const isPortfolio = Boolean(meta?.multi_asset || meta?.default_params?.multi_asset);
+    // W47-1 §5.3：创建前前端校验（原文勿改）
+    if (!strategies.length || !skey) {
+      setError("请先选择策略（策略列表加载中或尚未选择）");
+      return;
+    }
+    if (!isPortfolio && !symbols.trim()) {
+      setError("请填写标的代码，例如 sh600519");
+      return;
+    }
+    if (isPortfolio && !indexCode.trim()) {
+      setError("请填写指数代码，例如 000906");
+      return;
+    }
+    if (!Number.isFinite(cash) || cash <= 0) {
+      setError("初始资金须为正数");
+      return;
+    }
     try {
-      const meta = strategies.find((s) => s.key === skey);
-      const isPortfolio = Boolean(meta?.default_params?.multi_asset);
       const task = await api.paperCreate({
         name: name || `${meta?.name || skey} 模拟`,
         strategy_key: skey,
@@ -117,7 +149,7 @@ export default function PaperPage() {
   };
 
   const meta = strategies.find((s) => s.key === skey);
-  const isPortfolio = Boolean(meta?.default_params?.multi_asset);
+  const isPortfolio = Boolean(meta?.multi_asset || meta?.default_params?.multi_asset);
 
   return (
     <div style={{ maxWidth: 1280, margin: "0 auto" }}>
@@ -131,10 +163,10 @@ export default function PaperPage() {
         <label>
           策略
           <select value={skey} onChange={(e) => setSkey(e.target.value)} style={inputStyle(colors)}>
-            {strategies.filter((s) => !s.default_params?.multi_asset).map((s) => (
+            {strategies.filter((s) => !(s.multi_asset || s.default_params?.multi_asset)).map((s) => (
               <option key={s.key} value={s.key}>{s.name}</option>
             ))}
-            {strategies.filter((s) => s.default_params?.multi_asset).map((s) => (
+            {strategies.filter((s) => s.multi_asset || s.default_params?.multi_asset).map((s) => (
               <option key={s.key} value={s.key}>{s.name}（组合）</option>
             ))}
           </select>
@@ -146,10 +178,18 @@ export default function PaperPage() {
         )}
         <label>初始资金<input type="number" value={cash} onChange={(e) => setCash(Number(e.target.value))} style={inputStyle(colors)} /></label>
       </div>
+      {/* W47-1：创建前默认成本徽章 + 口径句 */}
+      <div style={{ margin: "8px 0 12px", display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
+        <EvalBadges cost_profile={DEFAULT_COST_PROFILE} colors={colors} />
+        <span style={{ fontSize: 12, color: colors.muted }}>{COST_DISCLAIMER}</span>
+      </div>
       <button onClick={create} style={btnStyle}>创建并运行</button>
       <button onClick={refresh} style={{ ...btnStyle, background: colors.muted }}>刷新</button>
       {createBadges && (
         <div style={{ margin: "10px 0" }}>
+          <div style={{ fontSize: 12, color: colors.muted, marginBottom: 6 }}>
+            已按回测默认成本建账 · {COST_DISCLAIMER}
+          </div>
           <EvalBadges
             cost_profile={createBadges.cost_profile}
             valuation_pit={createBadges.valuation_pit}
@@ -238,17 +278,49 @@ function DetailPanel({ detail }: { detail: PaperDetail }) {
   })();
   const tbl: CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: 12.5, whiteSpace: "nowrap" };
   const scrollX: CSSProperties = { overflowX: "auto" };
+  const costProfile = detail.cost_profile || (
+    detail.commission != null && detail.slippage != null
+      ? {
+          commission: detail.commission,
+          slippage: detail.slippage,
+          stamp_tax: 0.0005,
+          source: "default",
+          label: "万2.5+万1滑点+卖出万5印花税",
+        }
+      : DEFAULT_COST_PROFILE
+  );
+  const commissionRate = detail.commission ?? costProfile.commission ?? 0.00025;
+  const slippageRate = detail.slippage ?? costProfile.slippage ?? 0.0001;
+  const costMetric = `万${(commissionRate * 10000).toFixed(1)} / 万${(slippageRate * 10000).toFixed(1)}`;
+
   return (
     <div style={{ marginTop: 20, background: colors.card, borderRadius: 10, padding: 16, border: `1px solid ${colors.border}` }}>
-      <div style={{ fontWeight: 700, marginBottom: 12 }}>模拟盘 #{detail.id} 详情</div>
+      <div style={{ fontWeight: 700, marginBottom: 8 }}>模拟盘 #{detail.id} 详情</div>
+      <div style={{ marginBottom: 12, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
+        <EvalBadges cost_profile={costProfile} colors={colors} />
+        <span style={{ fontSize: 12, color: colors.muted }}>{COST_DISCLAIMER}</span>
+      </div>
       <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginBottom: 12 }}>
         <Metric label="当前净值" colors={colors} value={`¥${detail.equity.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
         <Metric label="收益率" colors={colors} value={`${((detail.pnl_pct || 0) * 100).toFixed(2)}%`} />
         <Metric label="成交笔数" colors={colors} value={`${trades.length}`} />
+        <Metric label="成本口径" colors={colors} value={costMetric} />
+        <Metric label="佣金" colors={colors} value={`万${(commissionRate * 10000).toFixed(1)}`} />
+        <Metric label="滑点" colors={colors} value={`万${(slippageRate * 10000).toFixed(1)}`} />
+        {typeof detail.fees_paid_commission === "number" && (
+          <Metric
+            label="累计佣金"
+            colors={colors}
+            value={`¥${detail.fees_paid_commission.toLocaleString(undefined, { maximumFractionDigits: 2 })}`}
+          />
+        )}
         {limits && Object.keys(limits).length > 0 && (
           <Metric label="风险截断" colors={colors} value={`${(detail.risk_clamps || []).length} 次`} />
         )}
       </div>
+      {typeof detail.fees_paid_commission === "number" && (
+        <div style={{ fontSize: 12, color: colors.muted, marginTop: -6, marginBottom: 10 }}>不含印花税分项</div>
+      )}
       {curve.length > 0 && <EChart option={option as never} height={340} />}
       <div style={{ marginTop: 14 }}>
         <h4 style={{ margin: "0 0 8px", fontSize: 14 }}>当前持仓（{positions.length} 只）</h4>
