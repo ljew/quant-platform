@@ -27,6 +27,8 @@ from app.services.data_source import get_realtime_prices
 from app.services.membership_store import get_membership as _get_membership
 # 复用回测路由里的数据加载函数（DB 优先、缺失回源落地），避免重复实现
 from app.routers.strategy import _load_bars, _load_index_bars
+from app.core.eval_profile import build_cost_profile
+from app.core.cost_defaults import COMMISSION as _COST_C, SLIPPAGE as _COST_S
 
 
 def _merge_params(meta: dict, params_json: str) -> dict:
@@ -391,6 +393,11 @@ def get_paper_task_detail(db, task: PaperTask) -> dict:
     except Exception:
         state = {}
     latest = snaps[-1] if snaps else None
+    commission = float(getattr(task, "commission", 0.0) or 0.0)
+    slippage = float(getattr(task, "slippage", 0.0) or 0.0)
+    fees_paid_commission = float(sum(float(getattr(t, "commission", 0.0) or 0.0) for t in trades))
+    # 数值等于 defaults → source=default；否则 user（详情无请求体，按落库费率推断）
+    cost_src = "default" if (commission == _COST_C and slippage == _COST_S) else "user"
     return {
         "id": task.id, "name": task.name, "strategy_key": task.strategy_key,
         "kind": task.kind, "symbols": task.symbols, "index_code": task.index_code,
@@ -408,4 +415,9 @@ def get_paper_task_detail(db, task: PaperTask) -> dict:
         "factor_analysis": _paper_fa_blob(task).get("factor_analysis"),
         "risk_limits": _paper_fa_blob(task).get("risk_limits"),
         "risk_clamps": _paper_fa_blob(task).get("risk_clamps") or [],
+        # W47-1：详情回显与 create 同 shape 的成本字段（不 migration）
+        "commission": commission,
+        "slippage": slippage,
+        "cost_profile": build_cost_profile(commission, slippage, source=cost_src),
+        "fees_paid_commission": fees_paid_commission,
     }
