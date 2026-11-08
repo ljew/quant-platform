@@ -294,6 +294,33 @@ def transition_card(card_id: int, body: TransitionIn):
             raise HTTPException(404, "研究卡不存在")
         if card.state == body.to_state:
             return {"ok": True, "changed": False, "state": card.state}
+        # W45-lab：因子卡 → enabled 同注册表门禁（读 factor_registry / mine report）
+        if body.to_state == "enabled" and card.card_type == "factor":
+            from app.models import FactorRegistry
+            from app.services.factor_lab_gate import assert_enable_allowed
+            reg = db.execute(
+                select(FactorRegistry).where(FactorRegistry.name == card.key)
+            ).scalar_one_or_none()
+            if reg is None:
+                reg = db.execute(
+                    select(FactorRegistry).where(FactorRegistry.name == card.name)
+                ).scalar_one_or_none()
+            try:
+                if reg is not None:
+                    assert_enable_allowed(db, expr=reg.expr, source_id=reg.source_id)
+                else:
+                    # 无注册表行时，尝试用 evidence.mine_id / expr
+                    ev0 = json.loads(card.evidence_json or "{}")
+                    expr = ev0.get("expr") or ""
+                    mid = ev0.get("mine_id") or ev0.get("source_id")
+                    if not expr and not mid:
+                        raise ValueError("因子研究卡缺少关联挖掘报告（registry/evidence）")
+                    assert_enable_allowed(
+                        db, expr=expr or "",
+                        source_id=int(mid) if mid is not None else None,
+                    )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
         hist = json.loads(card.history_json) if card.history_json else []
         hist.append({
             "at": f"{datetime.now():%Y-%m-%d %H:%M}",

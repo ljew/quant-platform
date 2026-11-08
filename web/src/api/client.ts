@@ -191,6 +191,8 @@ export const api = {
   factorValidate: (expr: string) => post<{ ok: boolean; error?: string; sample_value?: number | null }>("/factor/validate", { expr }),
   factorFunctions: () => get<Record<string, Record<string, string>>>("/factor/functions"),
   factorMine: (payload: Record<string, unknown>) => post<FactorMineReport>("/factor/mine", payload),
+  factorMineHorizons: (payload: Record<string, unknown>) =>
+    post<FactorHorizonsResult>("/factor/mine/horizons", payload),
   factorMineResults: (limit = 20) => get<FactorMineSummary[]>("/factor/mine/results?limit=" + limit),
   factorMineDetail: (id: number) => get<FactorMineReport>(`/factor/mine/results/${id}`),
   factorMineDelete: (id: number) => post<{ ok: boolean }>(`/factor/mine/results/${id}/delete`, {}),
@@ -256,11 +258,16 @@ export const api = {
   // 因子注册表
   factorRegistryRegister: (payload: Record<string, unknown>) =>
     post<{ ok: boolean; id: number; status: string; existed?: boolean }>("/factor/registry/register", payload),
+  factorRegistryList: (status = "") =>
+    get<RegistryRow[]>(`/factor/registry${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+  factorRegistryToggle: (id: number) =>
+    post<{ ok: boolean; id: number; status: string }>(`/factor/registry/${id}/toggle`, {}),
 };
 
 export interface RegistryRow {
   id: number; name: string; expr: string; direction: number;
-  category: string; status: string; ic_mean: number | null; created_at: string;
+  category: string; status: string; ic_mean: number | null;
+  source_id?: number | null; created_at: string;
 }
 
 // —— AI 因子生成 ——
@@ -584,6 +591,26 @@ export interface FactorMineReport {
   valuation_pit?: ValuationPit | null;
   pead_pit?: PeadPit | null;
   oos?: EvalOos | null;
+}
+
+export interface FactorHorizonRow {
+  horizon: number;
+  ic_mean: number | null;
+  icir: number | null;
+  t_stat: number | null;
+  rating?: string;
+  oos?: { verdict?: string | null; enabled?: boolean | null };
+  n_periods?: number;
+  pead_pit?: PeadPit | null;
+  valuation_pit?: ValuationPit | null;
+  cost_profile?: CostProfile | null;
+}
+
+export interface FactorHorizonsResult {
+  ok: boolean;
+  expr: string;
+  name: string;
+  horizons: FactorHorizonRow[];
 }
 
 export interface FactorMineSummary {
