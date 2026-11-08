@@ -892,6 +892,20 @@ def _latest_today_items(db: Session) -> list[dict]:
     return []
 
 
+def _digest_day(db: Session, day: str) -> str:
+    """该日是否有全景综述；有则返回日期，否则空串。"""
+    if not day:
+        return ""
+    from app.models import BriefDigest
+
+    try:
+        row = db.query(BriefDigest).filter(BriefDigest.day == day,
+                                           BriefDigest.error == "").first()
+        return row.day if row else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def today_brief(db: Session) -> dict:
     """今日累计视图：把今天各轮的条目合并去重，附最新综述。
 
@@ -967,6 +981,12 @@ def today_brief(db: Session) -> dict:
         "n_latest": len(latest_items),
         "mainline": mainline,
         "summary": summary,
+        # 当天是否已有「当日全景」（brief_digest）。有的话前端就把本卡的
+        # 主线 + 综述收起来 —— 两个 800~1500 字的「今日整体」上下叠着，
+        # 讲的都是国常会/回购利率/科技筹码出清，读两遍纯属浪费（2026-11-08
+        # 老刘反馈「当日全景、热点简报是不是有些重复」）。
+        "digest_day": _digest_day(db, last.created_at.date().isoformat()
+                                  if last.created_at else ""),
         "items": merged,
         "n_items": len(merged),
         "source_split": split,

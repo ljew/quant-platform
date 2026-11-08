@@ -684,6 +684,9 @@ export interface HotBrief {
   latest_at?: string;
   n_latest?: number;
   date?: string;
+  /** 当天是否已有「当日全景」（brief_digest）。有则本卡收起主线与综述，
+   *  只留明细清单 —— 两个「今日整体」叠着讲同一件事是重复的。 */
+  digest_day?: string;
   source_split?: Record<string, number>;
   model?: string;
   error?: string;
