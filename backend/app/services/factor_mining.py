@@ -717,11 +717,13 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
                 step: int = DEFAULT_STEP, universe: list[str] | None = None,
                 n_tested: int = 1,
                 oos_ratio: float = 0.3,
+                orthogonalize: bool = True,
                 progress=None) -> dict:
     """因子挖掘：逐期截面因子 vs 未来收益，输出有效性检验报告。
 
     n_tested: 本次批量挖掘累计测试的候选数（多重检验校正，默认 1=单次手动检验）。
     oos_ratio: 样本外占比（M3-1，默认 0.3；0=关闭切分）。
+    orthogonalize: True（默认）→ 对代表集截面残差后再评 IC；主 KPI/评级走 resid。
     """
     ok, err, sample = validate_expr(expr)
     if not ok:
@@ -841,8 +843,47 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
     axis_dates = _dates_in_range(db, sd - timedelta(days=300), ed)
     bench_aligned = [bench_map.get(d) for d in axis_dates]
 
+    # —— W47-2：代表集残差预计算（仅 orthogonalize=True 时构建）——
+    from app.services.factor_ortho import (
+        build_ortho_cache,
+        orthogonalize_cross_section,
+        ortho_basis_template,
+    )
+    ortho_cache: dict = {}
+    n_snaps_resid = 0
+    n_snaps_fallback_raw = 0
+    if orthogonalize:
+        if progress:
+            progress(0.08, "预计算代表因子…")
+        snaps_for_ortho: list[tuple[int, date]] = []
+        for snap in snapshots:
+            if snap not in bench_map:
+                continue
+            try:
+                idx0 = axis_dates.index(snap)
+            except ValueError:
+                continue
+            snaps_for_ortho.append((idx0, snap))
+        ortho_cache = build_ortho_cache(
+            snaps=snaps_for_ortho,
+            syms=syms,
+            aligned=aligned,
+            vol_aligned=vol_aligned,
+            amt_aligned=amt_aligned,
+            axis_dates=axis_dates,
+            attrs=attrs,
+            attrs_tl=attrs_tl,
+            es_map=es_map,
+            fund_tl=fund_tl,
+            fin_hist=fin_hist,
+            bench_aligned=bench_aligned,
+            bench_map=bench_map,
+        )
+
     ic_list = []
     ic_dates = []
+    ic_raw_list: list[float] = []
+    ic_resid_list: list[float] = []
     all_vals: list[float] = []  # 全区间所有参与检验的因子值（供 factor_stats 用）
     group_rets = {g: [] for g in range(1, groups + 1)}
     ls_cum = 0.0
@@ -904,14 +945,34 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
             fv.append((sym, val, ret))
         if len(fv) < 30:
             continue
-        vals = [x[1] for x in fv]
-        rets = [x[2] for x in fv]
-        all_vals.extend(vals)
-        ic = _spearman(vals, rets)
-        ic_list.append(ic)
+        vals_raw = [x[1] for x in fv]
+        rets_raw = [x[2] for x in fv]
+        ic_raw_snap = _spearman(vals_raw, rets_raw)
+
+        used_fv = fv
+        ic_main = ic_raw_snap
+        if orthogonalize:
+            resid_fv = orthogonalize_cross_section(fv, ortho_cache.get(snap))
+            if resid_fv is fv:
+                # 降级：该截面记 raw
+                n_snaps_fallback_raw += 1
+                ic_resid_snap = ic_raw_snap
+                used_fv = fv
+            else:
+                n_snaps_resid += 1
+                used_fv = resid_fv
+                ic_resid_snap = _spearman(
+                    [x[1] for x in resid_fv], [x[2] for x in resid_fv]
+                )
+            ic_raw_list.append(ic_raw_snap)
+            ic_resid_list.append(ic_resid_snap)
+            ic_main = ic_resid_snap  # 主路 = resid
+
+        all_vals.extend([x[1] for x in used_fv])
+        ic_list.append(ic_main)
         ic_dates.append(snap.isoformat())
-        # 分组
-        ordered = sorted(fv, key=lambda x: x[1])
+        # 分组 / 多空：开 ortho 时按残差因子值排序（与 IC 同源）
+        ordered = sorted(used_fv, key=lambda x: x[1])
         n = len(ordered)
         g_size = max(1, n // groups)
         for g in range(1, groups + 1):
@@ -1008,6 +1069,40 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
                             f"walk-forward={wf_verdict}），评级 {rating_before_oos} → {rating}"),
         }
 
+    # W47-2：并列 ic_raw / ic_resid；开 ortho 时主字段必须等于 resid 汇总
+    def _pack_ic(seq: list[float]) -> dict:
+        m = _oos_metrics(seq, nw)
+        return {
+            "ic_mean": m["ic_mean"],
+            "icir": m["icir"],
+            "t_stat": m["t_stat"],
+            "ic_win_rate": m["win_rate"],
+            "n_periods": m["n"],
+        }
+
+    if orthogonalize:
+        ic_raw_pack = _pack_ic(ic_raw_list) if ic_raw_list else None
+        ic_resid_pack = _pack_ic(ic_resid_list) if ic_resid_list else None
+        # 主路一致性：ic_mean 等已按 resid 序列算出；对齐 resid pack
+        if ic_resid_pack is not None:
+            ic_resid_pack = {
+                **ic_resid_pack,
+                "ic_mean": round(ic_mean, 5),
+                "icir": round(icir, 4),
+                "t_stat": round(t_stat, 3),
+                "ic_win_rate": round(ic_win, 3),
+                "n_periods": len(ic_list),
+            }
+    else:
+        ic_raw_pack = {
+            "ic_mean": round(ic_mean, 5),
+            "icir": round(icir, 4),
+            "t_stat": round(t_stat, 3),
+            "ic_win_rate": round(ic_win, 3),
+            "n_periods": len(ic_list),
+        }
+        ic_resid_pack = None
+
     _eval = build_eval_profile_for_mining(
         valuation_mode=_val_mode,
         valuation_coverage=_cover,
@@ -1049,6 +1144,13 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
         "factor_stats": _factor_stats(all_vals, len(ic_list)),
         "n_stocks": len(syms),
         "forward_days": forward,
+        "orthogonalize": bool(orthogonalize),
+        "ic_raw": ic_raw_pack,
+        "ic_resid": ic_resid_pack,
+        "ortho_basis": ortho_basis_template(
+            n_snaps_resid=n_snaps_resid if orthogonalize else 0,
+            n_snaps_fallback_raw=n_snaps_fallback_raw if orthogonalize else 0,
+        ),
         **_eval,
     }
 

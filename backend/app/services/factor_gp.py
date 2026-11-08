@@ -34,6 +34,11 @@ from app.services.factor_mining import (
     mine_factor,
     validate_expr,
 )
+from app.services.factor_ortho import (
+    ORTHO_EXPRS,
+    build_ortho_cache,
+    orthogonalize_cross_section,
+)
 
 # ============ 表达式文法 ============
 # 量能序列与收盘序列同窗口同长度，可自由互换/组合（如 corr(returns(c_v), returns(vol_v))）
@@ -244,46 +249,22 @@ def build_context(db: Session, start: str, end: str, forward: int, step: int,
         crisis = bench_ret is not None and bench_ret < -0.03
         snap_pairs.append((idx, snap, fwd_date, bench_ret, crisis))
 
-    # —— 正交化代表因子预计算（增量 alpha 的基准集合）——
-    # 代表性表达式：动量/反转/波动/价值/规模，每期截面算一次缓存，候选取用零成本
-    ORTHO_EXPRS = {
-        "momentum": "roc(c_m, 20)",
-        "reversal": "-roc(c_r, 5)",
-        "low_vol": "std(c_v)",
-        "value": "safe_inv(pe_ttm, 0.001, 1000)",
-        "size": "log(market_cap + 1)",
-    }
-    ortho_cache: dict[date, dict[str, dict[str, float]]] = {}  # snap -> {fac -> {sym: val}}
-    for fac_i, (fac_name, fexpr) in enumerate(ORTHO_EXPRS.items()):
-        for idx, snap, fwd_date, _br, _crisis in snap_pairs:
-            if snap not in bench_map:
-                continue
-            i0 = max(0, idx - 130)
-            slice_dates = axis_dates[i0: idx + 1]
-            bucket = ortho_cache.setdefault(snap, {})
-            for sym in syms:
-                amap = aligned.get(sym)
-                if not amap or snap not in amap:
-                    continue
-                seg, vseg, aseg = _collect_seg(
-                    amap, vol_aligned.get(sym) or {}, amt_aligned.get(sym) or {}, slice_dates)
-                if len(seg) < 60:
-                    continue
-                a = dict(attrs.get(sym, {}) or {})
-                if attrs_tl:
-                    _pv = _attrs_asof(attrs_tl, sym, snap)
-                    if _pv:
-                        a.update(_pv)
-                _apply_fund_asof(a, fund_tl, sym, snap)
-                ns = make_ns(seg, bench_aligned[i0: idx + 1], a,
-                             esv=_es_asof(es_map, sym, snap), vols=vseg, amts=aseg,
-                             fin=fin_asof(fin_hist, sym, snap))
-                try:
-                    v = eval_factor(fexpr, ns)
-                except Exception:  # noqa: BLE001
-                    v = None
-                if v is not None and math.isfinite(v):
-                    bucket.setdefault(fac_name, {})[sym] = v
+    # —— 正交化代表因子预计算（增量 alpha 的基准集合；共享 factor_ortho）——
+    ortho_cache = build_ortho_cache(
+        snaps=[(idx, snap) for idx, snap, *_rest in snap_pairs],
+        syms=syms,
+        aligned=aligned,
+        vol_aligned=vol_aligned,
+        amt_aligned=amt_aligned,
+        axis_dates=axis_dates,
+        attrs=attrs,
+        attrs_tl=attrs_tl,
+        es_map=es_map,
+        fund_tl=fund_tl,
+        fin_hist=fin_hist,
+        bench_aligned=bench_aligned,
+        bench_map=bench_map,
+    )
 
     # —— 个股新闻情绪预载（news_senti 变量数据源）——
     from app.models import NewsStockDaily
@@ -310,42 +291,6 @@ def build_context(db: Session, start: str, end: str, forward: int, step: int,
         "ortho_cache": ortho_cache,
         "news_lookup": _news_lookup,
     }
-
-
-def _orthogonalize(fv: list[tuple[str, float, float]], fac_bucket: dict[str, dict[str, float]] | None):
-    """候选值对代表因子做横截面 OLS 回归，返回残差列表 [(sym, resid, ret)]。"""
-    if not fac_bucket:
-        return fv
-    syms_ok = [x for x in fv if x[0] in fac_bucket and all(x[0] in v for v in fac_bucket.values())]
-    if len(syms_ok) < 20:
-        return fv
-    xs = [[1.0] + [fac_bucket[f][x[0]] for f in fac_bucket] for x in syms_ok]
-    ys = [x[1] for x in syms_ok]
-    n = len(xs)
-    k = len(xs[0])
-    # 正规方程 (X'X) b = X'y（列间近独立，直接解）
-    try:
-        xtx = [[sum(xs[i][a] * xs[i][b_] for i in range(n)) for b_ in range(k)] for a in range(k)]
-        xty = [sum(xs[i][a] * ys[i] for i in range(n)) for a in range(k)]
-        # 高斯消元
-        m = [row[:] + [xty[j]] for j, row in enumerate(xtx)]
-        for col in range(k):
-            piv = max(range(col, k), key=lambda r: abs(m[r][col]))
-            if abs(m[piv][col]) < 1e-12:
-                return fv
-            m[col], m[piv] = m[piv], m[col]
-            for r2 in range(k):
-                if r2 != col and m[col][col]:
-                    f = m[r2][col] / m[col][col]
-                    m[r2] = [m[r2][c] - f * m[col][c] for c in range(k + 1)]
-        beta = [m[i][k] / m[i][i] for i in range(k)]
-        out = []
-        for i, x in enumerate(syms_ok):
-            pred = sum(beta[a] * xs[i][a] for a in range(k))
-            out.append((x[0], x[1] - pred, x[2]))
-        return out
-    except Exception:  # noqa: BLE001
-        return fv
 
 
 def evaluate_candidate(expr: str, ctx: dict, groups: int,
@@ -420,7 +365,7 @@ def evaluate_candidate(expr: str, ctx: dict, groups: int,
         if is_crisis:
             crisis_ic_list.append(ic_raw)
         if orthogonal:
-            vals = [x[1] for x in _orthogonalize(fv, ctx["ortho_cache"].get(snap))]
+            vals = [x[1] for x in orthogonalize_cross_section(fv, ctx["ortho_cache"].get(snap))]
             ic_raw = _spearman(vals, rets)
         if crisis_only and not is_crisis:
             continue
@@ -567,7 +512,7 @@ def gp_search(db: Session, directions: list[str] | None = None,
             progress(0.88 + 0.1 * i / max(len(elites), 1), f"精英 #{i + 1} 全池精评中…")
         full = mine_factor(db, expr, name=f"GP-elite{i + 1}", start=start, end=end,
                            groups=5, forward=forward, universe=None,
-                           n_tested=len(seen))
+                           n_tested=len(seen), orthogonalize=orthogonal)
         if full.get("ok"):
             full["quick_ic"] = round(quick["ic_mean"], 4)
             full["quick_icir"] = round(quick.get("icir", 0), 4)

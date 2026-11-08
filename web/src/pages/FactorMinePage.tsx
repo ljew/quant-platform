@@ -24,6 +24,8 @@ export default function FactorMinePage() {
   const [end, setEnd] = useState("2026-08-24");
   const [groups, setGroups] = useState(5);
   const [forward, setForward] = useState(20);
+  // W47-2：主路径默认对代表集残差后再评 IC
+  const [orthogonalize, setOrthogonalize] = useState(true);
   const [fns, setFns] = useState<Record<string, Record<string, string>>>({});
   const [showFns, setShowFns] = useState(false);
   const [valid, setValid] = useState<{ ok: boolean; error?: string; sample_value?: number | null } | null>(null);
@@ -155,7 +157,7 @@ export default function FactorMinePage() {
     setError("");
     setReport(null);
     try {
-      const r = await api.factorMine({ expr, name, start, end, groups, forward, force });
+      const r = await api.factorMine({ expr, name, start, end, groups, forward, force, orthogonalize });
       setReport(r);
       loadHistory();
     } catch (e) {
@@ -535,6 +537,17 @@ lsof -ti:8000 -sTCP:LISTEN | xargs kill
               </select>
             </Labeled>
           </div>
+          <label
+            style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 12, fontSize: 12.5, cursor: "pointer" }}
+            title="候选因子对动量/反转/低波/价值/规模做横截面回归取残差，再算 IC——度量增量预测力；相关矩阵仍保留"
+          >
+            <input
+              type="checkbox"
+              checked={orthogonalize}
+              onChange={(e) => setOrthogonalize(e.target.checked)}
+            />
+            对代表集残差后再评 IC
+          </label>
           <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
             <Btn onClick={doValidate} kind="warning" small disabled={running}>校验表达式</Btn>
             <Btn onClick={() => runMine()} disabled={running}>{running ? "挖掘中…" : "开始挖掘"}</Btn>
@@ -579,7 +592,7 @@ lsof -ti:8000 -sTCP:LISTEN | xargs kill
             <label style={{ fontSize: 12, color: colors.muted }}>代数
               <input type="number" min={2} max={20} value={gpGens} onChange={(e) => setGpGens(Number(e.target.value) || 6)} style={{ ...inputStyle(colors), width: 64, marginLeft: 6 }} /></label>
             <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}
-              title="候选因子先对动量/反转/低波/价值/规模做横截面回归取残差，再算IC——专挖现有因子之外的增量alpha">
+              title="与主路径同一代表集/算法；候选因子先对动量/反转/低波/价值/规模做横截面回归取残差，再算IC——专挖现有因子之外的增量alpha">
               <input type="checkbox" checked={gpOrtho} onChange={(e) => setGpOrtho(e.target.checked)} />
               正交增量模式
             </label>
@@ -741,6 +754,7 @@ function MineReport({ report, colors, start, end, onForce }: { report: FactorMin
         forwards: [5, 10, 20, 40],
         // 与主报告同区间/分组，避免热力与 IC 时序口径漂移
         groups: report.groups,
+        orthogonalize: report.orthogonalize ?? true,
       });
       setHorizons(r.horizons || []);
     } catch (e) {
@@ -909,6 +923,11 @@ function MineReport({ report, colors, start, end, onForce }: { report: FactorMin
       <Card colors={colors}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
           <Badge text={report.rating} color={ratingColor(report.rating)} />
+          <Badge
+            text={report.orthogonalize === false ? "残差IC·关" : "残差IC·开"}
+            color={report.orthogonalize === false ? "#888" : "#3ba272"}
+            soft
+          />
           <EvalBadges
             cost_profile={report.cost_profile}
             valuation_pit={report.valuation_pit}
@@ -924,8 +943,22 @@ function MineReport({ report, colors, start, end, onForce }: { report: FactorMin
       </Card>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
-        <KpiCard label="IC 均值" value={report.ic_mean.toFixed(4)} sub=">0 正向选股能力"
+        <KpiCard label="IC 均值" value={report.ic_mean.toFixed(4)} sub={report.orthogonalize === false ? ">0 正向选股能力（raw）" : ">0 正向选股能力（主路=残差）"}
           tone={Math.abs(report.ic_mean) >= 0.02 ? "accent" : "neutral"} colors={colors} />
+        <KpiCard
+          label="IC raw"
+          value={report.ic_raw?.ic_mean != null ? report.ic_raw.ic_mean.toFixed(4) : report.ic_mean.toFixed(4)}
+          sub="原始截面 IC"
+          tone="neutral"
+          colors={colors}
+        />
+        <KpiCard
+          label="IC resid"
+          value={report.ic_resid?.ic_mean != null ? report.ic_resid.ic_mean.toFixed(4) : "—"}
+          sub={report.orthogonalize === false ? "残差化未开启" : "残差后再评"}
+          tone={report.ic_resid?.ic_mean != null && Math.abs(report.ic_resid.ic_mean) >= 0.02 ? "accent" : "neutral"}
+          colors={colors}
+        />
         <KpiCard label="ICIR" value={report.icir.toFixed(3)} sub="IC 稳定性"
           tone={Math.abs(report.icir) >= 0.3 ? "accent" : "neutral"} colors={colors} />
         <KpiCard label="t 统计量" value={report.t_stat.toFixed(2)} sub={Math.abs(report.t_stat) >= 2 ? "|t|≥2 显著" : "不显著"}
@@ -998,7 +1031,7 @@ function MineReport({ report, colors, start, end, onForce }: { report: FactorMin
             <div style={{ marginTop: 8, fontSize: 12, color: colors.muted }}>
               最大 |ρ| = <b>{report.max_abs_corr}</b> —{" "}
               {report.max_abs_corr > 0.7 ? "⚠ 与现有因子高度重复，建议放弃或改造" :
-               report.max_abs_corr > 0.5 ? "⚠ 中度重复，可考虑正交化处理" : "✓ 与现有因子独立性良好"}
+               report.max_abs_corr > 0.5 ? "⚠ 中度重复，可开启上方残差化后再评" : "✓ 与现有因子独立性良好"}
             </div>
           </>
         ) : (

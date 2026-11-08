@@ -84,6 +84,10 @@ class MinePayload(BaseModel):
     groups: int = Field(5, ge=2, le=10)
     forward: int = Field(20, ge=1, le=60)
     force: bool = Field(False, description="忽略重复表达式提示，强制重算并另存一条记录")
+    orthogonalize: bool = Field(
+        True,
+        description="对代表集残差后再评 IC（默认开；主 KPI/评级走 resid）",
+    )
 
 
 class HorizonsPayload(BaseModel):
@@ -95,6 +99,10 @@ class HorizonsPayload(BaseModel):
     forwards: list[int] = Field(default_factory=lambda: [5, 10, 20, 40],
                                 description="未来收益窗口列表")
     force: bool = False
+    orthogonalize: bool = Field(
+        True,
+        description="对代表集残差后再评 IC（与 /mine 同口径）",
+    )
 
 
 @router.get("/functions")
@@ -110,16 +118,18 @@ def validate(payload: MinePayload):
     return {"ok": True, "sample_value": round(sample, 6) if sample is not None else None}
 
 
-def _find_existing(db: Session, expr: str, payload: MinePayload, sig: str):
-    """查找同「表达式 + 区间 + groups + forward」的历史记录。
+def _find_existing(db: Session, expr: str, payload: MinePayload, sig: str,
+                   *, allow_legacy: bool = True,
+                   legacy_sig: str | None = None):
+    """查找同「表达式 + 区间 + groups + forward + ortho」的历史记录。
 
     返回 (记录, 已解析报告)；记录存在但报告不可解析时报告为 None。
 
-    两级匹配 ——
-    ① 精确：表达式 + 参数签名完全一致；
-    ② 兼容：params_json 是后加的列，老记录为空。但那些记录的 ic_series 日期
-       序列由「区间 + forward + step」唯一决定，日期序列一致即参数等价；
-       命中后顺手把签名回填，下次走①的快路径。
+    匹配顺序 ——
+    ① 精确：表达式 + 参数签名完全一致（含 |o=0/1）；
+    ② 预 ortho 签名（仅 allow_legacy 且 orthogonalize=False）：无 |o= 的旧记录；
+    ③ 兼容：params_json 为空的老记录，按 ic_series 日期序列等价判定
+       （仅 allow_legacy；orthogonalize=True 禁止命中，避免 raw 当 resid）。
     """
 
     def _load(row) -> dict | None:
@@ -136,6 +146,19 @@ def _find_existing(db: Session, expr: str, payload: MinePayload, sig: str):
     ).scalar_one_or_none()
     if row is not None:
         return row, _load(row)
+
+    if not allow_legacy:
+        return None, None
+
+    # ② 无 |o= 后缀的旧签名（raw 口径）
+    if legacy_sig:
+        row = db.execute(
+            select(FactorMineResult)
+            .where(FactorMineResult.expr == expr, FactorMineResult.params_json == legacy_sig)
+            .order_by(FactorMineResult.id.desc()).limit(1)
+        ).scalar_one_or_none()
+        if row is not None:
+            return row, _load(row)
 
     legacy = db.execute(
         select(FactorMineResult)
@@ -170,9 +193,17 @@ def mine(payload: MinePayload, db: Session = Depends(get_db)):
     """
     expr = payload.expr.strip()
     sd, ed = resolve_range(payload.start, payload.end)
-    sig = f"{sd.isoformat()}|{ed.isoformat()}|{payload.groups}|{payload.forward}"
+    ortho = bool(payload.orthogonalize)
+    sig = (f"{sd.isoformat()}|{ed.isoformat()}|{payload.groups}|"
+           f"{payload.forward}|o={1 if ortho else 0}")
+    legacy_sig = f"{sd.isoformat()}|{ed.isoformat()}|{payload.groups}|{payload.forward}"
 
-    row, cached = _find_existing(db, expr, payload, sig)
+    # orthogonalize=True 不得命中无 |o= 的旧 raw 缓存
+    row, cached = _find_existing(
+        db, expr, payload, sig,
+        allow_legacy=(not ortho),
+        legacy_sig=(None if ortho else legacy_sig),
+    )
     if not payload.force and cached is not None:
         cached["duplicate_of"] = row.id
         cached["duplicate_created_at"] = row.created_at.isoformat() if row.created_at else None
@@ -182,6 +213,7 @@ def mine(payload: MinePayload, db: Session = Depends(get_db)):
         db, expr, name=payload.name,
         start=payload.start, end=payload.end,
         groups=payload.groups, forward=payload.forward,
+        orthogonalize=ortho,
     )
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "挖掘失败"))
@@ -220,6 +252,7 @@ def mine_horizons(payload: HorizonsPayload, db: Session = Depends(get_db)):
             db, expr, name=payload.name,
             start=payload.start, end=payload.end,
             groups=payload.groups, forward=fwd,
+            orthogonalize=bool(payload.orthogonalize),
         )
         if not result.get("ok"):
             raise HTTPException(
