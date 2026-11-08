@@ -415,11 +415,9 @@ def step_extract_social_heat(db) -> int:
 def _my_symbols(db, max_n: int = 12) -> list[str]:
     """股吧要看的票 = 模拟盘持仓 + 今日 NEW 信号。
 
-    老刘 2026-11-08：「股吧里面只需要显示自选股或者说是我的模拟盘中的信息」。
-    原来抓的是雪球 A 股热股 Top10，全是跟他无关的票。
-
-    顺序即优先级：持仓是自己真金白银在里面的，排前面；不足 max_n 用今日
-    NEW 信号补（次日可能建仓的候选）。都没有则返回空，由 extractor 回退热股。
+    老刘 2026-11-08 先说要「只看自己的票」，随后补一句「不要清理，重点的票
+    看看也行」—— 所以最终口径是**并集**：持仓 + 今日 NEW 信号排前面优先抓，
+    雪球热股照样补在后面（extractor 里合并）。
     """
     import json as _json
 
@@ -466,7 +464,8 @@ def step_extract_guba_heat(db) -> int:
     params = src.get("params", {})
     mine = _my_symbols(db, max_n=int(params.get("top_n", 12)))
     try:
-        df = GubaHotExtractor().fetch(top_n=max(len(mine), int(params.get("top_n", 10))),
+        # 我的票 + 热股并集：extractor 里会把自己的票排前面、再用热股补足
+        df = GubaHotExtractor().fetch(top_n=int(params.get("top_n", 10)),
                                       max_posts=int(params.get("max_posts", 40)),
                                       symbols=mine or None)
     except Exception as e:  # noqa: BLE001

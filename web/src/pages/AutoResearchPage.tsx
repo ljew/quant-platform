@@ -48,7 +48,13 @@ function RunRow({ r, onView }: { r: AutoRun; onView: (id: number) => void }) {
           } soft />
       </td>
       <td style={{ padding: "8px 10px", borderBottom: `1px solid ${colors.border}`, fontSize: 12.5, color: colors.muted }}>
-        {r.error ? <span style={{ color: colors.up }}>{r.error}</span> : brief}
+        {r.status === "SKIPPED" ? (
+          <span style={{ color: colors.muted }}>本次按计划跳过（不算失败）</span>
+        ) : r.error ? (
+          <span style={{ color: colors.up }}>{r.error}</span>
+        ) : (
+          brief
+        )}
       </td>
       <td style={{ padding: "8px 10px", borderBottom: `1px solid ${colors.border}` }}>
         {r.report_path && <Btn small kind="ghost" onClick={() => onView(r.id)}>看报告</Btn>}

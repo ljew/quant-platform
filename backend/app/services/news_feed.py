@@ -327,6 +327,45 @@ def sync(db: Session, with_slow: bool = False, with_guba: bool = False) -> dict:
 
 # ───────────────────────── 查询 ─────────────────────────
 
+def _bigrams(s: str) -> set[str]:
+    t = "".join(ch for ch in (s or "") if ch.strip())
+    return {t[i:i + 2] for i in range(len(t) - 1)} or ({t} if t else set())
+
+
+def _mark_dups(items: list[dict]) -> None:
+    """给同一事件的多家报道打 `dup_count`（顺带就是热度信号）。
+
+    老刘 2026-11-08：「如果资讯重复的话增加一个标志，这个也可以显示出热度出来」。
+    一家报 vs 五家报，后者显然更值得看一眼 —— 与其把重复条目删掉，不如把
+    「几家在报」摆出来。
+
+    只在**当前返回的这一页**内聚类：跨页要全表扫或加缓存，性价比不高，
+    而同一时段的消息本来就会落在同一页。
+    阈值 0.55：同一事件改标题后字二元组 Jaccard 通常 0.6~0.9（「国常会部署
+    稳市机制」vs「国常会：完善资本市场稳市机制」≈ 0.72），不同事件多在 0.2 以下。
+    """
+    grams = [_bigrams(it.get("title") or "") for it in items]
+    n = len(items)
+    for i in range(n):
+        group = [i]
+        if not grams[i]:
+            items[i]["dup_count"] = 1
+            continue
+        for j in range(i + 1, n):
+            if not grams[j]:
+                continue
+            inter = len(grams[i] & grams[j])
+            if inter == 0:
+                continue
+            if inter / len(grams[i] | grams[j]) >= 0.55:
+                group.append(j)
+        srcs = sorted({items[k].get("source_label") or items[k].get("source") or ""
+                       for k in group} - {""})
+        for k in group:
+            items[k]["dup_count"] = len(group)
+            items[k]["dup_sources"] = srcs
+
+
 def query(db: Session, sources: list[str] | None = None, q: str = "",
           hours: int = 0, limit: int = 50, offset: int = 0) -> dict:
     """按来源 / 关键词 / 时间窗查询，返回 {items, total, has_more}。"""
@@ -370,6 +409,7 @@ def query(db: Session, sources: list[str] | None = None, q: str = "",
         "fetched_at": r.fetched_at.isoformat(timespec="minutes") if r.fetched_at else None,
         "symbols": r.symbols,
     } for r in rows]
+    _mark_dups(items)
     return {"items": items, "total": total, "has_more": offset + len(items) < total}
 
 

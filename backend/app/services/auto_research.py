@@ -198,8 +198,19 @@ def _mining_body(db: Session, run_id: int, cfg: dict) -> dict:
 
 
 def run_mining(trigger: str = "manual") -> int:
-    """启动一次自动挖矿（后台线程）。返回 run_id。"""
+    """启动一次自动挖矿（后台线程）。返回 run_id，跳过时返回 0。
+
+    ⚠️ GP 熔断（M2-1，2026-10-08）期间，**定时触发直接不跑、也不建记录**。
+    原来的做法是照常建 run 再记成 SKIPPED，结果页面上每天多一行灰字 +
+    一段「GP 挖矿已暂停：无样本外验证…」说明，纯噪音 —— 老刘 2026-11-08
+    说「总是报这个错误」就是这个。手动点的那次仍然建记录，方便看原因。
+    """
     from app.database import SessionLocal
+    from app.services.factor_gp import GP_ENABLED
+
+    if not GP_ENABLED and trigger != "manual":
+        logger.info("GP 挖矿已熔断（M2-1），定时任务跳过，不建运行记录")
+        return 0
 
     db0 = SessionLocal()
     try:
