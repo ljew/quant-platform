@@ -12,6 +12,9 @@ import inspect
 
 from app.core.engine.backtest_engine import BacktestEngine
 from app.core.engine.portfolio_backtest import PortfolioBacktestEngine
+from app.core.cost_defaults import (
+    COMMISSION, SLIPPAGE, STAMP_TAX, MIN_COMMISSION, RISK_FREE_RATE,
+)
 
 
 def _bars(n: int = 60) -> list[dict]:
@@ -27,11 +30,12 @@ def _bars(n: int = 60) -> list[dict]:
 class TestCostModel:
     def test_defaults_are_realistic(self):
         eng = BacktestEngine(_bars())
-        assert eng.commission == 0.00025, f"佣金应为万2.5，实为 {eng.commission}"
+        assert eng.commission == COMMISSION, f"佣金应为万2.5，实为 {eng.commission}"
+        assert eng.slippage == SLIPPAGE, f"滑点应为万1，实为 {eng.slippage}"
         assert eng.slippage > 0, "滑点不应为 0（旧实现零滑点过于乐观）"
-        assert eng.stamp_tax == 0.0005, f"印花税应为万5，实为 {eng.stamp_tax}"
-        assert eng.min_commission == 5.0
-        assert eng.risk_free_rate == 0.025, "无风险利率应为 2.5%"
+        assert eng.stamp_tax == STAMP_TAX, f"印花税应为万5，实为 {eng.stamp_tax}"
+        assert eng.min_commission == MIN_COMMISSION
+        assert eng.risk_free_rate == RISK_FREE_RATE, "无风险利率应为 2.5%"
 
     def test_portfolio_defaults_match(self):
         """组合引擎与单标的引擎成本口径必须一致（M1-3 的核心目标）。"""
