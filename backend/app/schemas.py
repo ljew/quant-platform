@@ -182,6 +182,11 @@ class BacktestResult(BaseModel):
     hedged_sharpe: float = 0.0
     hedged_max_drawdown: float = 0.0
     created_at: str | None = None
+    # W45-badge：评估口径徽章（只增字段，旧前端可忽略）
+    cost_profile: dict | None = None
+    valuation_pit: dict | None = None
+    pead_pit: dict | None = None
+    oos: dict | None = None
 
 
 class BacktestSummary(BaseModel):
@@ -246,3 +251,8 @@ class OptimizeTrial(BaseModel):
     neighbor_count: int = 0
     neighbor_sharpe: float | None = None
     robustness: float | None = None
+    # W45-badge：任务级口径（各 trial 相同，便于前端从任意行读取）
+    cost_profile: dict | None = None
+    valuation_pit: dict | None = None
+    pead_pit: dict | None = None
+    oos: dict | None = None

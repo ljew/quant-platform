@@ -58,6 +58,10 @@ from app.core.engine.backtest_engine import BacktestEngine
 from app.core.engine.portfolio_backtest import PortfolioBacktestEngine
 from app.core.datahub.industry_map import to_sw_l1
 from app.core.strategies.registry import get_strategy, list_strategies
+from app.core.eval_profile import (
+    build_eval_profile_for_backtest,
+    build_eval_profile_for_optimize,
+)
 from app.core import task_queue
 
 # backend 目录（子进程脚本的工作目录与 PYTHONPATH 基准）
@@ -650,6 +654,8 @@ def _persist(db, req, meta, params, result) -> Backtest:
                     "sharpe": getattr(result, "hedged_sharpe", 0.0),
                     "max_drawdown": getattr(result, "hedged_max_drawdown", 0.0),
                 },
+                # W45-badge：评估口径（落库，历史详情可回放徽章）
+                **build_eval_profile_for_backtest(req, multi_asset=multi),
             },
             ensure_ascii=False,
         ),
@@ -762,6 +768,7 @@ def _optimize_core(db, req: OptimizeRequest, max_combos: int,
         if len(bars_all) - split_i >= 20:  # 验证段太短则不分
             split_date = bars_all[split_i]["date"]
 
+    eval_prof = build_eval_profile_for_optimize(req)
     results: dict[tuple, OptimizeTrial] = {}
     total = len(combos)
     for i, combo in enumerate(combos):
@@ -789,6 +796,9 @@ def _optimize_core(db, req: OptimizeRequest, max_combos: int,
             win_rate=result.win_rate,
             trade_count=result.trade_count,
             final_equity=result.final_equity,
+            cost_profile=eval_prof["cost_profile"],
+            valuation_pit=eval_prof["valuation_pit"],
+            pead_pit=eval_prof["pead_pit"],
         )
         if split_date:
             trial.oos_start = split_date
@@ -1064,6 +1074,10 @@ def _to_result(r: Backtest, name: str, multi: bool) -> BacktestResult:
         hedged_sharpe=hedged.get("sharpe", 0.0),
         hedged_max_drawdown=hedged.get("max_drawdown", 0.0),
         created_at=r.created_at.isoformat() if r.created_at else None,
+        cost_profile=extra.get("cost_profile"),
+        valuation_pit=extra.get("valuation_pit"),
+        pead_pit=extra.get("pead_pit"),
+        oos=extra.get("oos"),
     )
 
 

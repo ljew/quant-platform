@@ -3,6 +3,7 @@ import { api, BacktestResult, OptimizeTrial, StrategyInfo } from "../api/client"
 import { useTheme } from "../theme";
 import type { ThemeColors } from "../theme";
 import { Btn, Card, PageHeader } from "../components/ui";
+import EvalBadges from "../components/EvalBadges";
 import ParamPanel, { ParamMap } from "../components/ParamPanel";
 import EChart from "../components/EChart";
 
@@ -444,6 +445,15 @@ export default function OptimizePage() {
       {/* 结论 */}
       {best && (
         <Card title="结论" colors={colors}>
+          <div style={{ marginBottom: 10 }}>
+            <EvalBadges
+              cost_profile={best.cost_profile}
+              valuation_pit={best.valuation_pit}
+              pead_pit={best.pead_pit}
+              oos={best.oos}
+              colors={colors}
+            />
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12, fontSize: 13 }}>
             <div>
               <div style={{ color: colors.muted }}>最优参数</div>

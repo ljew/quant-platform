@@ -3,6 +3,7 @@ import EChart from "../components/EChart";
 import HotBriefCard from "../components/HotBriefCard";
 import LlmConfigModal from "../components/LlmConfigModal";
 import { Badge, Btn, Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
+import EvalBadges from "../components/EvalBadges";
 import {
   api, AiExplainResult, AiGenerateResult, AiStatus,
   FactorMineReport, FactorMineSummary, GpMineResult, NewsEventReport,
@@ -753,6 +754,13 @@ function MineReport({ report, colors, onForce }: { report: FactorMineReport; col
       <Card colors={colors}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
           <Badge text={report.rating} color={ratingColor(report.rating)} />
+          <EvalBadges
+            cost_profile={report.cost_profile}
+            valuation_pit={report.valuation_pit}
+            pead_pit={report.pead_pit}
+            oos={report.oos}
+            colors={colors}
+          />
           <span style={{ fontSize: 17, fontWeight: 700 }}>{report.name}</span>
           <code style={{ fontSize: 12.5, color: colors.muted, background: colors.tableStripe, padding: "4px 10px", borderRadius: 6 }}>{report.expr}</code>
           <span style={{ flex: 1 }} />
