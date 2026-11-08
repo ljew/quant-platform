@@ -401,6 +401,27 @@ export const api = {
   monitorDataflow: () => get<DataflowReport>(`/monitor/dataflow`),
   monitorLineage: () => get<LineageReport>(`/monitor/lineage`),
   monitorAssets: (force = false) => get<AssetsReport>(`/monitor/assets?force=${force}`),
+  // 基金数据管道：看状态 / 应急触发 / 查最近一次输出
+  fundPipeline: () => get<FundPipelineStatus>("/fund/pipeline/status"),
+  fundPipelineRun: (stage: string, force = true) =>
+    post<{ ok: boolean; stage: string; started?: boolean; skipped?: boolean; error?: string }>(
+      "/fund/pipeline/run", { stage, force }),
+  fundPipelineDetail: (stage: string) =>
+    get<{ ok: boolean; stage: string; status?: string; detail?: string; error?: string;
+          started_at?: string; duration_sec?: number; rows?: number }>(
+      `/fund/pipeline/detail?stage=${encodeURIComponent(stage)}`),
+  // 应急：今天没成功的环节按依赖顺序补跑
+  fundPipelineRunAll: () =>
+    post<{ ok: boolean; started?: string[]; skipped?: string[]; error?: string }>(
+      "/fund/pipeline/run-all", {}),
+  // 应急：清掉卡住的 running 记录，使其能立刻重跑（不必等 3 小时自动接管）
+  fundPipelineReset: (stage: string) =>
+    post<{ ok: boolean; stage: string; reset?: boolean; message?: string; error?: string }>(
+      "/fund/pipeline/reset", { stage }),
+  // 应急：暂停/恢复自动巡检（手工补数时避免调度器抢库锁）
+  fundPipelinePause: (paused: boolean) =>
+    post<{ ok: boolean; paused?: boolean; error?: string }>(
+      "/fund/pipeline/pause", { paused }),
   healthRules: () => get<HealthRuleRow[]>(`/monitor/health/rules`),
   healthRuleToggle: (id: number, enabled: boolean) =>
     put(`/monitor/health/rules/${id}`, { enabled }),
@@ -1042,6 +1063,35 @@ export interface HealthRuleRow {
   comparator: string; threshold: number | null; level: string; weight: number;
   enabled: boolean; last_value: string | null; last_status: string | null;
   metric_doc: string;
+}
+
+// —— 基金数据管道（独立库 fund_research.db，按披露日历调度）——
+export interface FundPipelineStage {
+  key: string; label: string; kind: "collect" | "derived" | string;
+  desc: string; on: string; depends: string[];
+  run_at: string; timeout: number;
+  today_status: string | null;      // running / ok / fail / null（今天没跑）
+  today_started: string | null;
+  today_finished: string | null;
+  today_duration: number | null;
+  today_rows: number | null;
+  today_error: string | null;
+  today_detail: string | null;
+  last_ok_at: string | null;
+  last_fail_at: string | null;
+  last_error: string | null;
+  runs_total: number; fails_total: number; running: boolean;
+}
+export interface FundPipelineStatus {
+  ok: boolean; error?: string;
+  enabled: boolean;
+  paused?: boolean;
+  in_disclosure_window: boolean;
+  is_trading_day: boolean;
+  started_at: string | null;
+  last_tick: string | null;
+  stages: FundPipelineStage[];
+  data: Record<string, { rows: number; latest: string | null }>;
 }
 
 // —— Agent 编排 / 研究驾驶舱（P2）——

@@ -18,6 +18,8 @@ const AttributionPage = lazy(() => import("./pages/AttributionPage"));
 const AutoResearchHubPage = lazy(() => import("./pages/AutoResearchHubPage"));
 const DataSystemPage = lazy(() => import("./pages/DataSystemPage"));
 const WechatPage = lazy(() => import("./pages/WechatPage"));
+const FundPersistencePage = lazy(() => import("./pages/FundPersistencePage"));
+const FundPenetrationPage = lazy(() => import("./pages/FundPenetrationPage"));
 
 /**
  * 重构 v2.1：13 个二级 Tab → 9 个（2026-10-08 精简）。
@@ -44,6 +46,8 @@ const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; lab
   ] },
   { key: "research", label: "策略研究", icon: "⚗", tabs: [
     { key: "cards", label: "研究卡" },
+    { key: "fund", label: "基金持续性" },
+    { key: "fund-holding", label: "持仓穿透" },
     { key: "btopt", label: "回测寻优" },
     { key: "factorlab", label: "因子实验室" },
   ] },
@@ -98,6 +102,8 @@ function HubContent({ sub }: { sub: string }) {
     case "etfflow": return <EtfFlowPage />;
     case "wechat": return <WechatPage />;
     case "cards": return <ResearchCardsPage />;
+    case "fund": return <FundPersistencePage />;
+    case "fund-holding": return <FundPenetrationPage />;
     case "btopt": return <BacktestOptimizePage />;
     case "factorlab": return <FactorMinePage />;
     case "paper": return <PaperPage />;

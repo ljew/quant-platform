@@ -88,13 +88,42 @@ def _f(v):
         return None
 
 
-def sync_basic(db: Session, market: str = "E") -> int:
-    """基金基础信息全量覆盖（按 ts_code upsert）。"""
+def _fetch_basic_df(pro, market: str):
+    """按 market 拉全量基础信息。fund_basic 单次上限 15000 行，场外必须 offset 分页。"""
+    import time
+
+    frames, off = [], 0
+    while True:
+        df = pro.fund_basic(market=market, offset=off)
+        if df is None or df.empty:
+            break
+        frames.append(df)
+        if len(df) < 15000:
+            break
+        off += 15000
+        time.sleep(0.4)
+    return pd.concat(frames, ignore_index=True) if frames else None
+
+
+def sync_basic(db: Session, market: str | None = None) -> int:
+    """基金基础信息全量覆盖（按 ts_code upsert）。
+
+    market=None 时**同时拉场内(E)与场外(O)**。此前默认 market="E"，只覆盖 3 千余只
+    场内基金（ETF/LOF），而主动权益基金全部是场外(O) —— 结果是 `fund_basic` 里
+    查不到任何主动权益产品，按基金类型筛研究必然跑空（2026-11-08 实证）。
+    """
     from app.models import FundBasic
 
-    df = _pro().fund_basic(market=market)
-    if df is None or df.empty:
+    markets = [market] if market else ["E", "O"]
+    dfs = []
+    for mk in markets:
+        df = _fetch_basic_df(_pro(), mk)
+        if df is not None and not df.empty:
+            dfs.append(df)
+            logger.info("fund_basic[%s] 拉到 %d 行", mk, len(df))
+    if not dfs:
         return 0
+    df = pd.concat(dfs, ignore_index=True).drop_duplicates("ts_code")
     now = datetime.now()
     rows = []
     for _, r in df.iterrows():

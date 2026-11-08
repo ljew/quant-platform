@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings, BASE_DIR
 from app.database import init_db
-from app.routers import data, market, strategy, paper, hedge, monitor, factor, llm, signal, agent, news, auto, research, live_ops, wechat, etf_flow, reports
+from app.routers import data, market, strategy, paper, hedge, monitor, factor, llm, signal, agent, news, auto, research, live_ops, wechat, etf_flow, reports, fund
 from app.schemas import HealthResponse
 
 import logging
@@ -64,6 +64,8 @@ app.include_router(research.router, prefix=settings.api_prefix)
 app.include_router(etf_flow.router, prefix=settings.api_prefix)
 # 市场资讯报告（只读）：由 ingest_market_report.py 写入 market_reports 表
 app.include_router(reports.router, prefix=settings.api_prefix)
+# 基金持续性（只读）：统计由 build_stats.py 预计算进 fund_stat_cache
+app.include_router(fund.router, prefix=settings.api_prefix)
 
 
 @app.on_event("startup")
@@ -83,7 +85,8 @@ def on_startup():
                   "etf_flow_scheduler", "hot_brief_scheduler",
                   "news_feed_scheduler", "news_feed",
                   "foreign_news_scheduler", "foreign_news",
-                  "quote_scheduler", "quote_snapshot"):
+                  "quote_scheduler", "quote_snapshot",
+                  "fund_scheduler"):
         _lg = logging.getLogger(_name)
         if not _lg.handlers:
             _lg.addHandler(_h)
@@ -167,6 +170,15 @@ def on_startup():
         start_quote_scheduler()
     except Exception as _e:  # noqa: BLE001
         logging.getLogger(__name__).warning("行情快照调度器启动失败：%s", _e)
+
+    # 基金数据管道：净值日更 + 披露窗口内抓持仓/监管仓位/FOF 报告 + 派生计算重算。
+    # 独立库 data/fund_research.db，和主行情链路解耦（主库 2026-11-08 因双写损坏过）。
+    # QUANT_FUND_SCHEDULE=0 可关闭；默认开，否则页面上的基金数据永远停在手工跑的时点。
+    try:
+        from app.core.fund_scheduler import start_fund_scheduler
+        start_fund_scheduler(os.getenv("QUANT_FUND_SCHEDULE", "1") == "1")
+    except Exception as _e:  # noqa: BLE001
+        logging.getLogger(__name__).warning("基金管道调度器启动失败：%s", _e)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["meta"])
