@@ -52,3 +52,6 @@ vendor/
 
 # —— 运维脚本的时间戳备份 ——
 backend/scripts/*.bak_*
+
+# —— 外部搜索源凭证（含 key，不入库）——
+config/search_sources.json
