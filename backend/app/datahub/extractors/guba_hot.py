@@ -41,15 +41,25 @@ _LIST_RE = re.compile(r"var\s+article_list\s*=\s*(\{.*?\});", re.S)
 class GubaHotExtractor(BaseExtractor):
     name = "guba_hot"
 
-    def fetch(self, top_n: int = 10, max_posts: int = 40, **kw) -> pd.DataFrame:
+    def fetch(self, top_n: int = 10, max_posts: int = 40,
+              symbols: list[str] | None = None, **kw) -> pd.DataFrame:
+        """抓股吧帖。
+
+        `symbols` 给了就只抓这些票（模拟盘持仓 / 今日信号），否则回退到
+        「雪球 A 股热股 Top N」—— 那是全市场视角，跟自己的仓位没关系。
+        老刘 2026-11-08 要求：股吧只看自选股和模拟盘里的票。
+        """
         from .social_heat import _xueqiu_a_hot
 
         day = datetime.now().strftime("%Y-%m-%d")
         now = int(time.time())
-        try:
-            hot = _xueqiu_a_hot(max(1, int(top_n)))
-        except Exception:  # noqa: BLE001
-            hot = []
+        if symbols:
+            hot = [{"symbol": s} for s in symbols[:max(1, int(top_n))]]
+        else:
+            try:
+                hot = _xueqiu_a_hot(max(1, int(top_n)))
+            except Exception:  # noqa: BLE001
+                hot = []
 
         rows: list[dict] = []
         sess = requests.Session()
