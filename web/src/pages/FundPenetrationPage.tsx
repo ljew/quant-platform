@@ -20,6 +20,18 @@ interface CoverageType {
 }
 interface YearRow { year: number; n_sections: number; q13_cover: number | null; annual_cover: number | null }
 interface IndRow { industry: string; total_w: number; active_w: number; carried_w: number; n: number }
+/** 行业反查：可选行业（含该期全池统计） */
+interface IndOption {
+  industry: string; n_funds: number; avg_w: number; max_w: number; n_ge5: number;
+}
+/** 行业反查：命中的基金。exposure_basis 标明该期权重口径 */
+interface IndPick {
+  base_code: string; ts_code: string; name: string;
+  disclosed_w: number; carried_w: number; total_w: number;
+  benchmark_w: number; active_w: number;
+  disclosed_cover: number; exposure_basis: string | null;
+  n_disclosed: number; is_complete: boolean;
+}
 interface Overview {
   ok: boolean; error?: string; cached_at?: string;
   scope: { fund_pool: string; n_funds: number; n_sections: number; date_range: string[]; is_sample: boolean };
@@ -33,7 +45,11 @@ interface Overview {
   industry_source: Record<string, number>;
   detail_rows: number;
   discipline: string;
-  fetch_progress?: { done: number; total: number; completed: boolean; pct?: number };
+  /** total/completed 为 null = 基金池规模未知（主库读不到），不能当作「未完成」 */
+  fetch_progress?: {
+    done: number; total: number | null;
+    completed: boolean | null; pct?: number | null;
+  };
   proxy?: { rows: number; weight: number; share_pct: number };
   regulatory?: {
     source: string; n_sections: number; share_pct: number;
@@ -78,6 +94,8 @@ interface FundDetail {
              confidence: number; hhi: number; top3_share: number;
              anchor_end_date: string; anchor_gap_days: number; lookahead: boolean;
              warning?: string | null;
+             /** net_value=占净值比 / regulatory=监管仓位锚定 / structure_only=仅结构归一 */
+             exposure_basis?: string | null;
              equity_source: string; reg_equity: number | null };
   industries: IndExp[];
   turnover: { end_date: string; turnover: number }[];
@@ -183,6 +201,13 @@ function fmtDate(d?: string) {
   return d && d.length === 8 ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}` : (d || "—");
 }
 
+/** 最新期持仓缺口：源头未披露的那批（非抓取遗漏） */
+interface GapInfo {
+  ok: boolean; end_date: string; active_funds_45d: number;
+  with_holdings: number; missing: number; missing_pct: number;
+  items: { ts_code: string; name: string }[]; note?: string;
+}
+
 export default function FundPenetrationPage() {
   const { colors, mode } = useTheme();
   const [ov, setOv] = useState<Overview | null>(null);
@@ -200,6 +225,16 @@ export default function FundPenetrationPage() {
   const [regHold, setRegHold] = useState<RegHoldResp | null>(null);
   const [fof, setFof] = useState<FofDiag | null>(null);
   const [fofLayer, setFofLayer] = useState<FofLayer | null>(null);
+  // 行业反查（与单基金钻取互为反向）
+  const [indList, setIndList] = useState<IndOption[]>([]);
+  const [indSel, setIndSel] = useState("");
+  const [indMin, setIndMin] = useState(0);
+  const [indRows, setIndRows] = useState<IndPick[]>([]);
+  const [indDate, setIndDate] = useState("");
+  const [indBusy, setIndBusy] = useState(false);
+  const [indErr, setIndErr] = useState("");
+  // 最新期持仓缺口（源头未披露的那批，需扫全量净值表，异步加载不阻塞首屏）
+  const [gaps, setGaps] = useState<GapInfo | null>(null);
 
   useEffect(() => {
     setBusy(true);
@@ -207,6 +242,10 @@ export default function FundPenetrationPage() {
       .then((d) => { if (!d.ok) setErr(d.error || "接口返回异常"); else setOv(d); })
       .catch((e) => setErr((e as Error).message))
       .finally(() => setBusy(false));
+    // 缺口要扫 1,160 万行净值表（约 5 秒），单独异步拉，不拖慢首屏
+    get<GapInfo>("/fund/penetration/gaps")
+      .then((d) => { if (d.ok) setGaps(d); })
+      .catch(() => { /* 缺口统计缺失不阻塞主页面 */ });
   }, []);
 
   useEffect(() => {
@@ -237,6 +276,36 @@ export default function FundPenetrationPage() {
       .catch(() => setFunds([]));
   };
   useEffect(() => { search(""); }, []);
+
+  const loadIndustry = (ind: string, minW: number) => {
+    if (!ind) return;
+    setIndBusy(true); setIndErr("");
+    get<{ ok: boolean; end_date: string; items: IndPick[]; error?: string }>(
+      `/fund/penetration/industry/${encodeURIComponent(ind)}?min_w=${minW}&limit=40`)
+      .then((d) => {
+        if (!d.ok) { setIndErr(d.error || "查询失败"); setIndRows([]); return; }
+        setIndRows(d.items || []);
+        if (d.end_date) setIndDate(d.end_date);
+      })
+      .catch((e) => { setIndErr((e as Error).message); setIndRows([]); })
+      .finally(() => setIndBusy(false));
+  };
+
+  // 行业反查：首次进入拉行业清单，默认选「5% 以上仓位的基金数」最多的行业。
+  // 不用平均权重排序 —— 均值和基金数量无关，容易选中一个只有少数基金配置的冷门行业。
+  useEffect(() => {
+    get<{ ok: boolean; end_date: string; industries: IndOption[] }>(
+      "/fund/penetration/industries")
+      .then((d) => {
+        if (!d.ok) return;
+        const list = d.industries || [];
+        setIndList(list);
+        if (d.end_date) setIndDate(d.end_date);
+        const top = [...list].sort((a, b) => b.n_ge5 - a.n_ge5)[0];
+        if (top) { setIndSel(top.industry); loadIndustry(top.industry, 0); }
+      })
+      .catch(() => { /* 行业清单缺失不阻塞主页面 */ });
+  }, []);
 
   const loadFund = (c: string, ed: string) => {
     if (!c) return;
@@ -442,7 +511,10 @@ export default function FundPenetrationPage() {
         desc="双轨隔离口径：披露值与继承值分开存、分开展示，继承值只用于行业结构分母校正"
       />
 
-      {ov.fetch_progress && !ov.fetch_progress.completed && (
+      {/* completed 为 null 表示「池规模未知」（主库被容器占用时读不到），
+          此时不能当成「未完成」渲染 —— total 为 null 会直接把整页打崩 */}
+      {ov.fetch_progress && ov.fetch_progress.completed === false
+        && ov.fetch_progress.total != null && (
         <div style={{ background: mode === "dark" ? "#1a2740" : "#eef4ff",
           border: `1px solid ${colors.border}`, borderRadius: 10,
           padding: "10px 16px", marginBottom: 14, fontSize: 12.5, lineHeight: 1.7 }}>
@@ -465,7 +537,10 @@ export default function FundPenetrationPage() {
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 16 }}>
-        <KpiCard label="覆盖基金" value={ov.scope.n_funds.toLocaleString()} sub={ov.scope.fund_pool} colors={colors} />
+        <KpiCard label="覆盖基金" value={ov.scope.n_funds.toLocaleString()}
+          sub={gaps
+            ? `最新期 ${gaps.with_holdings} 只有披露 / ${gaps.active_funds_45d} 只活跃，缺 ${gaps.missing} 只`
+            : ov.scope.fund_pool} colors={colors} />
         <KpiCard label="持仓截面" value={ov.scope.n_sections.toLocaleString()}
           sub={`${fmtDate(ov.scope.date_range[0])} ~ ${fmtDate(ov.scope.date_range[1])}`} colors={colors} />
         <KpiCard label="A 股行业映射命中" value={`${hitRate}%`} sub={`${mapped.toLocaleString()} / ${totalMap.toLocaleString()} 股票-期`} colors={colors} tone="accent" />
@@ -520,6 +595,83 @@ export default function FundPenetrationPage() {
 
       <div style={{ height: 14 }} />
 
+      <Card title="行业反查：谁在重仓这个行业" colors={colors}
+        extra={<span style={{ fontSize: 11, color: colors.muted }}>与下方单基金钻取互为反向</span>}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+          <select value={indSel}
+            onChange={(e) => { setIndSel(e.target.value); loadIndustry(e.target.value, indMin); }}
+            style={{ ...inputStyle(colors), width: 240 }}>
+            {indList.map((x) => (
+              <option key={x.industry} value={x.industry}>
+                {x.industry} · 均 {x.avg_w.toFixed(1)}% · {x.n_ge5} 只≥5%
+              </option>
+            ))}
+          </select>
+          <span style={{ fontSize: 12, color: colors.muted }}>最低权重</span>
+          <input type="number" value={indMin} min={0} max={100} step={1}
+            onChange={(e) => setIndMin(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+            onKeyDown={(e) => { if (e.key === "Enter") loadIndustry(indSel, indMin); }}
+            style={{ ...inputStyle(colors), width: 72 }} />
+          <span style={{ fontSize: 12, color: colors.muted }}>%</span>
+          <Btn small onClick={() => loadIndustry(indSel, indMin)}>{indBusy ? "…" : "查询"}</Btn>
+          <span style={{ marginLeft: "auto", fontSize: 11.5, color: indErr ? colors.up : colors.muted }}>
+            {indErr || (indRows.length ? `${indRows.length} 只 · 截至 ${fmtDate(indDate)}` : "")}
+          </span>
+        </div>
+        {indRows.length > 0 && (
+          <div style={{ maxHeight: 380, overflow: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead><tr>
+                <th style={th}>基金</th>
+                <th style={th}>该行业权重</th>
+                <th style={th}>真实披露</th>
+                <th style={th}>锚点继承</th>
+                <th style={th}>相对基准</th>
+                <th style={th}>披露覆盖</th>
+                <th style={th}>持仓</th>
+                <th style={th}>口径</th>
+              </tr></thead>
+              <tbody>{indRows.map((r) => <tr key={r.ts_code}>
+                <td style={td}>
+                  <a onClick={() => { setCode(r.base_code); setQuery(r.base_code); loadFund(r.base_code, ""); }}
+                    style={{ color: colors.accent, cursor: "pointer" }}>
+                    {r.base_code} {r.name}
+                  </a>
+                </td>
+                <td style={{ ...td, fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>
+                  {r.total_w.toFixed(2)}%
+                </td>
+                <td style={{ ...td, color: C_DISC }}>{r.disclosed_w.toFixed(2)}</td>
+                <td style={{ ...td, color: colors.muted }}>{r.carried_w.toFixed(2)}</td>
+                <td style={{ ...td, color: r.active_w >= 0 ? colors.up : colors.down }}>
+                  {r.active_w >= 0 ? "+" : ""}{r.active_w.toFixed(2)}pp
+                </td>
+                <td style={{ ...td, color: colors.muted }}>{r.disclosed_cover.toFixed(0)}%</td>
+                <td style={{ ...td, color: colors.muted }}>{r.n_disclosed}</td>
+                <td style={td}>
+                  <span style={{ padding: "2px 7px", borderRadius: 5, fontSize: 11,
+                    background: r.exposure_basis === "structure_only" ? "rgba(217,119,6,.14)"
+                      : "rgba(36,86,200,.10)",
+                    color: r.exposure_basis === "structure_only" ? "#b45309" : colors.accent }}>
+                    {r.exposure_basis === "structure_only" ? "仅结构"
+                      : r.exposure_basis === "regulatory" ? "监管锚定" : "占净值"}
+                  </span>
+                </td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+        )}
+        <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 8, lineHeight: 1.8 }}>
+          「相对基准」= 该基金该行业权重 − 当期全池平均，<b>正值即超配</b>，按全池均值口径计算。
+          口径标「仅结构」的基金，其原始权重不是占净值比（如 ETF 联接的 stk_mkv_ratio
+          退化为占股票市值比），只做了结构归一 ——
+          <b>结构可横向比，绝对仓位不可比</b>。已排除持仓少于 5 只的迷你基金
+          （它们会以「100% 单一行业」挤满榜首）。点基金名跳到下方单基金钻取。
+        </div>
+      </Card>
+
+      <div style={{ height: 14 }} />
+
       <Card title="单基金钻取：覆盖度轨迹与行业穿透" colors={colors}
         extra={<span style={{ fontSize: 11, color: colors.muted }}>{fd ? `${fd.name} · ${fd.ts_code}` : ""}</span>}>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
@@ -553,7 +705,8 @@ export default function FundPenetrationPage() {
         {fd && <>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 14 }}>
             <KpiCard label="当期披露覆盖" value={`${fd.current.disclosed_cover.toFixed(1)}%`}
-              sub={`${TYPE_LABEL[fd.current.report_type] || fd.current.report_type} · ${fmtDate(fd.end_date)}`} colors={colors} />
+              sub={`${TYPE_LABEL[fd.current.report_type] || fd.current.report_type} · ${fmtDate(fd.end_date)}${
+                fd.current.exposure_basis === "structure_only" ? " · 仅结构" : ""}`} colors={colors} />
             <KpiCard label="锚点继承" value={`${fd.current.carried_cover.toFixed(1)}%`}
               sub={fd.current.anchor_end_date ? `锚点 ${fmtDate(fd.current.anchor_end_date)} · ${fd.current.anchor_gap_days} 天` : "完整披露，无需补齐"}
               colors={colors} tone="accent" />

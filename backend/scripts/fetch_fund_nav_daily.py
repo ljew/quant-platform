@@ -20,6 +20,7 @@ import csv
 import json
 import os
 import sqlite3
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +29,9 @@ for _k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY"
     os.environ.pop(_k, None)
 
 import tushare as ts  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _tushare_token import require_token  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "data" / "research"
@@ -39,10 +43,7 @@ PROGRESS_INC = DATA / "progress_nav_inc.json"
 LOG = DATA / "fetch_nav.log"
 LOCK = DATA / "fetch_nav.lock"
 
-TOKEN = os.getenv(
-    "TUSHARE_TOKEN",
-    "d2684763c95c5f46e0cf65dee253d0559ad6ed2ec0b05b12ae557e99",
-)
+# token 由 _tushare_token 统一解析（环境变量 → 项目根 .env），源码内不留明文。
 FIELDS = ["ts_code", "nav_date", "adj_nav"]
 SLEEP = 0.12
 RATE_WAIT = 45
@@ -145,7 +146,7 @@ def main() -> None:
         raise SystemExit(f"已有实例在跑：{LOCK}")
     LOCK.write_text(str(os.getpid()), encoding="utf-8")
 
-    pro = ts.pro_api(TOKEN)
+    pro = ts.pro_api(require_token())
     todo = [c for c in codes if c not in done]
     if args.limit:
         todo = todo[:args.limit]

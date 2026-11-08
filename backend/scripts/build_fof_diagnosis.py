@@ -32,7 +32,6 @@ def med(a):
 
 
 def main() -> None:
-    main_con = sqlite3.connect(f"file:{MAIN_DB}?mode=ro", uri=True)
     con = sqlite3.connect(str(RES_DB), timeout=60)
     con.execute("PRAGMA busy_timeout=30000")
 
@@ -45,11 +44,23 @@ def main() -> None:
         k TEXT PRIMARY KEY, payload_json TEXT, updated_at TEXT)""")
     con.commit()
 
-    fofs = main_con.execute(
-        "SELECT base_code,ts_code,name,fund_type FROM fund_master "
-        "WHERE group_tag='active' AND std_ret>=8 AND upper(name) LIKE '%FOF%'"
-    ).fetchall()
-    main_con.close()
+    # FOF 名单来自主库 fund_master（带 group_tag / std_ret 过滤）。
+    # 主库走 WAL 且被容器占用时宿主机读不了（见 dbq.sh 的事故记录），
+    # 此时降级用研究库的轻量主表 —— 宁可放宽样本范围，也不要整轮诊断跑不出来。
+    try:
+        main_con = sqlite3.connect(f"file:{MAIN_DB}?mode=ro", uri=True, timeout=5)
+        try:
+            fofs = main_con.execute(
+                "SELECT base_code,ts_code,name,fund_type FROM fund_master "
+                "WHERE group_tag='active' AND std_ret>=8 AND upper(name) LIKE '%FOF%'"
+            ).fetchall()
+        finally:
+            main_con.close()
+    except Exception as e:  # noqa: BLE001
+        print(f"主库读取失败（{type(e).__name__}），降级用 fund_master_lite")
+        fofs = [(b, t, n or "", "") for b, t, n in con.execute(
+            "SELECT base_code, ts_code, name FROM fund_master_lite "
+            "WHERE upper(name) LIKE '%FOF%'")]
     print(f"active 样本中的 FOF：{len(fofs)} 只")
 
     rows = []
