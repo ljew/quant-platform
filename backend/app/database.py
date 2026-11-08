@@ -113,6 +113,10 @@ def _migrate_sqlite() -> None:
     hot_brief_expected = {"n_flash": "INTEGER DEFAULT 0", "n_search": "INTEGER DEFAULT 0",
                           "inputs_json": "TEXT DEFAULT '[]'", "summary": "TEXT DEFAULT ''",
                           "today_items_json": "TEXT DEFAULT '[]'"}
+    # 实盘成交/公司行动：稳定外部标识用于幂等写入。NULL 不参与 SQLite 唯一约束。
+    live_fill_expected = {"external_id": "VARCHAR(128)"}
+    live_ca_expected = {"external_id": "VARCHAR(128)"}
+    auto_research_expected = {"schedule_key": "VARCHAR(32)", "attempt": "INTEGER DEFAULT 1"}
     try:
         with engine.connect() as conn:
             for table, expected in (
@@ -122,6 +126,9 @@ def _migrate_sqlite() -> None:
                 ("factor_mine_results", factor_mine_expected),
                 ("research_runs", research_runs_expected),
                 ("hot_brief", hot_brief_expected),
+                ("live_fill", live_fill_expected),
+                ("live_corporate_action", live_ca_expected),
+                ("auto_research_runs", auto_research_expected),
             ):
                 cols = {
                     r[1]
@@ -130,7 +137,19 @@ def _migrate_sqlite() -> None:
                 for col, ddl in expected.items():
                     if col not in cols:
                         conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_live_fill_external "
+                "ON live_fill(strategy_key, source, external_id) "
+                "WHERE external_id IS NOT NULL"))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_live_ca_external "
+                "ON live_corporate_action(strategy_key, source, external_id) "
+                "WHERE external_id IS NOT NULL"))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_auto_research_schedule "
+                "ON auto_research_runs(job, schedule_key) "
+                "WHERE schedule_key IS NOT NULL"))
             conn.commit()
-    except Exception:
-        # 表尚未创建或结构差异，交给 create_all 兜底
-        pass
+    except Exception as exc:
+        # 实盘账本结构不明时宁可拒绝启动，不能带着半套迁移继续记账。
+        raise RuntimeError("SQLite schema migration failed") from exc

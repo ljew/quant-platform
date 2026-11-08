@@ -135,97 +135,159 @@ def _quantile(sorted_xs: list[float], q: float) -> float:
     return sorted_xs[lo] + (sorted_xs[hi] - sorted_xs[lo]) * (pos - lo)
 
 
-def _oos_metrics(ic_seq: list[float]) -> dict:
-    """对一段 IC 序列算 mean/std/icir/t/胜率。样本 <3 时返回 nulls（不硬凑）。
+def _nw_lags(forward: int = DEFAULT_FORWARD, step: int = DEFAULT_STEP) -> int:
+    """重叠前瞻收益所需的 Newey–West 滞后阶数。
 
-    ⚠️ 零方差防护：IC 是秩相关的连续量，正常不会全等；但构造数据或极端情况
-    下 std 可能返回极小值（如 1e-17）而非精确 0，导致 icir / t_stat 变成
-    天文数字（实测 6.6e15），格式化时抛 TypeError。故显式设阈值。
+    例如 20 日收益每 5 日采样，相邻 3 个残差仍共享持有窗口；不能把这些
+    截面当成独立样本计算普通 t 值。
     """
+    if forward <= 0 or step <= 0:
+        raise ValueError("forward 和 step 必须为正数")
+    return max(0, math.ceil(forward / step) - 1)
+
+
+def _newey_west_t(values: list[float], lags: int) -> float | None:
+    """均值的 Newey–West HAC t 值；方差非正或样本不足时返回 None。"""
+    n = len(values)
+    if n < 3:
+        return None
+    m = _mean(values)
+    resid = [x - m for x in values]
+    long_run_var = sum(x * x for x in resid) / n
+    for lag in range(1, min(max(lags, 0), n - 2) + 1):
+        cov = sum(resid[i] * resid[i - lag] for i in range(lag, n)) / n
+        weight = 1.0 - lag / (lags + 1.0)
+        long_run_var += 2.0 * weight * cov
+    if long_run_var <= 1e-18:
+        return None
+    return m / math.sqrt(long_run_var / n)
+
+
+def _oos_metrics(ic_seq: list[float], nw_lags: int = 0) -> dict:
+    """IC 描述统计与 HAC t 值；同时保留普通 t 值用于审计重叠修正幅度。"""
     n = len(ic_seq)
     if n < 3:
         return {"n": n, "ic_mean": None, "ic_std": None, "icir": None,
-                "t_stat": None, "win_rate": None}
+                "t_stat": None, "t_stat_naive": None, "nw_lags": nw_lags,
+                "win_rate": None}
     m = _mean(ic_seq)
     s = _std(ic_seq)
-    degenerate = s < 1e-9                    # 零方差（秩相关不可能真为 0）
+    degenerate = s < 1e-9
+    naive_t = None if degenerate else m / (s / math.sqrt(n))
+    hac_t = None if degenerate else _newey_west_t(ic_seq, nw_lags)
     return {
         "n": n,
         "ic_mean": round(m, 5),
         "ic_std": round(s, 5),
         "icir": None if degenerate else round(m / s, 4),
-        "t_stat": None if degenerate else round(m / (s / math.sqrt(n)), 3),
+        "t_stat": None if hac_t is None else round(hac_t, 3),
+        "t_stat_naive": None if naive_t is None else round(naive_t, 3),
+        "nw_lags": nw_lags,
         "win_rate": round(sum(1 for x in ic_seq if x > 0) / n, 4),
     }
 
 
 def _is_oos_split(ic_dates: list[str], ic_seq: list[float],
-                  oos_ratio: float = 0.3) -> dict:
-    """样本内/样本外切分（M3-1）。
+                  oos_ratio: float = 0.3, forward: int = DEFAULT_FORWARD,
+                  step: int = DEFAULT_STEP, embargo_snapshots: int = 1) -> dict:
+    """按时间切出最终 OOS，并清除切点两侧的标签重叠。
 
-    为什么必须有（B3）：过去「选因子」与「评因子」在同一段样本上完成 ——
-    IC 全量算完再评级，等于用全样本挑标准再报全样本成绩，属结构性过拟合。
-    这是 GP 熔断的三条原因之一。
-
-    做法：**零额外成本**。ic_dates 本来就带日期，按切点分流即可，
-    不需要把数据加载与截面循环跑两遍。
-
-    判定逻辑（风控优先，宁可错过不可错信）：
-      · OOS 截面 < 3 → `verdict="样本不足"`，不给结论
-      · OOS 与 IS **符号相反** → `verdict="过拟合"`
-      · OOS |t| < 1 → `verdict="未通过"`
-      · 否则 → `verdict="通过"`
-
-    oos_ratio: OOS 占比，默认 0.3。
+    IS 尾部 purge 一个完整前瞻窗口；OOS 首部再做 embargo。两侧均使用
+    Newey–West t 值，避免把重叠的 20 日收益当作独立观测。
     """
+    if len(ic_dates) != len(ic_seq):
+        raise ValueError("IC 日期与值序列长度不一致")
     n = len(ic_seq)
+    nw = _nw_lags(forward, step)
+    purge = nw + 1
     if n < 6:
         return {"enabled": True, "verdict": "样本不足",
                 "note": f"总截面 {n} < 6，无法切分",
-                "is": _oos_metrics(ic_seq), "oos": _oos_metrics([]),
-                "oos_ratio": oos_ratio}
+                "is": _oos_metrics(ic_seq, nw), "oos": _oos_metrics([], nw),
+                "oos_ratio": oos_ratio, "purged_is": 0,
+                "embargoed_oos": 0, "nw_lags": nw}
 
-    k = max(3, int(round(n * oos_ratio)))
-    k = min(k, n - 3)                      # 保证 IS 至少 3 个
-    if n - k < 3:                          # OOS 不足 3 → 不给结论
-        k = max(0, n - 3)
-    is_seq, oos_seq = ic_seq[:-k], ic_seq[-k:]
-    is_m, oos_m = _oos_metrics(is_seq), _oos_metrics(oos_seq)
-    is_dates = ic_dates[:-k] if k else ic_dates
-    oos_dates = ic_dates[-k:] if k else []
+    k = min(max(3, int(round(n * oos_ratio))), n - 3)
+    boundary = n - k
+    # 不为凑样本而保留与 OOS 重叠的 IS 尾部；不足时由下方统一判样本不足。
+    purge_n = min(purge, max(0, boundary - 3))
+    embargo_n = min(max(0, embargo_snapshots), max(0, n - boundary - 3))
+    is_end = boundary - purge_n
+    oos_begin = boundary + embargo_n
+    is_seq, oos_seq = ic_seq[:is_end], ic_seq[oos_begin:]
+    is_dates, oos_dates = ic_dates[:is_end], ic_dates[oos_begin:]
+    is_m, oos_m = _oos_metrics(is_seq, nw), _oos_metrics(oos_seq, nw)
 
-    # 判定
     if oos_m["ic_mean"] is None or is_m["ic_mean"] is None:
-        verdict, note = "样本不足", "IS 或 OOS 截面 < 3"
+        verdict, note = "样本不足", "purge/embargo 后 IS 或 OOS 截面 < 3"
     elif is_m["ic_mean"] * oos_m["ic_mean"] < 0:
         verdict = "过拟合"
         note = (f"IS ic={is_m['ic_mean']:+.4f} 与 OOS ic={oos_m['ic_mean']:+.4f} "
                 f"**符号相反** —— 样本内有效、样本外失效")
     elif oos_m["t_stat"] is None:
-        # 零方差（t 算不出）→ 无法判定，不给结论（宁可不判，不错判）
         verdict = "样本不足"
-        note = f"OOS 段 IC 零方差（std≈0），t 检验不可用"
-    elif abs(oos_m["t_stat"]) < 1.0:
+        note = "OOS 段 IC 零方差或 HAC 方差非正，t 检验不可用"
+    elif abs(oos_m["t_stat"]) < 2.0:
         verdict = "未通过"
-        note = (f"OOS |t|={abs(oos_m['t_stat']):.2f} < 1.0，"
+        note = (f"OOS Newey–West |t|={abs(oos_m['t_stat']):.2f} < 2.0，"
                 f"样本外区分力不足（IS |t|={abs(is_m['t_stat'] or 0):.2f}）")
     else:
         verdict = "通过"
         _it = "n/a" if is_m["t_stat"] is None else f"{is_m['t_stat']:+.2f}"
         _ot = "n/a" if oos_m["t_stat"] is None else f"{oos_m['t_stat']:+.2f}"
-        note = (f"IS ic={is_m['ic_mean']:+.4f} (t={_it}) → "
-                f"OOS ic={oos_m['ic_mean']:+.4f} (t={_ot})，同向且显著")
+        note = (f"IS ic={is_m['ic_mean']:+.4f} (NW t={_it}) → "
+                f"OOS ic={oos_m['ic_mean']:+.4f} (NW t={_ot})，同向且显著")
 
     return {
-        "enabled": True,
-        "verdict": verdict,
-        "note": note,
-        "is": is_m,
-        "oos": oos_m,
+        "enabled": True, "verdict": verdict, "note": note,
+        "is": is_m, "oos": oos_m,
         "split_date": is_dates[-1] if is_dates else None,
+        "boundary_date": ic_dates[boundary - 1] if boundary else None,
         "oos_start": oos_dates[0] if oos_dates else None,
-        "oos_ratio": oos_ratio,
+        "oos_ratio": oos_ratio, "purged_is": purge_n,
+        "embargoed_oos": embargo_n, "nw_lags": nw,
     }
+
+
+def _walk_forward_report(ic_dates: list[str], ic_seq: list[float],
+                         forward: int = DEFAULT_FORWARD,
+                         step: int = DEFAULT_STEP, n_folds: int = 3) -> dict:
+    """仅在 IS 内做扩展窗口验证，最终 OOS 不参与调参或折叠判定。"""
+    nw = _nw_lags(forward, step)
+    purge = nw + 1
+    n = len(ic_seq)
+    initial = max(12, int(n * 0.5))
+    test_size = (n - initial) // n_folds if n_folds > 0 else 0
+    if n < 24 or test_size < 4:
+        return {"enabled": True, "verdict": "样本不足", "folds": [],
+                "n_folds": 0, "note": "IS 至少需要 24 个截面及每折 4 个验证截面",
+                "nw_lags": nw}
+
+    folds, stitched = [], []
+    for fold in range(n_folds):
+        raw_start = initial + fold * test_size
+        raw_end = raw_start + test_size if fold + 1 < n_folds else n
+        train = ic_seq[:max(0, raw_start - purge)]
+        test = ic_seq[min(raw_start + 1, raw_end):raw_end]
+        if len(train) < 3 or len(test) < 3:
+            continue
+        tm = _oos_metrics(train, nw)
+        vm = _oos_metrics(test, nw)
+        stitched.extend(test)
+        folds.append({"fold": fold + 1, "train_n": len(train),
+                      "test_start": ic_dates[raw_start + 1],
+                      "test_end": ic_dates[raw_end - 1],
+                      "test": vm, "train_ic": tm["ic_mean"]})
+    overall = _oos_metrics(stitched, nw)
+    positive = sum(1 for f in folds if (f["test"]["ic_mean"] or 0) > 0)
+    enough = len(folds) == n_folds and overall["t_stat"] is not None
+    passed = (enough and positive >= math.ceil(n_folds * 2 / 3)
+              and (overall["ic_mean"] or 0) > 0 and abs(overall["t_stat"]) >= 1.0)
+    return {"enabled": True, "verdict": "通过" if passed else "未通过",
+            "folds": folds, "n_folds": len(folds), "positive_folds": positive,
+            "overall": overall, "purged_train_per_fold": purge,
+            "embargoed_test_per_fold": 1, "nw_lags": nw,
+            "note": f"{positive}/{len(folds)} 折 IC 为正，拼接验证 NW t={overall['t_stat']}"}
 
 
 def _factor_stats(vals: list[float], n_periods: int) -> dict:
@@ -347,6 +409,49 @@ def _core_universe(db: Session) -> list[str]:
     from app.services.etl import _get_universe
 
     return _get_universe(db)
+
+
+def _core_universe_pit(db: Session, sd: date, ed: date) -> tuple[list[str], dict]:
+    """加载研究区间内的历史成分；返回数据加载超集与逐指数快照。
+
+    不在历史研究中回退到“当前成分并集”。缺少历史快照必须显式失败，
+    否则会把幸存者偏差包装成样本外 alpha。
+    """
+    from app.services.etl import CORE_INDEXES
+    from app.services.membership_store import get_membership
+
+    timeline: dict[str, list[tuple[date, set[str]]]] = {}
+    union: set[str] = set()
+    for code in CORE_INDEXES:
+        snaps = get_membership(db, code, sd - timedelta(days=45), ed)
+        parsed = [(date.fromisoformat(d), set(members)) for d, members in snaps]
+        if parsed:
+            timeline[code] = parsed
+            union |= set().union(*(members for _, members in parsed))
+    return sorted(union), timeline
+
+
+def _pit_symbols(timeline: dict, snap: date) -> set[str]:
+    """各核心指数取 snap 当日可见的最近快照，再求成分并集。"""
+    members: set[str] = set()
+    for snaps in timeline.values():
+        visible = [item for item in snaps if item[0] <= snap]
+        if visible:
+            members |= visible[-1][1]
+    return members
+
+
+def _lifecycle_map(db: Session, syms: list[str]) -> dict[str, tuple[date | None, date | None]]:
+    rows = db.execute(
+        select(Stock.symbol, Stock.list_date, Stock.delist_date)
+        .where(Stock.symbol.in_(syms))
+    ).all()
+    return {symbol: (list_date, delist_date) for symbol, list_date, delist_date in rows}
+
+
+def _eligible_symbol(lifecycle: dict, sym: str, snap: date) -> bool:
+    listed, delisted = lifecycle.get(sym, (None, None))
+    return not ((listed and listed > snap) or (delisted and delisted <= snap))
 
 
 def _attrs_map(db: Session, syms: list[str]) -> dict:
@@ -626,9 +731,18 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
     if progress:
         progress(0.05, "加载股票池与数据…")
 
-    syms = universe or _core_universe(db)
+    if universe is not None:
+        syms = sorted(set(universe))
+        pit_timeline = {}
+        universe_mode = "custom_lifecycle"
+    else:
+        syms, pit_timeline = _core_universe_pit(db, sd, ed)
+        universe_mode = "pit_index_membership"
+        if not pit_timeline:
+            return {"ok": False, "error": "缺少历史指数成分快照，拒绝用当前成分回测历史（幸存者偏差）"}
     if len(syms) < 50:
-        return {"ok": False, "error": f"股票池过小（{len(syms)} 只），无法做截面检验"}
+        return {"ok": False, "error": f"历史股票池并集过小（{len(syms)} 只），无法做截面检验"}
+    lifecycle = _lifecycle_map(db, syms)
 
     attrs = _attrs_map(db, syms)
     # 估值 PIT 时序（B1）：按「截至截面日」取值，替换旧的最新快照口径
@@ -733,6 +847,7 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
     group_rets = {g: [] for g in range(1, groups + 1)}
     ls_cum = 0.0
     long_short = []
+    universe_sizes: list[int] = []
     for si, snap in enumerate(snapshots):
         if progress:
             progress(0.1 + 0.75 * si / len(snapshots), f"截面 {si + 1}/{len(snapshots)} ({snap})…")
@@ -742,8 +857,13 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
         if idx + forward >= len(axis_dates):
             continue
         fwd_date = axis_dates[idx + forward]
+        active = _pit_symbols(pit_timeline, snap) if pit_timeline else set(syms)
+        active = {s for s in active if _eligible_symbol(lifecycle, s, snap)}
+        universe_sizes.append(len(active))
         fv: list[tuple[str, float, float]] = []  # (sym, factor, fwd_ret)
         for sym in syms:
+            if sym not in active:
+                continue
             amap = aligned.get(sym)
             if not amap or snap not in amap or fwd_date not in amap:
                 continue
@@ -807,23 +927,24 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
     if len(ic_list) < 3:
         return {"ok": False, "error": "有效截面不足（因子值缺失过多或区间太短）"}
 
+    nw = _nw_lags(forward, step)
+    full_metrics = _oos_metrics(ic_list, nw)
     ic_mean = _mean(ic_list)
     ic_std = _std(ic_list)
     icir = ic_mean / ic_std if ic_std > 0 else 0.0
-    t_stat = ic_mean / (ic_std / math.sqrt(len(ic_list))) if ic_std > 0 else 0.0
+    t_stat = full_metrics["t_stat"] or 0.0
     ic_win = sum(1 for x in ic_list if x > 0) / len(ic_list)
 
-    # —— 样本内/样本外切分（M3-1，2026-10-08）——
-    # 动机：本函数过去把「选因子」与「评因子」放在同一段样本上（IC 全量算完再评级），
-    # 属于结构性样本内过拟合 —— 这是 GP 被熔断的三条原因之一。
-    # 做法：**零额外成本**。数据只加载一次，ic_list / ic_dates 本来就带日期，
-    # 按切分点分流即可（不需要跑两遍）。
-    # 默认切点：区间前 70% 为 IS（用于判断是否值得用），后 30% 为 OOS（用于诚实评估）。
-    # oos_ratio=0 时关闭切分（不产出 OOS 结论）。
-    oos_report = (_is_oos_split(ic_dates, ic_list, oos_ratio=oos_ratio)
+    # 最终 OOS 只做一次评估；walk-forward 严格限制在 purge 后的 IS 内。
+    oos_report = (_is_oos_split(ic_dates, ic_list, oos_ratio=oos_ratio,
+                                forward=forward, step=step)
                   if oos_ratio > 0 else
                   {"enabled": False, "verdict": "未启用",
                    "note": "oos_ratio=0，已关闭样本外切分"})
+    is_n = (oos_report.get("is") or {}).get("n", 0) if oos_ratio > 0 else 0
+    walk_forward = (_walk_forward_report(ic_dates[:is_n], ic_list[:is_n],
+                                         forward=forward, step=step)
+                    if is_n else {"enabled": False, "verdict": "未启用", "folds": []})
 
     # 分组平均收益 + 单调性（首尾组差）
     g_means = {g: _mean(group_rets[g]) if group_rets[g] else 0.0 for g in range(1, groups + 1)}
@@ -837,6 +958,7 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
         db, expr, syms, attrs, es_map, aligned, axis_dates, bench_aligned,
         vol_aligned=vol_aligned, amt_aligned=amt_aligned,
         fin_hist=fin_hist, news_lookup=news_lookup, fund_tl=fund_tl,
+        pit_timeline=pit_timeline, lifecycle=lifecycle,
     )
 
     # 有效性评级（含多重检验校正：批量挖掘时抬高 t 门槛）
@@ -868,23 +990,22 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
     else:
         rating = "无效"
 
-    # —— OOS 门槛（M3-1，B3）——
-    # 上面所有评级都基于**全样本** IC。若因子在 OOS 上失效（过拟合 / 未通过），
-    # 它就不该拿「优秀 / 可用」—— 那会让样本内噪音被当成建仓依据。
-    # 处置：正 IC 且评级达标的，若 OOS 判定为「过拟合」，降为「弱」；
-    #      「未通过」不降级但标记（保留观察），因为 OOS 样本本就少、t 波动大。
-    # 反向因子同理（反向也需 OOS 确认）。
+    # 生产评级硬门禁：最终 OOS 与 IS 内 walk-forward 任一未通过，都不得保留
+    # “优秀/可用/反向”。不再把 OOS 未通过降半档后仍标成“可用”。
     oos_verdict = (oos_report or {}).get("verdict")
+    wf_verdict = (walk_forward or {}).get("verdict")
     rating_before_oos = rating
     if rating in ("优秀", "可用", "反向") and oos_verdict == "过拟合":
         rating = "弱"
-    elif rating == "优秀" and oos_verdict == "未通过":
-        rating = "可用"          # 优秀 → 可用（降半档，仍需人工确认）
+    elif (rating in ("优秀", "可用", "反向") and oos_verdict != "未启用"
+          and (oos_verdict != "通过" or wf_verdict != "通过")):
+        rating = "弱"
     if rating != rating_before_oos:
         oos_report = {
             **oos_report,
             "demoted_from": rating_before_oos,
-            "demote_note": f"因样本外检验「{oos_verdict}」，评级 {rating_before_oos} → {rating}",
+            "demote_note": (f"样本外硬门禁未通过（OOS={oos_verdict}，"
+                            f"walk-forward={wf_verdict}），评级 {rating_before_oos} → {rating}"),
         }
 
     _eval = build_eval_profile_for_mining(
@@ -899,6 +1020,8 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
         "ic_mean": round(ic_mean, 5),
         "icir": round(icir, 4),
         "t_stat": round(t_stat, 3),
+        "t_stat_naive": full_metrics["t_stat_naive"],
+        "nw_lags": nw,
         "ic_win_rate": round(ic_win, 3),
         "ic_series": [{"date": d, "ic": round(v, 4)} for d, v in zip(ic_dates, ic_list)],
         "groups": groups,
@@ -914,6 +1037,14 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
         "t_thresholds": {"优秀": round(t_excellent, 2), "可用": round(t_usable, 2)},
         "n_periods": len(ic_list),
         "oos": oos_report,
+        "walk_forward": walk_forward,
+        "universe_pit": {
+            "mode": universe_mode, "indexes_loaded": len(pit_timeline),
+            "lifecycle_filter": True, "historical_union_size": len(syms),
+            "mean_size": round(_mean(universe_sizes), 1) if universe_sizes else 0,
+            "min_size": min(universe_sizes) if universe_sizes else 0,
+            "max_size": max(universe_sizes) if universe_sizes else 0,
+        },
         "complexity": compute_complexity(expr),
         "factor_stats": _factor_stats(all_vals, len(ic_list)),
         "n_stocks": len(syms),
@@ -924,7 +1055,8 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
 
 def _corr_with_existing(db, expr, syms, attrs, es_map, aligned, axis_dates, bench_aligned,
                         vol_aligned=None, amt_aligned=None, fin_hist=None,
-                        news_lookup=None, fund_tl=None) -> dict:
+                        news_lookup=None, fund_tl=None, pit_timeline=None,
+                        lifecycle=None) -> dict:
     """最新截面：新因子与 factor_daily 现有 14 因子 Spearman 相关。"""
     latest = db.execute(
         select(FactorDaily.trade_date).order_by(FactorDaily.trade_date.desc()).limit(1)
@@ -949,7 +1081,11 @@ def _corr_with_existing(db, expr, syms, attrs, es_map, aligned, axis_dates, benc
     vol_aligned = vol_aligned or {}
     amt_aligned = amt_aligned or {}
     fin_hist = fin_hist or {}
+    active = _pit_symbols(pit_timeline, snap) if pit_timeline else set(syms)
+    lifecycle = lifecycle or {}
     for sym in syms:
+        if sym not in active or not _eligible_symbol(lifecycle, sym, snap):
+            continue
         amap = aligned.get(sym)
         if not amap or snap not in amap:
             continue

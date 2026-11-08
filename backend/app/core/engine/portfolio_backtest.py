@@ -6,7 +6,7 @@
 
 设计要点：
 - 多头组合、按目标仓位（百分比）调仓；
-- 成交价采用当日收盘价（收盘调仓模型），计入佣金与滑点；
+- 信号日收盘后形成目标仓位，下一交易日开盘成交，计入佣金、滑点与税费；
 - 停牌/未上市标的采用前向填充（ffill）定价，但因子历史只取真实交易日；
 - 基准为传入的指数日K，输出策略净值、基准净值、超额收益与信息比率(IR)。
 """
@@ -293,8 +293,10 @@ class PortfolioBacktestEngine:
         self.factor_ic_series: list[dict] = []
         self._pending_factors: list[dict] = []
         self._factor_history: list[dict] = []   # {date, records} 每调仓日的因子记录快照（用于IC衰减）
-        # 调仓下单缓冲（rebalance 期间只记录目标仓位，flush 时统一做风险约束再撮合）
+        # 信号日先汇总目标仓位并做风险约束，下一交易日开盘再撮合。
         self._pending_orders: list[dict] = []
+        self._pending_execution: list[dict] = []
+        self._execution_prices: dict[str, float] = {}
         self._clamp_events: list[dict] = []      # 风险约束触发的截断记录（审计用）
         self.universe = list(data.keys())
         # 当日有真实行情的标的集合。停牌 / 未上市标的只有 ffill 定价、没有真实成交：
@@ -305,6 +307,10 @@ class PortfolioBacktestEngine:
         # 每只股票：date->close 映射 & 真实交易日收盘价历史（ffill 定价用 last_close）
         self.close_map = {
             sym: {b["date"]: float(b["close"]) for b in bars}
+            for sym, bars in data.items()
+        }
+        self.open_map = {
+            sym: {b["date"]: float(b.get("open") or b["close"]) for b in bars}
             for sym, bars in data.items()
         }
         self.hist = {sym: [] for sym in data}
@@ -372,7 +378,7 @@ class PortfolioBacktestEngine:
         # 买入停牌股也买不进；不拦截的话回测会凭空获得流动性，净值系统性偏乐观。
         if symbol not in self._tradable_today:
             return
-        price = self._last_close.get(symbol)
+        price = self._execution_prices.get(symbol) or self._last_close.get(symbol)
         if price is None or price <= 0:
             return
         cur = self.positions.get(symbol, 0.0)
@@ -385,7 +391,7 @@ class PortfolioBacktestEngine:
         # core/rules.limit —— 两侧口径不一致会让回测净值与实盘表现系统性背离。
         if self.limit_enabled:
             h = self.hist.get(symbol, [])
-            prev = h[-2] if len(h) >= 2 else None
+            prev = h[-1] if h else None
             if prev and prev > 0:
                 chg = price / prev - 1.0
                 band = limit_trigger(symbol, self._symbol_name(symbol))
@@ -472,11 +478,11 @@ class PortfolioBacktestEngine:
         return clamped, clamps
 
     def _flush_pending_orders(self, ctx: "PortfolioContext") -> None:
-        """把 rebalance 期间缓冲的目标仓位统一做风险约束后撮合。
+        """把 rebalance 期间缓冲的目标仓位统一做风险约束后进入挂单队列。
 
         先汇总每只标的的目标权重（pct 直接取；shares 折算为 equity 占比），
-        再 apply_limits 截断，最后按截断后权重撮合成交。成交记录的 ctx.date
-        仍为本次调仓日（与直接下单一致）。
+        再 apply_limits 截断，最后按截断后权重生成订单，在下一交易日开盘撮合。
+        成交记录使用实际成交日，而不是本次信号日。
         """
         if not self._pending_orders:
             return
@@ -511,8 +517,11 @@ class PortfolioBacktestEngine:
             avail = eq * (1.0 - self.cash_buffer)
             target_shares = (avail * w) / price
             m = meta.get(sym, {})
-            self._order_target(ctx, sym, target_shares,
-                              m.get("signal_type", ""), m.get("signal_reason", ""))
+            self._pending_execution.append({
+                "symbol": sym, "target_shares": target_shares,
+                "signal_type": m.get("signal_type", ""),
+                "signal_reason": m.get("signal_reason", ""),
+            })
 
     # ——— 主循环 ———
     def run(self, strategy_class: type, params: dict) -> PortfolioResult:
@@ -526,11 +535,33 @@ class PortfolioBacktestEngine:
         bench_last = self.bench_first
 
         for i, d in enumerate(self.dates):
-            self._tradable_today = set()
+            self._tradable_today = {
+                sym for sym in self.universe if self.close_map.get(sym, {}).get(d) is not None
+            }
+            ctx.date = d
+            # 先执行上一信号日的目标仓位；卖单优先释放现金。实际成交日的
+            # 停牌与涨跌停状态在这里判断，不在信号日提前假设可成交。
+            if self._pending_execution:
+                self._execution_prices = {
+                    sym: self.open_map.get(sym, {}).get(d)
+                    for sym in self.universe
+                    if self.open_map.get(sym, {}).get(d) is not None
+                }
+                pending = sorted(
+                    self._pending_execution,
+                    key=lambda o: o["target_shares"] >= self.positions.get(o["symbol"], 0.0),
+                )
+                self._pending_execution = []
+                for order in pending:
+                    self._order_target(
+                        ctx, order["symbol"], order["target_shares"],
+                        order["signal_type"], order["signal_reason"],
+                    )
+                self._execution_prices = {}
+
             for sym in self.universe:
                 c = self.close_map.get(sym, {}).get(d)
                 if c is not None:
-                    self._tradable_today.add(sym)   # 当日有真实行情 → 可成交
                     self._last_close[sym] = c
                     self.hist[sym].append(c)
                     self.hist_dates[sym].append(d)
@@ -979,7 +1010,7 @@ class PortfolioBacktestEngine:
         annual = ((eq[-1] / eq[0]) ** (252.0 / n) - 1) if n > 1 else 0.0
 
         rets = [eq[i] / eq[i - 1] - 1 for i in range(1, n)]
-        if rets:
+        if len(rets) >= 2:
             m = sum(rets) / len(rets)
             var = sum((r - m) ** 2 for r in rets) / (len(rets) - 1)
             std = math.sqrt(var)

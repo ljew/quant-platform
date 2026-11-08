@@ -1,21 +1,23 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import TodayPage from "./pages/TodayPage";
-import NewsFeedPage from "./pages/NewsFeedPage";
-import ForeignNewsPage from "./pages/ForeignNewsPage";
-import ReportsPage from "./pages/ReportsPage";
-import MarketPage from "./pages/MarketPage";
-import BacktestOptimizePage from "./pages/BacktestOptimizePage";
-import PaperPage from "./pages/PaperPage";
-import FactorMinePage from "./pages/FactorMinePage";
-import ResearchCardsPage from "./pages/ResearchCardsPage";
-import SignalPage from "./pages/SignalPage";
-import EtfFlowPage from "./pages/EtfFlowPage";
-import AttributionPage from "./pages/AttributionPage";
-import AutoResearchHubPage from "./pages/AutoResearchHubPage";
-import DataSystemPage from "./pages/DataSystemPage";
-import WechatPage from "./pages/WechatPage";
 import { Hub } from "./components/Hub";
 import { sidebarTheme, useTheme } from "./theme";
+
+// 首页保持直出，其余页面按导航拆分，避免一次性下载全部研究与管理模块。
+const NewsFeedPage = lazy(() => import("./pages/NewsFeedPage"));
+const ForeignNewsPage = lazy(() => import("./pages/ForeignNewsPage"));
+const ReportsPage = lazy(() => import("./pages/ReportsPage"));
+const MarketPage = lazy(() => import("./pages/MarketPage"));
+const BacktestOptimizePage = lazy(() => import("./pages/BacktestOptimizePage"));
+const PaperPage = lazy(() => import("./pages/PaperPage"));
+const FactorMinePage = lazy(() => import("./pages/FactorMinePage"));
+const ResearchCardsPage = lazy(() => import("./pages/ResearchCardsPage"));
+const SignalPage = lazy(() => import("./pages/SignalPage"));
+const EtfFlowPage = lazy(() => import("./pages/EtfFlowPage"));
+const AttributionPage = lazy(() => import("./pages/AttributionPage"));
+const AutoResearchHubPage = lazy(() => import("./pages/AutoResearchHubPage"));
+const DataSystemPage = lazy(() => import("./pages/DataSystemPage"));
+const WechatPage = lazy(() => import("./pages/WechatPage"));
 
 /**
  * 重构 v2.1：13 个二级 Tab → 9 个（2026-10-08 精简）。
@@ -240,7 +242,9 @@ export default function App() {
           active={sub}
           onChange={setSub}
         >
-          <HubContent sub={sub} />
+          <Suspense fallback={<div role="status" style={{ padding: 36, color: colors.muted }}>页面加载中…</div>}>
+            <HubContent sub={sub} />
+          </Suspense>
         </Hub>
       </main>
     </div>

@@ -986,10 +986,15 @@ class AutoResearchRun(Base):
     """
 
     __tablename__ = "auto_research_runs"
+    __table_args__ = (
+        UniqueConstraint("job", "schedule_key", name="uq_auto_research_schedule"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     job: Mapped[str] = mapped_column(String(16))          # mining / review
     trigger: Mapped[str] = mapped_column(String(16), default="manual")  # scheduler / manual
+    schedule_key: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(String(12), default="RUNNING")  # RUNNING/SUCCESS/FAILED
     summary_json: Mapped[str] = mapped_column(Text, default="{}")
     report_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -1127,9 +1132,13 @@ class LiveFill(Base):
     """成交回报（人工录入 / 对账单 CSV 导入）。
 
     source: manual / csv / broker。对账以本表为准，不以 intent 为准。
+    external_id 是券商成交编号或导入器生成的稳定标识；同一来源内重复写入必须无副作用。
     """
 
     __tablename__ = "live_fill"
+    __table_args__ = (
+        UniqueConstraint("strategy_key", "source", "external_id", name="uq_live_fill_external"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     intent_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
@@ -1144,6 +1153,27 @@ class LiveFill(Base):
     stamp_tax: Mapped[float] = mapped_column(Float, default=0.0)
     transfer_fee: Mapped[float] = mapped_column(Float, default=0.0)
     source: Mapped[str] = mapped_column(String(12), default="manual")
+    external_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class LiveCorporateAction(Base):
+    """公司行动事件：送拆股比例与每股现金分红均按除权日前持仓计算。"""
+
+    __tablename__ = "live_corporate_action"
+    __table_args__ = (
+        UniqueConstraint("strategy_key", "source", "external_id", name="uq_live_ca_external"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True)
+    strategy_key: Mapped[str] = mapped_column(String(32), default="fresh_ma")
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    share_ratio: Mapped[float] = mapped_column(Float, default=1.0)
+    cash_dividend_per_share: Mapped[float] = mapped_column(Float, default=0.0)
+    source: Mapped[str] = mapped_column(String(12), default="manual")
+    external_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     note: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
