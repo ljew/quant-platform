@@ -37,6 +37,12 @@ logger = logging.getLogger("hot_brief_scheduler")
 SLOTS_TRADING = (7, 9, 10, 11, 13, 14, 16, 21)
 # 非交易日：早/晚各一次（21 点收工，见文件头注释）
 SLOTS_OFFDAY = (9, 21)
+# 当日全景综述（brief_digest）的生成时刻：当天最后一轮简报（21:02）之后再跑，
+# 这样 16:00-21:00 的傍晚消息也能进综述。生成一次约 100 秒（v4-pro 是推理模型），
+# 放在独立线程里，不能阻塞本循环 —— 否则 60 秒一次的 slot 检查会被它卡住。
+DIGEST_HOUR, DIGEST_MINUTE = 21, 45
+_digest_done: set[str] = set()
+
 SLOT_MINUTE = 2                 # 每个 slot 的 :02 触发
 _CHECK_INTERVAL = 60            # 秒
 _MAX_ATTEMPTS = 2               # 同一 slot 最多试 2 次（约 :02 / :05）
@@ -145,6 +151,46 @@ def _run_once(minutes: int = 60) -> tuple[bool, str]:
     return False, str(r.get("error") or "未知错误")
 
 
+def _digest_done_today() -> bool:
+    """库里当天已有综述就不再重复生成（重启后 _digest_done 会丢）。"""
+    from app.database import SessionLocal
+    from app.models import BriefDigest
+
+    db = SessionLocal()
+    try:
+        day = datetime.now().date().isoformat()
+        row = db.query(BriefDigest).filter(BriefDigest.day == day,
+                                           BriefDigest.error == "").first()
+        if row is None:
+            return False
+        # 只有 21:45 之后生成的才算「今天的完整版」。下午手动试跑的版本
+        # 缺 21:02 那轮（傍晚消息），到点仍要重生成覆盖一次。
+        return row.created_at is not None and row.created_at.hour >= DIGEST_HOUR
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        db.close()
+
+
+def _run_digest() -> None:
+    from app.database import SessionLocal
+    from app.services.brief_digest import run as run_digest
+
+    db = SessionLocal()
+    try:
+        r = run_digest(db)
+        if r.get("ok"):
+            logger.info("当日综述完成：%s · %d 字 · %s 秒（要点 %s 条 / 资讯 %s 条）",
+                        r.get("day"), r.get("chars"), r.get("seconds"),
+                        r.get("n_items"), r.get("n_news"))
+        else:
+            logger.warning("当日综述失败：%s", r.get("error"))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("当日综述异常：%s", str(e)[:160])
+    finally:
+        db.close()
+
+
 def _loop(enabled: bool) -> None:
     while True:
         try:
@@ -174,6 +220,17 @@ def _loop(enabled: bool) -> None:
                             _status["last_error"] = msg
                             logger.warning("热点简报失败（第 %s/%s 次）：%s",
                                            _attempts[key], _MAX_ATTEMPTS, msg)
+                # 当日综述：每天 21:45 之后一次，独立线程跑（v4-pro 要 100 秒，
+                # 同步跑会把下一轮 slot 检查拖过去）。
+                dkey = f"{now:%Y-%m-%d}#digest"
+                if (now.hour == DIGEST_HOUR and now.minute >= DIGEST_MINUTE
+                        and dkey not in _digest_done):
+                    _digest_done.add(dkey)
+                    if _digest_done_today():
+                        logger.info("当日综述已存在，跳过重复生成")
+                    else:
+                        threading.Thread(target=_run_digest, daemon=True,
+                                         name="brief-digest").start()
         except Exception as e:  # noqa: BLE001
             logger.warning("热点简报调度循环异常：%s", e)
         threading.Event().wait(_CHECK_INTERVAL)

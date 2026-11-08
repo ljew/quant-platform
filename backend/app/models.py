@@ -1518,3 +1518,27 @@ class ResearchReport(Base):
 
     def __repr__(self) -> str:
         return f"<ResearchReport {self.stock_name} {self.rating} {self.publish_date}>"
+
+# ───────────── 当日全景综述（2026-11-08 补）─────────────
+# 与 HotBrief 的分工：HotBrief 是「每轮增量」（一天 8 次，flash，只看自己那个窗口），
+# 本表是「全天全景」（每天 1 次，v4-pro，看全天所有轮次 + 全量资讯统计）。
+# 分开存的原因：一天只能有一份日报，覆盖式更新；而简报是流水，一轮一行。
+class BriefDigest(Base):
+    """某一天的资讯全景综述（收盘后生成，覆盖式更新）。"""
+
+    __tablename__ = "brief_digest"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    day: Mapped[str] = mapped_column(String(10), index=True, unique=True)   # YYYY-MM-DD
+    summary: Mapped[str] = mapped_column(Text, default="")
+    mainline: Mapped[str] = mapped_column(String(200), default="")          # 首段截断，列表页用
+    stats_json: Mapped[str] = mapped_column(Text, default="{}")             # 规模/来源/热度
+    model: Mapped[str] = mapped_column(String(40), default="")
+    n_items: Mapped[int] = mapped_column(Integer, default=0)                # 当天提炼要点数
+    n_news: Mapped[int] = mapped_column(Integer, default=0)                 # 当天原始资讯数
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+    def __repr__(self) -> str:
+        return f"<BriefDigest {self.day} {len(self.summary or '')}字>"

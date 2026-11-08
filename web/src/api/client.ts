@@ -344,6 +344,16 @@ export const api = {
   factorNewsTest: (extreme_pct: number, horizon: number, source: "news" | "mp" | "both" = "both") =>
     post<NewsEventReport>("/factor/news/event-test", { extreme_pct, horizon, source }),
   /** 每小时热点简报（一手快讯 → LLM 筛选解读） */
+  // 当日全景综述（每天 21:45 生成，v4-pro）。before 传今天时取「该日及之前
+  // 最近一份」—— 早上看首页时今天还没生成，要显示昨天那份而不是空白。
+  briefDigestLatest: (before?: string) =>
+    get<BriefDigest>("/factor/brief-digest/latest" + (before ? `?before=${before}` : "")),
+  briefDigestList: (limit = 30) => get<BriefDigest[]>("/factor/brief-digest/list?limit=" + limit),
+  briefDigestRun: (day?: string) =>
+    post<{ ok: boolean; day?: string; chars?: number; seconds?: number; error?: string }>(
+      "/factor/brief-digest/run" + (day ? `?day=${day}` : ""),
+      {},
+    ),
   hotBriefLatest: () => get<HotBrief>("/factor/hot-brief/latest"),
   /** 今日累计：各轮条目合并去重 + 最新综述（首页用这个） */
   hotBriefToday: () => get<HotBrief>("/factor/hot-brief/today"),
@@ -406,6 +416,28 @@ export const api = {
   factorRegistryToggle: (id: number) =>
     post<{ ok: boolean; id: number; status: string }>(`/factor/registry/${id}/toggle`, {}),
 };
+
+/** 当日全景综述（brief_digest 表）。与 HotBrief 是不同层次：
+ *  HotBrief 是每轮增量，这个是全天全景。 */
+export interface BriefDigest {
+  day: string;
+  mainline?: string;
+  summary?: string;
+  chars?: number;
+  model?: string;
+  n_items: number;
+  n_news: number;
+  created_at?: string;
+  stats?: {
+    n_items?: number;
+    n_news?: number;
+    n_rounds?: number;
+    src_stat?: string;
+    hot_stocks?: string;
+    sector_stat?: string;
+    seconds?: number;
+  };
+}
 
 export interface RegistryRow {
   id: number; name: string; expr: string; direction: number;

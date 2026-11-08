@@ -6,5 +6,9 @@ data
 __pycache__
 **/__pycache__
 *.pyc
-node_modules
+# ⚠️ 必须写 **/：Docker 的 node_modules 只匹配根目录，web/node_modules 匹配不到。
+# 曾被搬进镜像并覆盖容器内刚装好的依赖 —— 宿主机是 vite 5 + rollup(darwin)，
+# 而 lock 里是 vite 8 + rolldown，于是镜像 build 报
+# `Cannot find module @rollup/rollup-linux-arm64-musl`（2026-11-08）。
+**/node_modules
 .DS_Store

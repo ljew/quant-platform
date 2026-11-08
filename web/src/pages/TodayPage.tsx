@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Card, PageHeader } from "../components/ui";
 import EChart from "../components/EChart";
+import DigestCard from "../components/DigestCard";
 import HotBriefCard from "../components/HotBriefCard";
 import TodayRobustnessCard from "../components/TodayRobustnessCard";
 import { agentApi, api, get, newsApi, AgentState, KlineBar, NewsFeed } from "../api/client";
@@ -213,6 +214,10 @@ export default function TodayPage() {
       {/* —— 每小时热点简报（非结构化资讯 → LLM 判断）——
           放在「一句话观点」下面：两个都是判断，先读完观点再看可执行清单。
           两列排布是为了不把「信号明细」挤出首屏。 */}
+      {/* —— 当日全景（每天 21:45 一次，v4-pro）：一天在交易什么 ——
+          放在简报之前：这是全景，简报是增量，先读全景再看增量。 */}
+      <DigestCard />
+
       <HotBriefCard columns={2} dense />
 
       {/* —— 动作汇总卡 —— */}
