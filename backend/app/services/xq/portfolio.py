@@ -8,7 +8,7 @@
   即出局（次日开盘卖出）
 - 风控：收盘价自建仓浮亏 ≥10% 止损、浮盈 ≥30% 止盈（收盘触发，次日开盘执行）
 - 成本（与原实现一致）：佣金万 2.5（最低 5 元，双向）+ 印花税万 5（仅卖出）
-  + 过户费万 0.1（双向）+ 滑点 0.1%（买入向上取整、卖出向下取整，按分）
+  + 过户费万 0.1（双向）+ 滑点万 1（买入向上取整、卖出向下取整，按分；与主引擎对齐）
 
 历史重演：以 signal_actions 全历史为驱动（time_travel 语义天然成立），
 跑完输出净值曲线 / 持仓 / 成交流水，落 portfolio_state（同日覆盖）。
@@ -23,6 +23,7 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.cost_defaults import COMMISSION, MIN_COMMISSION, SLIPPAGE, STAMP_TAX
 from app.models import PortfolioState, SignalAction
 from app.services.xq.data import Panel, load_panel
 
@@ -32,11 +33,11 @@ DEFAULT_CONFIG: dict = {
     "stop_loss": -0.10,          # 止损：自建仓浮亏 ≥10%
     "max_positions": 30,         # 最大同时持仓
     "single_pct": 0.05,          # 单只 ≤5% 初始资金
-    "commission_rate": 0.00025,  # 佣金万 2.5
-    "commission_min": 5.0,       # 佣金最低 5 元
-    "stamp_tax": 0.0005,         # 印花税万 5（仅卖出）
-    "transfer_fee": 0.00001,     # 过户费万 0.1（双向）
-    "slippage": 0.001,           # 滑点 0.1%
+    "commission_rate": COMMISSION,  # 佣金万 2.5（cost_defaults / 主引擎）
+    "commission_min": MIN_COMMISSION,  # 佣金最低 5 元
+    "stamp_tax": STAMP_TAX,      # 印花税万 5（仅卖出）
+    "transfer_fee": 0.00001,     # 过户费万 0.1（双向；xq 组合轨特有）
+    "slippage": SLIPPAGE,        # 滑点万 1（与主引擎对齐；W45-xq / P1-2）
     "lot_size": 100,             # 整手
 }
 HOLD_ACTIONS = {"BUY_STRONG", "WATCH"}

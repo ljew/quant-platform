@@ -95,3 +95,36 @@ class TestCostModel:
     def test_portfolio_sharpe_subtracts_risk_free(self):
         src = inspect.getsource(PortfolioBacktestEngine)
         assert "rf_daily = self.risk_free_rate / 252.0" in src
+
+
+class TestXqPortfolioCostDefaults:
+    """W45-xq / P1-2：xq 组合轨默认必须与主引擎 / cost_defaults 一致。"""
+
+    def test_classic_portfolio_defaults(self):
+        from app.services.xq.portfolio import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["commission_rate"] == COMMISSION
+        assert DEFAULT_CONFIG["slippage"] == SLIPPAGE
+        assert DEFAULT_CONFIG["stamp_tax"] == STAMP_TAX
+        assert DEFAULT_CONFIG["commission_min"] == MIN_COMMISSION
+        assert DEFAULT_CONFIG["slippage"] == 0.0001
+        assert DEFAULT_CONFIG["commission_rate"] == 0.00025
+
+    def test_fresh_portfolio_defaults(self):
+        from app.services.xq.portfolio_fresh import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["commission_rate"] == COMMISSION
+        assert DEFAULT_CONFIG["slippage"] == SLIPPAGE
+        assert DEFAULT_CONFIG["stamp_tax"] == STAMP_TAX
+        assert DEFAULT_CONFIG["commission_min"] == MIN_COMMISSION
+
+    def test_live_target_defaults_match_xq(self):
+        from app.live.target import DEFAULT_CONFIG as live_cfg
+        from app.services.xq.portfolio_fresh import DEFAULT_CONFIG as fresh_cfg
+
+        for k in ("commission_rate", "slippage", "stamp_tax", "commission_min", "transfer_fee"):
+            assert live_cfg[k] == fresh_cfg[k] == (
+                {"commission_rate": COMMISSION, "slippage": SLIPPAGE,
+                 "stamp_tax": STAMP_TAX, "commission_min": MIN_COMMISSION,
+                 "transfer_fee": 0.00001}[k]
+            )

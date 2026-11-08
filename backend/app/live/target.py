@@ -16,7 +16,7 @@
 - 成交价 = 次日（决策日 +1 交易日）**未复权开盘价**
 - 持仓估值 = 当日**未复权收盘价**；停牌按成本估值
 - 候选判定用 signal_actions 的 close/ma20（两者均为后复权，比值口径自洽）
-- 成本：佣金万2.5(最低5) + 印花税万5(仅卖) + 过户费万0.1(双向) + 滑点0.1%
+- 成本：佣金万2.5(最低5) + 印花税万5(仅卖) + 过户费万0.1(双向) + 滑点万1（与主引擎对齐）
 """
 from __future__ import annotations
 
@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from datetime import date
 
 import pandas as pd
+
+from app.core.cost_defaults import COMMISSION, MIN_COMMISSION, SLIPPAGE, STAMP_TAX
 
 DEFAULT_CONFIG: dict = {
     "capital": 2_000_000,
@@ -34,11 +36,11 @@ DEFAULT_CONFIG: dict = {
     "max_hold_days": 10,
     "gate_window_days": 90,
     "gate_min_samples": 20,
-    "commission_rate": 0.00025,
-    "commission_min": 5.0,
-    "stamp_tax": 0.0005,
-    "transfer_fee": 0.00001,
-    "slippage": 0.001,
+    "commission_rate": COMMISSION,
+    "commission_min": MIN_COMMISSION,
+    "stamp_tax": STAMP_TAX,
+    "transfer_fee": 0.00001,  # 过户费万 0.1（双向；xq 组合轨特有）
+    "slippage": SLIPPAGE,     # 与主引擎对齐（W45-xq / P1-2）
     "lot_size": 100,
 }
 

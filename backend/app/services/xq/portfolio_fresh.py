@@ -22,7 +22,7 @@
   （+1.56）——恰好圈住 edge 存在的区间。
 
 口径与经典镜像组合（portfolio.py）一致：T+1 开盘建仓、次日开盘出场、整手、
-佣金万2.5(最低5元)双向 + 印花税万5(仅卖出) + 过户费万0.1双向 + 滑点0.1%。
+佣金万2.5(最低5元)双向 + 印花税万5(仅卖出) + 过户费万0.1双向 + 滑点万1（与主引擎对齐）。
 差异：入场规则（新鲜信号×回调区）、regime 门控、风控参数取自模拟
 （硬止损 -8% / 自峰值回撤 -8% / 持有 10 个交易日时间止损，无固定止盈——
 模拟中 T+10 视口 alpha 见顶，固定止盈会切断右尾）。
@@ -39,6 +39,7 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.cost_defaults import COMMISSION, MIN_COMMISSION, SLIPPAGE, STAMP_TAX
 from app.models import PortfolioExpState, SignalAction, SignalDaily
 from app.services.research_card_svc import MIN_SAMPLES, resolve_strategy_quality
 from app.services.xq.data import Panel, load_panel
@@ -52,11 +53,11 @@ DEFAULT_CONFIG: dict = {
     "max_hold_days": 10,        # 时间止损：持有 10 个交易日
     "gate_window_days": 90,     # regime 门控：近 90 个信号交易日
     "gate_min_samples": MIN_SAMPLES,
-    "commission_rate": 0.00025,
-    "commission_min": 5.0,
-    "stamp_tax": 0.0005,
-    "transfer_fee": 0.00001,
-    "slippage": 0.001,
+    "commission_rate": COMMISSION,
+    "commission_min": MIN_COMMISSION,
+    "stamp_tax": STAMP_TAX,
+    "transfer_fee": 0.00001,    # 过户费万 0.1（双向；xq 组合轨特有）
+    "slippage": SLIPPAGE,       # 与主引擎对齐（W45-xq / P1-2）
     "lot_size": 100,
 }
 
