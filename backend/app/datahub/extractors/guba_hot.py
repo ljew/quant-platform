@@ -53,13 +53,17 @@ class GubaHotExtractor(BaseExtractor):
 
         day = datetime.now().strftime("%Y-%m-%d")
         now = int(time.time())
+        try:
+            hot = _xueqiu_a_hot(max(1, int(top_n)))
+        except Exception:  # noqa: BLE001
+            hot = []
         if symbols:
-            hot = [{"symbol": s} for s in symbols[:max(1, int(top_n))]]
-        else:
-            try:
-                hot = _xueqiu_a_hot(max(1, int(top_n)))
-            except Exception:  # noqa: BLE001
-                hot = []
+            # 自己的票排在前面（优先抓），再并上热股 —— 老刘 2026-11-08：
+            # 「股吧这个不要清理，重点的票看看也行」= 两个都要，不是二选一。
+            seen = {str((h or {}).get("symbol") or "").lower() for h in hot}
+            extra = [{"symbol": s} for s in symbols
+                     if str(s).lower() not in seen and str(s).lower() not in ("", "none")]
+            hot = extra + hot
 
         rows: list[dict] = []
         sess = requests.Session()

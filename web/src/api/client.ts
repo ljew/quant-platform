@@ -832,6 +832,9 @@ export interface NewsFeedItem {
   published_at: string | null;
   /** 入库时刻（本地时间无时区），「新」标志按它算 */
   fetched_at?: string | null;
+  /** 同一事件被几家报道（≥2 才给）。既是重复标志，也是热度信号。 */
+  dup_count?: number;
+  dup_sources?: string[];
   symbols: string;
 }
 

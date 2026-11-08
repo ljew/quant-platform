@@ -246,6 +246,20 @@ export default function NewsFeedPage() {
                   ) : (
                     it.title
                   )}
+                  {(it.dup_count ?? 1) >= 2 && (
+                    <span
+                      title={`同题报道：${(it.dup_sources || []).join(" / ") || "多个来源"}`}
+                      style={{
+                        display: "inline-block", fontSize: 10, lineHeight: "15px",
+                        padding: "0 5px", marginLeft: 6, borderRadius: 3,
+                        cursor: "help", fontWeight: 600, verticalAlign: "1px",
+                        // 2~3 家用中性色，4 家以上用暖色 —— 报道越多越值得看
+                        background: (it.dup_count ?? 0) >= 4 ? "#b9770e18" : `${colors.muted}18`,
+                        color: (it.dup_count ?? 0) >= 4 ? "#b9770e" : colors.muted,
+                      }}>
+                      {it.dup_count} 家报道
+                    </span>
+                  )}
                 </div>
                 {it.summary && (
                   <div style={{
