@@ -203,8 +203,14 @@ def _find_missing_digest(days: int = 7) -> str:
     db = SessionLocal()
     try:
         today = datetime.now().date()
-        for i in range(1, days + 1):
-            d = today - timedelta(days=i)
+        now = datetime.now()
+        # ⚠️ 原来从「昨天」开始（range(1, ...)），**永远不查今天** —— 所以
+        # 「今天 21:45 之后重启」这个最常见的场景恰好漏掉：开机补跑会去补
+        # 昨天的，而昨天可能本来就有日报，于是判断「不缺」直接返回。
+        candidates = [today - timedelta(days=i) for i in range(1, days + 1)]
+        if (now.hour, now.minute) >= (DIGEST_HOUR, DIGEST_MINUTE):
+            candidates.insert(0, today)      # 今天已过日报时刻，可以补
+        for d in candidates:
             start = datetime.combine(d, dtime.min)
             end = datetime.combine(d, dtime.max)
             has_brief = db.query(HotBrief).filter(
@@ -297,7 +303,13 @@ def _loop(enabled: bool) -> None:
                 # 当日综述：每天 21:45 之后一次，独立线程跑（v4-pro 要 100 秒，
                 # 同步跑会把下一轮 slot 检查拖过去）。
                 dkey = f"{now:%Y-%m-%d}#digest"
-                if (now.hour == DIGEST_HOUR and now.minute >= DIGEST_MINUTE
+                # ⚠️ 原来是 `now.hour == DIGEST_HOUR` —— 只认 21 点这一个小时。
+                # 容器 22:00 之后重启（或当晚一直没起来，次日凌晨才起）就永远
+                # 碰不到这个分支，当天日报彻底丢失（2026-11-09 实际发生：
+                # 21:38 重启 → 21:45 的定时器没了 → 日报没生成）。
+                # 改成「过了 21:45 当天任意时刻都算到期」，配合下面的
+                # _digest_done_today()（库里已有就跳过）不会重复生成。
+                if ((now.hour, now.minute) >= (DIGEST_HOUR, DIGEST_MINUTE)
                         and dkey not in _digest_done):
                     _digest_done.add(dkey)
                     if _digest_done_today():
