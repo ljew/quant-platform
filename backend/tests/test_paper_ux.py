@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from app.core.cost_defaults import COMMISSION, SLIPPAGE
 from app.core.engine.paper_engine import get_paper_task_detail
 from app.core.eval_profile import build_cost_profile
@@ -92,6 +94,11 @@ class TestPaperPageCopyGuardrails:
 
     def test_validation_and_disclaimer_strings(self):
         src = Path(__file__).resolve().parents[2] / "web" / "src" / "pages" / "PaperPage.tsx"
+        if not src.exists():
+            # 容器里只挂载 backend/，前端源码不在 → 这条文案检查无处可读。
+            # 之前是直接 FileNotFoundError，导致容器内跑 pytest 永远挂一条，
+            # 把「真的坏了」和「环境缺文件」混在一起。
+            pytest.skip(f"前端源码未挂载进容器：{src}")
         text = src.read_text(encoding="utf-8")
         assert "请先选择策略（策略列表加载中或尚未选择）" in text
         assert "请填写标的代码，例如 sh600519" in text
