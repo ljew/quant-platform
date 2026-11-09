@@ -137,8 +137,19 @@ STAGES: list[dict] = [
         "key": "penetration", "label": "持仓穿透", "kind": "derived",
         "script": "build_fund_penetration.py", "args": [],
         "hour": 22, "minute": 0, "timeout": 5400,
+        # 显式日更：结构可信度随锚点年龄逐日衰减（structure_decay），
+        # 所以即使披露数据没变，隔天重算的行业结构也应该略有不同。
+        # 只在「上游变了」才跑会让估计停在披露日、越放越旧。
+        "on": "daily",
         "depends": ["holdings", "csrc"],
         "desc": "双轨补齐 + 行业穿透 + 监管仓位约束 → fund_hold_coverage / fund_industry_exposure",
+    },
+    {
+        "key": "style", "label": "风格穿透", "kind": "derived",
+        "script": "build_fund_style.py", "args": ["--periods", "6"],
+        "hour": 22, "minute": 25, "timeout": 2400,
+        "depends": ["penetration"],
+        "desc": "持仓 → 个股 → 五因子风格坐标（size/value/momentum/volatility/quality）",
     },
     {
         "key": "regression", "label": "净值回归校验", "kind": "derived",
@@ -644,6 +655,10 @@ def _should_run_today(st: dict, states: dict[str, dict]) -> bool:
         if on == "daily" and not _is_trading_day():
             return False
         return True
+    # 派生环节默认「上游变了才跑」；但显式声明 on=daily 的（如持仓穿透，
+    # 其结构可信度按天衰减）必须每天重算，否则估计值会僵在披露日。
+    if st.get("on") == "daily":
+        return _is_trading_day()
     return _derived_due(st, states)
 
 

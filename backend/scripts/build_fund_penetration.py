@@ -22,7 +22,23 @@ Q1(0331) / Q3(0930) 的 cover 约 50%，取该基金 end_date < R 且 cover>=90 
     residual = max(0, A.cover - cover)
     候选 = A 中未出现在 disclosed 的股票
     carried_w = 候选原权重 × residual / 候选权重和
-置信度 = 前十大在锚点中的命中率 × exp(-gap_days/365)，lookahead 再乘 0.5。
+置信度 = 前十大在锚点中的命中率 × structure_decay(gap_days)，lookahead 再乘 0.5。
+
+结构衰减（实证标定，不是拍的）
+------------------------------
+原实现用 exp(-gap/365)，等于「一年才衰减到 0.37」，比真实情况乐观得多。
+用 826 只基金的历史「完整披露期 → 之后各期披露前十大」配对（共 13,545 对）
+标定行业结构的秩相关，得到真实可信心：
+
+    间隔      ρ      旧权重 exp(-g/365)
+    90 天    0.49     0.78          ← 旧值把锚点高估了 60%
+    180 天   0.47     0.61
+    270 天   0.31     0.48
+    365 天   0.235    0.37
+
+即「隔一个季度，上期结构只剩一半可信；隔一年只剩四分之一」。故改为按上表
+线性插值的分段曲线（DECAY_POINTS），并在超过 365 天后按半年减半继续衰减。
+影响：半年报锚点的 Q3 估计，锚点权重由 0.78 降到 0.49，当期前十大的话语权相应上升。
 
 行业穿透
 --------
@@ -48,7 +64,6 @@ import argparse
 import bisect
 import csv
 import json
-import math
 import os
 import sqlite3
 import time
@@ -65,6 +80,8 @@ SRC_DB = DB                                  # 只读来源（监管锚等），
 MAIN_DB = ROOT / "data" / "quant_dev.db"     # 主库只读，仅取基金池规模
 RAW = DATA / "holdings_raw.csv"
 BY_FUND = DATA / "by_fund"
+# --db 演练时置 False：by_fund/*.csv 是主结果的钻取缓存，演练不该覆盖它
+WRITE_BY_FUND = True
 OLD_CSV = Path("/Users/happyljew/WorkBuddy/2026-11-07-11-27-13/fm_analysis/fund_portfolio_year.csv")
 
 COMPLETE_COVER = 90.0     # cover>=90% 视为完整截面（半年报/年报）
@@ -214,6 +231,25 @@ def gap_days(a: str, b: str) -> int:
         return abs((datetime.strptime(b, "%Y%m%d") - datetime.strptime(a, "%Y%m%d")).days)
     except ValueError:
         return 999
+
+
+# 结构衰减曲线：(锚点间隔天数, 锚点结构的可信度)。
+# 由 826 只基金 / 13,545 对历史「完整披露期 → 之后各期前十大」的
+# 行业结构秩相关标定而来，不是经验常数。见模块 docstring。
+DECAY_POINTS = ((0, 1.0), (90, 0.50), (180, 0.47), (270, 0.31), (365, 0.235))
+
+
+def structure_decay(gap: int) -> float:
+    """锚点结构随间隔衰减的可信度，分段线性插值；超 365 天按半年减半。"""
+    g = max(0, int(gap))
+    last_g, last_v = DECAY_POINTS[-1]
+    if g >= last_g:
+        return last_v * (0.5 ** ((g - last_g) / 180.0))
+    for (g0, v0), (g1, v1) in zip(DECAY_POINTS, DECAY_POINTS[1:]):
+        if g0 <= g <= g1:
+            f = (g - g0) / (g1 - g0) if g1 > g0 else 0.0
+            return v0 + (v1 - v0) * f
+    return 1.0
 
 
 def weight_scale(raw_sum: float, raw_sum_a: float, csrc_eq: float) -> tuple[float, str]:
@@ -375,6 +411,8 @@ def build(df: pd.DataFrame, lookup: IndustryLookup) -> dict:
         rows = detail_rows.pop(code, [])
         if not rows:
             return 0
+        if not WRITE_BY_FUND:      # 演练模式：只算不落盘
+            return len(rows)
         with open(BY_FUND / f"{code}.csv", "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["ts_code", "end_date", "ann_date", "symbol", "industry",
@@ -441,7 +479,7 @@ def build(df: pd.DataFrame, lookup: IndustryLookup) -> dict:
                     # 观测 d：当期前十大按行业归一化（当期信息优先）
                     # 后验 p ∝ 1 + κ·a + n·d；κ 随「锚点新鲜度 × 前十大重合度」衰减，
                     # 于是换手越大 / 间隔越久，越不信锚点、越信当期前十大透露的行业倾向。
-                    kappa = max(2.0, 60.0 * overlap * math.exp(-gap / 365.0))
+                    kappa = max(2.0, 60.0 * overlap * structure_decay(gap))
                     n_obs = max(dsum_a, 1.0) * 0.6
                     a_w: dict[str, float] = defaultdict(float)
                     for s, w in pairs:
@@ -466,7 +504,7 @@ def build(df: pd.DataFrame, lookup: IndustryLookup) -> dict:
                              for k in keys}
                     g_sum = sum(gap_w.values()) or 1.0
 
-                    conf = overlap * math.exp(-gap / 365.0) * (0.5 if lookahead else 1.0)
+                    conf = overlap * structure_decay(gap) * (0.5 if lookahead else 1.0)
                     conf = round(min(max(conf, 0.0), 1.0), 4)
 
                     # 单股上限 = 本期第 10 大重仓股权重（券商补全法的通用约束，
@@ -831,9 +869,12 @@ def main() -> None:
     args = ap.parse_args()
     if args.db:
         # 演练用：只改写入目标，读取的监管锚等仍来自研究库
-        global DB
+        global DB, WRITE_BY_FUND
         DB = Path(args.db)
-        log(f"写入目标库：{DB}")
+        # by_fund/*.csv 是主结果的钻取缓存（API 单基金详情直接读它）。
+        # 演练若照写，会出现「临时库 + 生产明细」的错位，所以演练只算不落盘。
+        WRITE_BY_FUND = False
+        log(f"写入目标库：{DB}（演练模式，不覆盖 by_fund 明细）")
     if args.input:
         paths = [Path(p) for p in args.input]
     else:
