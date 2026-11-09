@@ -39,6 +39,7 @@ from app.services.factor_ortho import (
     build_ortho_cache,
     orthogonalize_cross_section,
 )
+from app.services.factor_mt import bump_n_tested, enrich_mt_fields, get_n_tested
 
 # ============ 表达式文法 ============
 # 量能序列与收盘序列同窗口同长度，可自由互换/组合（如 corr(returns(c_v), returns(vol_v))）
@@ -506,14 +507,19 @@ def gp_search(db: Session, directions: list[str] | None = None,
     elites = population[:top_k]
 
     # 精评：全核心池完整检验（正式报告口径）
+    # W47-3：快评不 bump；精评 n_tested = max(累计 + len(seen), len(seen))，成功各 +1
+    n_before_gp = get_n_tested(db)
     final_reports = []
     for i, (expr, quick) in enumerate(elites):
         if progress:
             progress(0.88 + 0.1 * i / max(len(elites), 1), f"精英 #{i + 1} 全池精评中…")
+        n_for_rating = max(n_before_gp + len(seen), len(seen), 1)
         full = mine_factor(db, expr, name=f"GP-elite{i + 1}", start=start, end=end,
                            groups=5, forward=forward, universe=None,
-                           n_tested=len(seen), orthogonalize=orthogonal)
+                           n_tested=n_for_rating, orthogonalize=orthogonal)
         if full.get("ok"):
+            n_cum = bump_n_tested(db, delta=1)
+            enrich_mt_fields(full, n_tested=n_for_rating, n_tested_cum=n_cum)
             full["quick_ic"] = round(quick["ic_mean"], 4)
             full["quick_icir"] = round(quick.get("icir", 0), 4)
             full["fitness"] = round(quick["fitness"], 4)

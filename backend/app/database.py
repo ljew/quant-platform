@@ -150,6 +150,9 @@ def _migrate_sqlite() -> None:
                 "CREATE UNIQUE INDEX IF NOT EXISTS ux_auto_research_schedule "
                 "ON auto_research_runs(job, schedule_key) "
                 "WHERE schedule_key IS NOT NULL"))
+            # W47-3：多重检验累计表 + 种子
+            from app.services.factor_mt import migrate_factor_mt_state
+            migrate_factor_mt_state(conn)
             conn.commit()
     except Exception as exc:
         # 实盘账本结构不明时宁可拒绝启动，不能带着半套迁移继续记账。

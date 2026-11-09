@@ -329,6 +329,7 @@ export const api = {
   factorValidate: (expr: string) => post<{ ok: boolean; error?: string; sample_value?: number | null }>("/factor/validate", { expr }),
   factorFunctions: () => get<Record<string, Record<string, string>>>("/factor/functions"),
   factorMine: (payload: Record<string, unknown>) => post<FactorMineReport>("/factor/mine", payload),
+  factorMtState: () => get<{ scope: string; n_tested_cum: number; updated_at?: string | null }>("/factor/mt/state"),
   factorMineHorizons: (payload: Record<string, unknown>) =>
     post<FactorHorizonsResult>("/factor/mine/horizons", payload),
   factorMineResults: (limit = 20) => get<FactorMineSummary[]>("/factor/mine/results?limit=" + limit),
@@ -857,6 +858,26 @@ export interface FactorMineReport {
   ic_raw?: FactorIcPack | null;
   ic_resid?: FactorIcPack | null;
   ortho_basis?: FactorOrthoBasis | null;
+  /** W47-3：多重检验累计（报告层） */
+  n_tested?: number;
+  n_tested_cum?: number;
+  luck_bar?: number;
+  t_thresholds?: { 优秀?: number; 可用?: number; [k: string]: number | undefined };
+  bonferroni_alpha?: number;
+  mt_note?: string;
+  mt_stale?: boolean;
+  mt_replay_note?: string;
+  multiple_testing?: {
+    scope?: string;
+    n_tested?: number;
+    n_tested_cum?: number;
+    luck_bar?: number;
+    t_thresholds?: { 优秀?: number; 可用?: number; [k: string]: number | undefined };
+    bonferroni_alpha?: number;
+    formula?: string;
+    stale?: boolean;
+    replay_note?: string;
+  } | null;
 }
 
 export interface FactorHorizonRow {
