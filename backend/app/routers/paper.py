@@ -89,6 +89,18 @@ def create_task(req: PaperTaskCreate, db=Depends(get_db)):
     }
 
 
+@router.post("/auto-ensure")
+def auto_ensure_paper(dry_run: bool = False, db=Depends(get_db)):
+    """为「启用且回测超额为正」的策略自动补建模拟盘任务。
+
+    dry_run=true 只返回将要建什么，不落库（页面预览用）。
+    幂等：已有任务的策略跳过，重复调用不会建重复任务。
+    """
+    from app.services.paper_auto import ensure_paper_for_enabled
+
+    return ensure_paper_for_enabled(db, dry_run=dry_run)
+
+
 @router.get("/tasks")
 def list_tasks(db=Depends(get_db)):
     rows = db.execute(select(PaperTask).order_by(PaperTask.created_at.desc())).scalars().all()

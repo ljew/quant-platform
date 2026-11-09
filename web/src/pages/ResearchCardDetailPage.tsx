@@ -251,6 +251,98 @@ export default function ResearchCardDetailPage({ cardId, onBack }: { cardId: num
           sub="每周六复盘自动刷新" />
       </div>
 
+      {/* —— 回测 / 验证方式 ——
+          老刘 2026-11-09：「点进去也看不到具体回测的情况」。
+          策略卡关联 registry 里同名策略的最近一次真实回测；
+          因子卡本来就没有回测，这里正面说清它靠什么验证，而不是留空白。 */}
+      {isFactor ? (
+        <Card title="这张卡怎么验证（没有「回测」）" colors={colors}>
+          <div style={{ fontSize: 12.5, lineHeight: 1.85, color: colors.text }}>
+            因子卡验证的是<b>信号的预测力</b>，不是「能不能赚钱」：下面三根柱子是同一信号在
+            240 / 120 / 90 日窗口的平均超额，t 值是「这不是运气」的可信度。
+            要变成可交易策略，得先注册进策略注册表（带上持仓规则、成本、调仓周期），
+            那时才会有净值曲线、回撤和成交明细。
+          </div>
+          {(card.crowd_note || "").includes("不是可交易信号") && (
+            <div style={{
+              marginTop: 10, padding: "8px 12px", borderRadius: 8,
+              background: "#b9770e14", border: "1px solid #b9770e44",
+              fontSize: 12, color: "#b9770e", lineHeight: 1.7,
+            }}>
+              ⚠️ 这张卡自己就写明了 —— {card.crowd_note}
+              <div style={{ color: colors.muted, marginTop: 4 }}>
+                （所以它出现在「启用」里是被误标的，按内容应该归档为工程记录）
+              </div>
+            </div>
+          )}
+        </Card>
+      ) : (
+        <Card
+          title="最近回测"
+          colors={colors}
+          extra={card.strategy_key
+            ? <span style={{ fontSize: 11, color: colors.muted }}>策略 {card.strategy_key}</span>
+            : <span style={{ fontSize: 11, color: "#b9770e" }}>未封装成策略</span>}
+        >
+          {card.backtest ? (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 10 }}>
+                {([
+                  ["总收益", card.backtest.total_return, "pct"],
+                  ["基准", card.backtest.benchmark_total_return, "pct"],
+                  ["超额", card.backtest.excess_return, "pct"],
+                  ["夏普", card.backtest.sharpe, "num2"],
+                  ["最大回撤", card.backtest.max_drawdown, "pct"],
+                  ["成交笔数", card.backtest.trade_count, "int"],
+                  ["胜率", card.backtest.win_rate, "pct"],
+                ] as [string, number | null, string][]).map(([label, v, kind]) => {
+                  const txt = v == null ? "—"
+                    : kind === "pct" ? `${v >= 0 ? "+" : ""}${(v * 100).toFixed(2)}%`
+                    : kind === "num2" ? v.toFixed(2)
+                    : Math.round(v).toLocaleString();
+                  const tone = v == null ? colors.text
+                    : (kind === "int" ? colors.text : (v >= 0 ? colors.up : colors.down));
+                  return (
+                    <div key={label} style={{
+                      border: `1px solid ${colors.border}`, borderRadius: 8, padding: "8px 10px",
+                    }}>
+                      <div style={{ fontSize: 11, color: colors.muted }}>{label}</div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: tone, fontVariantNumeric: "tabular-nums" }}>
+                        {txt}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 12, fontSize: 11.5, color: colors.muted }}>
+                <span>#{card.backtest.id} · {card.backtest.start} ~ {card.backtest.end}</span>
+                <span style={{ flex: 1 }} />
+                <Btn small kind="ghost"
+                  onClick={() => window.dispatchEvent(new CustomEvent("quant-nav", { detail: { tab: "btopt" } }))}>
+                  查看回测详情 →
+                </Btn>
+              </div>
+            </>
+          ) : card.strategy_key ? (
+            <div style={{ fontSize: 12.5, color: colors.muted, lineHeight: 1.8 }}>
+              对应策略 <b style={{ color: colors.text }}>{card.strategy_key}</b> 还没跑过回测。
+              <span style={{ marginLeft: 8 }}>
+                <Btn small kind="ghost"
+                  onClick={() => window.dispatchEvent(new CustomEvent("quant-nav", { detail: { tab: "btopt" } }))}>
+                  去跑一次 →
+                </Btn>
+              </span>
+            </div>
+          ) : (
+            <div style={{ fontSize: 12.5, color: colors.muted, lineHeight: 1.8 }}>
+              这张卡策略还没封装进注册表 —— 它的信号每天在算（见下方信号日历），
+              但没有持仓规则/成本模型，所以跑不了组合回测。
+              要做成可跟踪的策略，需要在 registry 里加一条 <code>{card.key}</code> 的注册项。
+            </div>
+          )}
+        </Card>
+      )}
+
       <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 1fr) minmax(0, 2.2fr)", gap: 18, alignItems: "start" }}>
         {/* 左栏：档案 */}
         <Card title="卡片档案" colors={colors}>

@@ -201,31 +201,86 @@ export default function PaperPage() {
       {error && <div style={{ color: colors.up, margin: "8px 0" }}>{error}</div>}
       {progressHint && !error && <div style={{ color: colors.muted, margin: "8px 0", fontSize: 13 }}>{progressHint}</div>}
 
-      {/* 任务列表 */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: 12, marginTop: 16 }}>
-        {tasks.map((t) => (
-          <div key={t.id} onClick={() => openDetail(t.id)} style={{ background: colors.card, borderRadius: 10, padding: 14, cursor: "pointer", border: `1px solid ${colors.border}` }}>
-            <div style={{ fontWeight: 600 }}>#{t.id} {t.name}</div>
-            <div style={{ fontSize: 12, color: colors.muted, margin: "4px 0" }}>
-              {t.strategy_key} · {t.kind === "portfolio" ? `指数 ${t.index_code}` : t.symbols}
-            </div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: t.pnl_pct >= 0 ? colors.up : colors.down }}>
-              ¥{t.equity.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-              <span style={{ fontSize: 13, marginLeft: 8 }}>{t.pnl_pct >= 0 ? "+" : ""}{(t.pnl_pct * 100).toFixed(2)}%</span>
-            </div>
-            <div style={{ fontSize: 12, color: colors.muted }}>
-              持仓 {t.positions_count} · {t.enabled ? "🟢 自动" : "⚪ 暂停"} · {t.last_run_at?.slice(0, 16) || "未运行"}
-            </div>
-            {t.error_msg && <div style={{ fontSize: 12, color: colors.up }}>{t.error_msg}</div>}
-            <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
-              <button onClick={(e) => { e.stopPropagation(); toggle(t.id); }} style={smallBtn(colors)}>{t.enabled ? "暂停" : "启用"}</button>
-              <button onClick={(e) => { e.stopPropagation(); runNow(t.id); }} style={smallBtn(colors)} disabled={runningId === t.id}>
-                {runningId === t.id ? "运行中…" : "立即运行"}
-              </button>
-              <button onClick={(e) => { e.stopPropagation(); remove(t.id); }} style={{ ...smallBtn(colors), color: colors.up }}>删除</button>
-            </div>
+      {/* 任务列表：表格（2026-11-09 老刘要求：卡片换成列表更直观）
+          卡片一屏只放得下 3~4 个，且各字段高度不齐、横向无法对比；
+          表格能一屏看完所有任务，净值/收益按列对齐。 */}
+      <div style={{
+        marginTop: 16, background: colors.card, borderRadius: 10,
+        border: `1px solid ${colors.border}`, overflow: "hidden",
+      }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <thead>
+            <tr style={{ background: colors.bg, color: colors.muted, fontSize: 11.5 }}>
+              {["#", "任务", "策略", "标的", "净值", "收益", "持仓", "状态", "最近运行", "操作"].map((h, i) => (
+                <th key={h} style={{
+                  textAlign: i >= 4 && i <= 6 ? "right" : "left",
+                  padding: "8px 10px", fontWeight: 600, whiteSpace: "nowrap",
+                }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {tasks.map((t) => (
+              <tr key={t.id}
+                onClick={() => openDetail(t.id)}
+                style={{ borderTop: `1px solid ${colors.border}`, cursor: "pointer" }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = colors.bg)}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                <td style={{ padding: "8px 10px", color: colors.muted }}>{t.id}</td>
+                <td style={{ padding: "8px 10px", fontWeight: 600 }}>
+                  {t.name}
+                  {t.error_msg && (
+                    <div style={{ fontWeight: 400, fontSize: 11, color: colors.up, marginTop: 2 }}>
+                      {t.error_msg}
+                    </div>
+                  )}
+                </td>
+                <td style={{ padding: "8px 10px", color: colors.muted }}>{t.strategy_key}</td>
+                <td style={{ padding: "8px 10px", color: colors.muted }}>
+                  {t.kind === "portfolio" ? `指数 ${t.index_code}` : t.symbols}
+                </td>
+                <td style={{ padding: "8px 10px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                  ¥{t.equity.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                </td>
+                <td style={{
+                  padding: "8px 10px", textAlign: "right", fontWeight: 600,
+                  fontVariantNumeric: "tabular-nums",
+                  color: t.pnl_pct >= 0 ? colors.up : colors.down,
+                }}>
+                  {t.pnl_pct >= 0 ? "+" : ""}{(t.pnl_pct * 100).toFixed(2)}%
+                </td>
+                <td style={{ padding: "8px 10px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                  {t.positions_count}
+                </td>
+                <td style={{ padding: "8px 10px" }}>
+                  <span style={{ color: t.enabled ? "#1e8449" : colors.muted }}>
+                    {t.enabled ? "● 自动" : "○ 暂停"}
+                  </span>
+                </td>
+                <td style={{ padding: "8px 10px", color: colors.muted, whiteSpace: "nowrap" }}>
+                  {t.last_run_at?.slice(0, 16) || "未运行"}
+                </td>
+                <td style={{ padding: "8px 10px", whiteSpace: "nowrap" }}>
+                  <button onClick={(e) => { e.stopPropagation(); toggle(t.id); }} style={smallBtn(colors)}>
+                    {t.enabled ? "暂停" : "启用"}
+                  </button>
+                  <button onClick={(e) => { e.stopPropagation(); runNow(t.id); }} style={smallBtn(colors)}
+                    disabled={runningId === t.id}>
+                    {runningId === t.id ? "运行中…" : "立即运行"}
+                  </button>
+                  <button onClick={(e) => { e.stopPropagation(); remove(t.id); }}
+                    style={{ ...smallBtn(colors), color: colors.up }}>删除</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {tasks.length === 0 && (
+          <div style={{ padding: 24, textAlign: "center", color: colors.muted, fontSize: 13 }}>
+            还没有模拟盘任务 ——「启用」状态的策略会自动建（见下方说明）
           </div>
-        ))}
+        )}
       </div>
 
       {/* 详情 */}
