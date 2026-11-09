@@ -294,14 +294,16 @@ export default function ResearchCardDetailPage({ cardId, onBack }: { cardId: num
                   ["夏普", card.backtest.sharpe, "num2"],
                   ["最大回撤", card.backtest.max_drawdown, "pct"],
                   ["成交笔数", card.backtest.trade_count, "int"],
-                  ["胜率", card.backtest.win_rate, "pct"],
+                  ["胜率", card.backtest.win_rate, "plain"],
                 ] as [string, number | null, string][]).map(([label, v, kind]) => {
                   const txt = v == null ? "—"
                     : kind === "pct" ? `${v >= 0 ? "+" : ""}${(v * 100).toFixed(2)}%`
+                    : kind === "plain" ? `${(v * 100).toFixed(2)}%`   // 胜率：不该有正负号
                     : kind === "num2" ? v.toFixed(2)
                     : Math.round(v).toLocaleString();
-                  const tone = v == null ? colors.text
-                    : (kind === "int" ? colors.text : (v >= 0 ? colors.up : colors.down));
+                  // 胜率是「比例」不是「涨跌」，不能染红绿 —— 90% 胜率不该是红色
+                  const tone = v == null || kind === "int" || kind === "plain" ? colors.text
+                    : (v >= 0 ? colors.up : colors.down);
                   return (
                     <div key={label} style={{
                       border: `1px solid ${colors.border}`, borderRadius: 8, padding: "8px 10px",
