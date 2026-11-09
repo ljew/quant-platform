@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import os
+
 import bisect
 from datetime import date
 
@@ -63,6 +65,29 @@ def panel_asof(p: Panel, d: date, keep_days: int | None = None) -> Panel:
     return view
 
 
+def _retired_signal_keys(db: Session) -> set[str]:
+    """已退役的选股器 key（研究卡 state=retired）。
+
+    `run_from_panel` 会先删当天所有 signal_daily 再重建，所以退役的选股器如果
+    不在这里挡掉，每天都会重新写进一批无人看的信号（实测退役 6 个选股器
+    每天约 6000 条）。
+
+    ⚠️ 返回空集合而不是「白名单」：只跳过明确退役的，新增选股器默认照跑 ——
+    反过来做（只跑白名单里的）会在卡片体系异常时把所有信号停掉。
+    ⚠️ 环境变量 `QUANT_XQ_SKIP_RETIRED=0` 可关闭过滤（回填历史信号时用）。
+    """
+    if os.getenv("QUANT_XQ_SKIP_RETIRED", "1") in ("0", "", "false", "False"):
+        return set()
+    from app.models import ResearchCard
+
+    try:
+        rows = db.query(ResearchCard).filter(
+            ResearchCard.card_type == "strategy").all()
+    except Exception:  # noqa: BLE001
+        return set()
+    return {r.key for r in rows if r.state == "retired"}
+
+
 def run_from_panel(db: Session, p: Panel, run_id: int | None = None) -> dict:
     """在给定面板上跑完整流水线（scan 与 backfill 共用）。"""
     emit(db, run_id, "research", "载入全市场行情面板…", step="load_panel", status="running")
@@ -78,8 +103,13 @@ def run_from_panel(db: Session, p: Panel, run_id: int | None = None) -> dict:
     # ── 1) 跑 8 策略 → signal_daily（先删后写，幂等）──
     db.query(SignalDaily).filter(SignalDaily.date == data_date).delete()
     picks_by_day: dict[str, list[str]] = {}
+    retired_keys = _retired_signal_keys(db)
     for meta in STRATEGIES:
         key, name, fn = meta["key"], meta["name"], meta["fn"]
+        if key in retired_keys:
+            emit(db, run_id, "research", f"{name}：研究卡已退役，跳过",
+                 step=f"strategy:{key}", status="ok", rows=0)
+            continue
         st0 = _now_ms()
         try:
             symbols, _hits = fn(p)

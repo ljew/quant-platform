@@ -786,5 +786,9 @@ DISABLED_STRATEGIES: set[str] = {
     "csi800_enhanced", "enhanced_factor", "enhanced_factor_hs300",
     "jk001", "jk002",
     # 选股信号系（与保留的两个 xq 同质，IC 未见显著优势）
-    "xq_dual_param", "xq_private_placement", "xq_chan_buy",
+    "xq_dual_param", "xq_private_placement",
+    # ⚠️ xq_chan_buy（缠论买点）2026-11-09 移出停用：研究卡片 #2 chan_buy
+    # 在 11-07 被设为 enabled，但策略本身还挂在这个清单里 —— 用户在「策略研究」
+    # 看到卡片是「启用」，却找不到任何回测/执行入口。两边状态必须一致：
+    # 要么恢复策略（当前做法），要么把卡片退回 candidate。
 }

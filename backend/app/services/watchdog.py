@@ -136,6 +136,17 @@ def _maybe_heal(db, health: dict) -> str | None:
         from app.core.trading_calendar import is_trading_day
         if not is_trading_day(now.date()):
             return None
+        # 顺带补模拟盘：启用但还没建任务的策略，达标就自动建（幂等）
+        try:
+            from app.services.paper_auto import ensure_paper_for_enabled
+            r = ensure_paper_for_enabled(db)
+            if r["created"]:
+                logger.info("自动补建模拟盘：%s",
+                            ", ".join(f"{c['strategy_key']}#{c['task_id']}"
+                                      for c in r["created"]))
+        except Exception as e:  # noqa: BLE001
+            logger.info("自动补建模拟盘失败：%s", str(e)[:120])
+
         from app.services import orchestrator
         if orchestrator.STATE.get("running"):
             return None

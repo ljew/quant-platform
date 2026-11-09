@@ -55,12 +55,14 @@ docker exec 进容器翻日志。
 """
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import date, datetime, timedelta
@@ -73,8 +75,17 @@ SCRIPTS = Path(os.getenv("QUANT_SCRIPTS_DIR", "/app/scripts"))
 
 _CHECK_INTERVAL = 120          # 2 分钟扫一次
 _STARTUP_GRACE = 180           # 启动宽限：避免容器重启瞬间把所有环节一起拉起来
-_RUNNING_STALE_SEC = 3 * 3600  # running 超过这个时长视为僵尸，允许接管
 _DETAIL_LINES = 40             # 落库保留的脚本输出行数
+
+# 心跳与自愈（2026-11-09 加）：容器重启会让子进程无声无息消失，而库里那条
+# running 记录还留着。原来的做法是「running 一律跳过 + 3 小时后才允许接管」，
+# 结果是一次重启 = 该环节当天永久停摆（净值环节 20:08 被杀，22:00 的巡检仍
+# 跳过它，直到人工发现）。现在改成：子进程每 60s 写心跳，心跳断了就判定
+# 进程已死 → 作废该记录 → 自动重跑，最多 3 次、间隔 10 分钟。
+_HEARTBEAT_SEC = 60            # 子进程写心跳的间隔
+_HEARTBEAT_STALE_SEC = 240     # 心跳超过这个时长没更新 → 判定进程已死
+_MAX_ATTEMPTS = 3              # 同一环节每天最多尝试次数（含首次）
+_RETRY_DELAY_SEC = 600         # 两次自动重试的最小间隔
 
 # 告警：失败 / 该跑没跑，都主动推邮件。只落日志的监控等于没监控 ——
 # 2026-11-04 策略验证连续两晚没跑，日志里连「跳过」都没有，人只有打开页面
@@ -100,7 +111,7 @@ STAGES: list[dict] = [
         "script": "fetch_fund_nav_daily.py",
         # 日更模式：起点自动取「库内最新净值次日」，不用人工维护窗口参数。
         "args": ["--incremental"],
-        "hour": 19, "minute": 40, "timeout": 3600,
+        "hour": 19, "minute": 40, "timeout": 7200,
         "desc": "逐基金日净值增量 → nav_raw.csv（起点=库内最新净值次日）",
         "on": "daily",
     },
@@ -140,7 +151,10 @@ STAGES: list[dict] = [
         # 显式日更：结构可信度随锚点年龄逐日衰减（structure_decay），
         # 所以即使披露数据没变，隔天重算的行业结构也应该略有不同。
         # 只在「上游变了」才跑会让估计停在披露日、越放越旧。
+        # every_day：周末/节假日也照跑 —— 补齐与行业穿透是「估值」，不是行情，
+        # 用户要的是每天打开页面都能看到最新的持仓补齐和行业暴露。
         "on": "daily",
+        "every_day": True,
         "depends": ["holdings", "csrc"],
         "desc": "双轨补齐 + 行业穿透 + 监管仓位约束 → fund_hold_coverage / fund_industry_exposure",
     },
@@ -226,6 +240,15 @@ CREATE TABLE IF NOT EXISTS fund_pipeline_state (
   fails_total INTEGER DEFAULT 0);
 """
         )
+        # 老库补列：pid / heartbeat_at 用于判断「running 是不是僵尸」，
+        # attempts 用于卡住自动重试次数。SQLite 没有 ADD COLUMN IF NOT EXISTS，
+        # 用 PRAGMA 判断后再加，重复启动无副作用。
+        cols = {r[1] for r in con.execute("PRAGMA table_info(fund_pipeline_runs)")}
+        for name, ddl in (("pid", "INTEGER"),
+                          ("heartbeat_at", "TEXT"),
+                          ("attempts", "INTEGER DEFAULT 0")):
+            if name not in cols:
+                con.execute(f"ALTER TABLE fund_pipeline_runs ADD COLUMN {name} {ddl}")
         con.commit()
     finally:
         con.close()
@@ -259,7 +282,8 @@ def _today_run(stage: str) -> dict | None:
     try:
         row = con.execute(
             "SELECT stage,run_date,status,trigger,started_at,finished_at,duration_sec,"
-            "rows,detail,error FROM fund_pipeline_runs WHERE stage=? AND run_date=?",
+            "rows,detail,error,attempts,pid,heartbeat_at FROM fund_pipeline_runs "
+            "WHERE stage=? AND run_date=?",
             (stage, _today()),
         ).fetchone()
     except Exception:  # noqa: BLE001
@@ -269,12 +293,49 @@ def _today_run(stage: str) -> dict | None:
     if not row:
         return None
     keys = ("stage", "run_date", "status", "trigger", "started_at", "finished_at",
-            "duration_sec", "rows", "detail", "error")
+            "duration_sec", "rows", "detail", "error", "attempts", "pid",
+            "heartbeat_at")
     return dict(zip(keys, row))
 
 
+def _pid_alive(pid: int | None) -> bool:
+    """容器内判断子进程是否还在（容器重启后 PID 空间重置，配合心跳使用）。"""
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except Exception:  # noqa: BLE001
+        return True          # 权限等异常时保守认为活着，交给心跳判定
+
+
+def _age_sec(ts: str | None) -> float:
+    if not ts:
+        return float("inf")
+    try:
+        return (datetime.now() - datetime.fromisoformat(ts)).total_seconds()
+    except Exception:  # noqa: BLE001
+        return float("inf")
+
+
+def _run_is_dead(run: dict) -> bool:
+    """running 记录是否已成僵尸：心跳超时，或记录的进程已经不在了。"""
+    hb = run.get("heartbeat_at") or run.get("started_at")
+    if _age_sec(hb) > _HEARTBEAT_STALE_SEC:
+        return True
+    return not _pid_alive(run.get("pid"))
+
+
 def _claim(stage: str, trigger: str) -> bool:
-    """抢占式写入 running，返回是否抢到。跨进程用 SQLite 主键兜住。"""
+    """抢占式写入 running，返回是否抢到。
+
+    僵尸判定交给调用方（tick / run_stage 都先过 _run_is_dead），这里只做
+    「内存锁 + 落库」。原来的 3 小时 stale 兜底写在 SQL 里的
+    julianday('now') - julianday(started_at)，而 started_at 存的是本地时间、
+    julianday('now') 是 UTC，差 8 小时 = 实际要 11 小时才会接管，等于没有。
+    """
     with _lock:
         if stage in _running:
             return False
@@ -283,22 +344,72 @@ def _claim(stage: str, trigger: str) -> bool:
     con = _conn()
     try:
         cur = con.execute(
-            "INSERT INTO fund_pipeline_runs(stage,run_date,status,trigger,started_at) "
-            "VALUES (?,?,'running',?,?) "
+            "INSERT INTO fund_pipeline_runs(stage,run_date,status,trigger,started_at,"
+            "attempts,pid,heartbeat_at) VALUES (?,?,'running',?,?,1,NULL,?) "
             "ON CONFLICT(stage,run_date) DO UPDATE SET status='running',trigger=?,"
-            "started_at=?,finished_at=NULL,error=NULL,duration_sec=NULL "
-            "WHERE fund_pipeline_runs.status!='running' "
-            "   OR fund_pipeline_runs.started_at IS NULL "
-            "   OR julianday('now') - julianday(fund_pipeline_runs.started_at) > ?",
-            (stage, d, trigger, _now(), trigger, _now(), _RUNNING_STALE_SEC / 86400.0),
+            "started_at=?,finished_at=NULL,error=NULL,duration_sec=NULL,pid=NULL,"
+            "heartbeat_at=?,attempts=COALESCE(fund_pipeline_runs.attempts,0)+1",
+            (stage, d, trigger, _now(), _now(), trigger, _now(), _now()),
         )
         con.commit()
         return cur.rowcount > 0
     except Exception as e:  # noqa: BLE001
         logger.warning("抢占 %s 失败：%s", stage, e)
+        _release(stage)
         return False
     finally:
         con.close()
+
+
+def _heartbeat(stage: str, pid: int | None) -> None:
+    con = _conn(timeout=15)
+    try:
+        con.execute(
+            "UPDATE fund_pipeline_runs SET heartbeat_at=?,pid=? "
+            "WHERE stage=? AND run_date=? AND status='running'",
+            (_now(), pid, stage, _today()),
+        )
+        con.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("写心跳失败 %s：%s", stage, e)
+    finally:
+        con.close()
+
+
+def _mark_interrupted(stage: str, reason: str) -> bool:
+    """把卡住的 running 记录作废成 fail（不计为业务失败原因，但仍要重跑）。
+
+    与 reset_stage 的区别：这个是调度器自己发现僵尸后自动做的，且会照常
+    累加 fails_total、写 last_error，方便页面上看出「被打断过」。
+    """
+    con = _conn(timeout=15)
+    try:
+        cur = con.execute(
+            "UPDATE fund_pipeline_runs SET status='fail',finished_at=?,error=?,"
+            "detail=COALESCE(detail,'')||char(10)||? "
+            "WHERE stage=? AND run_date=? AND status='running'",
+            (_now(), reason[:2000], f"[自动接管] {reason}", stage, _today()),
+        )
+        con.commit()
+        n = cur.rowcount
+        if n:
+            con.execute(
+                "INSERT INTO fund_pipeline_state(stage,last_ok_at,last_fail_at,"
+                "last_error,runs_total,fails_total) VALUES (?,NULL,?,?,0,1) "
+                "ON CONFLICT(stage) DO UPDATE SET last_fail_at=excluded.last_fail_at,"
+                "last_error=excluded.last_error,"
+                "fails_total=fund_pipeline_state.fails_total+1",
+                (stage, _now(), reason[:2000]),
+            )
+            con.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("作废僵尸任务失败 %s：%s", stage, e)
+        return False
+    finally:
+        con.close()
+    if n:
+        logger.warning("基金管道 %s 心跳中断，已作废并准备重跑：%s", stage, reason)
+    return bool(n)
 
 
 def _release(stage: str) -> None:
@@ -526,23 +637,48 @@ def run_stage(key: str, force: bool = False, trigger: str = "manual",
         env.setdefault("PYTHONUNBUFFERED", "1")
         env.setdefault("PYTHONPATH", "/app")
         logger.info("基金管道启动 %s（%s）：%s", key, st["label"], " ".join(args[1:]))
+        # 输出重定向到临时文件而不是 PIPE：脚本动辄打几千行，PIPE 不读会写满
+        # 缓冲区把子进程堵死；临时文件还能让心跳线程独立于子进程存活。
+        tmp = tempfile.TemporaryFile(mode="w+b")
+        timeout = st["timeout"]
         try:
-            p = subprocess.run(
-                args, cwd=str(SCRIPTS.parent), env=env,
-                capture_output=True, text=True, timeout=st["timeout"],
-            )
-            out = (p.stdout or "") + (("\n[stderr]\n" + p.stderr) if p.stderr else "")
+            p = subprocess.Popen(args, cwd=str(SCRIPTS.parent), env=env,
+                                 stdout=tmp, stderr=subprocess.STDOUT)
+            deadline = time.time() + timeout
+            last_hb = 0.0
+            timed_out = False
+            while True:
+                if p.poll() is not None:
+                    break
+                now = time.time()
+                if now > deadline:
+                    timed_out = True
+                    p.kill()
+                    p.wait(timeout=30)
+                    break
+                if now - last_hb >= _HEARTBEAT_SEC:
+                    _heartbeat(key, p.pid)
+                    last_hb = now
+                time.sleep(2)
+            tmp.seek(0, os.SEEK_END)
+            size = tmp.tell()
+            tmp.seek(max(0, size - 256 * 1024))
+            out = tmp.read().decode("utf-8", "replace")
             tail = "\n".join(out.strip().splitlines()[-_DETAIL_LINES:])
-            ok = p.returncode == 0
-            _finish(key, ok, tail, _parse_rows(out),
-                    "" if ok else f"exit={p.returncode}", t0)
-            logger.info("基金管道 %s %s，%.1fs", key, "完成" if ok else "失败", time.time() - t0)
-        except subprocess.TimeoutExpired:
-            _finish(key, False, "", None, f"超时 {st['timeout']}s", t0)
-            logger.warning("基金管道 %s 超时", key)
+            if timed_out:
+                _finish(key, False, tail, _parse_rows(out), f"超时 {timeout}s", t0)
+                logger.warning("基金管道 %s 超时 %ss，已终止", key, timeout)
+            else:
+                ok = p.returncode == 0
+                _finish(key, ok, tail, _parse_rows(out),
+                        "" if ok else f"exit={p.returncode}", t0)
+                logger.info("基金管道 %s %s，%.1fs", key, "完成" if ok else "失败",
+                            time.time() - t0)
         except Exception as e:  # noqa: BLE001
             _finish(key, False, "", None, repr(e)[:800], t0)
             logger.warning("基金管道 %s 异常：%r", key, e)
+        finally:
+            tmp.close()
 
     if wait:
         _job()
@@ -554,9 +690,8 @@ def run_stage(key: str, force: bool = False, trigger: str = "manual",
 def reset_stage(key: str, reason: str = "人工重置") -> dict:
     """把今天卡在 running 的记录作废，让「运行」能立刻重新触发。
 
-    为什么需要：容器重启 / 进程被杀后，库里那条 running 记录还在（而内存里的
-    _running 已经空了）。_claim 会以「正在运行」为由拒绝启动，最长要等
-    _RUNNING_STALE_SEC（3 小时）才自动接管 —— 应急时不能等这么久。
+    为什么还需要它：心跳自愈（_mark_interrupted）大约 4 分钟一轮，遇到
+    「心跳还在更新但脚本其实已经死循环」这类情况仍需人工一键作废。
 
     安全边界：本进程内真有活线程时**拒绝重置**，避免同一环节跑两份、
     双双写同一个库。
@@ -572,8 +707,8 @@ def reset_stage(key: str, reason: str = "人工重置") -> dict:
     con = _conn()
     try:
         cur = con.execute(
-            "UPDATE fund_pipeline_runs SET status='fail',finished_at=?,error=?,detail=? "
-            "WHERE stage=? AND run_date=? AND status='running'",
+            "UPDATE fund_pipeline_runs SET status='fail',finished_at=?,error=?,detail=?,"
+            "pid=NULL WHERE stage=? AND run_date=? AND status='running'",
             (_now(), reason, "人工重置：原 running 记录作废（未产生有效输出）", key, d),
         )
         con.commit()
@@ -648,6 +783,9 @@ def _behind_schedule(st: dict) -> bool:
 
 def _should_run_today(st: dict, states: dict[str, dict]) -> bool:
     """今天是否该跑这个环节（只看日历/上游，不看是否已跑）。"""
+    # every_day：与行情无关的估值类环节（持仓补齐 / 行业穿透），周末节假日照跑。
+    if st.get("every_day"):
+        return True
     if st["kind"] == "collect":
         on = st.get("on", "daily")
         if on == "disclosure" and not _in_disclosure_window():
@@ -670,6 +808,23 @@ def _overdue(st: dict) -> bool:
     return (now - due).total_seconds() > _OVERDUE_GRACE_MIN * 60
 
 
+def _retry_due(run: dict) -> bool:
+    """距上次失败/中断是否已过重试冷却期。"""
+    return _age_sec(run.get("finished_at") or run.get("started_at")) >= _RETRY_DELAY_SEC
+
+
+def _upstream_busy(st: dict) -> bool:
+    """上游正在本进程里跑 → 本轮先别动。
+
+    典型场景：holdings 正在重写 holdings_*.csv，穿透此刻去读会读到写了一半的
+    文件，算出一份错的行业暴露。等两分钟下一轮再跑，代价远小于脏数据。
+    """
+    for up in st.get("depends") or []:
+        if up in _running:
+            return True
+    return False
+
+
 def tick() -> list[str]:
     """扫一遍，返回本轮触发的环节。"""
     started: list[str] = []
@@ -681,17 +836,42 @@ def tick() -> list[str]:
         if not _passed_today(st["hour"], st["minute"]):
             continue
         prev = _today_run(key)
-        if prev and prev["status"] in ("ok", "running"):
+        if prev and prev["status"] == "ok":
             continue
+        # —— 僵尸 running 自愈（2026-11-09）——
+        # 容器重启/进程被杀后，库里留着 running 而内存里 _running 早空了。
+        # 这里靠心跳判断死活：真死了就作废并当失败处理，继续往下走重试逻辑；
+        # 本进程还在跑的（key in _running）一律不动。
+        took_over = False
+        if prev and prev["status"] == "running":
+            if key in _running:
+                continue
+            if not _run_is_dead(prev):
+                continue
+            _mark_interrupted(
+                key,
+                f"心跳止于 {prev.get('heartbeat_at') or prev.get('started_at')}，"
+                f"进程已不存在（容器重启/被杀），自动作废并重跑")
+            prev = _today_run(key)
+            took_over = True
         if not _should_run_today(st, states):
             continue
-        # 到点了、该跑、却连一条运行记录都没有 → 主动告警（每天每环节一次）。
-        # 注意只看 prev is None：prev.status == fail 的情况 _finish 已经报过了，
-        # 这里再报一次就是重复轰炸。
-        if prev is None and _overdue(st):
+        if _upstream_busy(st):
+            continue
+        trigger = "schedule"
+        if prev and prev["status"] == "fail":
+            attempts = prev.get("attempts") or 1
+            if attempts >= _MAX_ATTEMPTS:
+                continue          # 今天的次数用完了，交给人工
+            if not took_over and not _retry_due(prev):
+                continue          # 冷却中，下一轮再看
+            trigger = "retry"
+        elif prev is None and _overdue(st):
+            # 到点了、该跑、却连一条运行记录都没有 → 主动告警（每天每环节一次）。
+            # prev.status == fail 的情况上面已经走过重试，不再重复轰炸。
             _alert_missed(key, st["label"], f"{st['hour']:02d}:{st['minute']:02d}")
         try:
-            r = run_stage(key, force=False, trigger="schedule")
+            r = run_stage(key, force=False, trigger=trigger)
             if r.get("started"):
                 started.append(key)
         except Exception as e:  # noqa: BLE001
@@ -752,6 +932,8 @@ def get_status() -> dict:
             "today_rows": (run or {}).get("rows"),
             "today_error": (run or {}).get("error"),
             "today_detail": (run or {}).get("detail"),
+            "today_attempts": (run or {}).get("attempts"),
+            "today_heartbeat": (run or {}).get("heartbeat_at"),
             "last_ok_at": s.get("last_ok_at"),
             "last_fail_at": s.get("last_fail_at"),
             "last_error": s.get("last_error"),
@@ -817,10 +999,24 @@ def run_all_missing(trigger: str = "manual") -> dict:
     return {"ok": True, "results": res}
 
 
+def _mark_running_interrupted_on_exit() -> None:
+    """进程正常退出（docker stop / compose up -d 重建）时，把在跑的环节标掉。
+
+    容器收到 SIGTERM 后 uvicorn 会优雅退出，atexit 随之执行；这样下次启动
+    的巡检不必等心跳超时（4 分钟）就能直接重跑。
+    """
+    try:
+        for key in list(_running):
+            _mark_interrupted(key, "调度器进程退出（容器停止/重启），本次运行作废")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("退出清理失败：%r", e)
+
+
 def start_fund_scheduler(enabled: bool = True) -> None:
     global _thread, _boot_at
     init_db()
     _boot_at = time.time()
+    atexit.register(_mark_running_interrupted_on_exit)
     with _lock:
         _status["enabled"] = enabled
         _status["started_at"] = _now()

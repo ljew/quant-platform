@@ -151,6 +151,7 @@ def _run_update() -> bool:
         elif st.status == "SUCCESS":
             logger.info("datahub 管道完成 run_id=%s", rid)
             _status["last_success"] = datetime.now().isoformat(timespec="seconds")
+            _backup_async(backend)
             return True
         else:
             err = st.error or f"pipeline status={st.status}"
@@ -171,6 +172,7 @@ def _run_update() -> bool:
             logger.info("ETL 日更成功:\n%s", proc.stdout[-1200:])
             _status["last_success"] = datetime.now().isoformat(timespec="seconds")
             _record_fallback_run(True, "", fb_started)
+            _backup_async(backend)
             return True
         logger.error("ETL 日更失败 rc=%s:\n%s", proc.returncode, proc.stderr[-1200:])
         _status["last_error"] = f"rc={proc.returncode}: {proc.stderr[-300:]}"
@@ -181,6 +183,33 @@ def _run_update() -> bool:
         _status["last_error"] = str(e)[:300]
         _record_fallback_run(False, _status["last_error"], fb_started)
         return False
+
+
+def _backup_async(backend: str) -> None:
+    """ETL 成功后异步做一次数据库热备份（VACUUM INTO，约 40 秒）。
+
+    ⚠️ 必须异步 + 吞异常：备份失败绝不能影响 ETL 的成功判定，那会让
+    last_run_date 不推进、第二天又重跑一遍（以前踩过静默失败 33 天的坑）。
+    ⚠️ 用子进程而不是 import：`scripts/` 不是 package，且在容器里路径固定。
+    """
+    import threading
+
+    def _run() -> None:
+        try:
+            script = os.path.join(backend, "scripts", "backup_db.py")
+            r = subprocess.run(
+                [sys.executable, script],
+                capture_output=True, text=True, timeout=600,
+            )
+            if r.returncode == 0:
+                logger.info("数据库备份完成：%s", (r.stdout or "").strip()[-160:])
+            else:
+                logger.warning("数据库备份失败 rc=%s：%s",
+                               r.returncode, (r.stderr or "")[-200:])
+        except Exception as e:  # noqa: BLE001
+            logger.warning("数据库备份异常：%s", str(e)[:160])
+
+    threading.Thread(target=_run, daemon=True, name="db-backup").start()
 
 
 def _record_fallback_run(ok: bool, message: str, started: datetime) -> None:

@@ -1121,6 +1121,8 @@ export interface FundPipelineStage {
   today_rows: number | null;
   today_error: string | null;
   today_detail: string | null;
+  today_attempts: number | null;    // 今日尝试次数（>1 说明被自动重试过）
+  today_heartbeat: string | null;   // 子进程心跳（判断僵尸用）
   last_ok_at: string | null;
   last_fail_at: string | null;
   last_error: string | null;
@@ -1419,6 +1421,15 @@ export interface ResearchCardItem {
   state: "enabled" | "candidate" | "watch" | "downgraded" | "retired";
   history: CardHistoryEntry[];
   updated_at: string | null;
+  /** 对应的 registry 策略 key（空 = 这张卡还没封装成可回测策略） */
+  strategy_key?: string;
+  /** 最近一次真实回测；factor 卡恒 null（不是可回测的东西） */
+  backtest?: {
+    id: number; start: string; end: string;
+    total_return: number | null; benchmark_total_return: number | null;
+    excess_return: number | null; sharpe: number | null;
+    max_drawdown: number | null; trade_count: number | null; win_rate: number | null;
+  } | null;
 }
 export interface ResearchCardsResp {
   total: number;

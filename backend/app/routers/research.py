@@ -26,8 +26,50 @@ _MIN_SAMPLES = 20
 _RETIRE_NEG_WEEKS = 4
 
 
-def _card_dict(r: ResearchCard) -> dict:
+def match_strategy_key(card: ResearchCard) -> str:
+    """研究卡 → registry 策略 key。找不到返回空串（= 不可回测）。
+
+    卡片 key 和策略 key 不是一一对应的：卡片 `high_tight_flag` 对应策略
+    `xq_high_tight_flag`，卡片 `turtle_trade` 对应 `turtle_classic`。
+    所以按可信度依次试：signal_key → 同名 → 中文名。
+    """
+    from app.core.strategies.registry import STRATEGY_REGISTRY
+
+    for k, meta in STRATEGY_REGISTRY.items():
+        if meta.get("signal_key") == card.key:
+            return k
+    if card.key in STRATEGY_REGISTRY:
+        return card.key
+    for k, meta in STRATEGY_REGISTRY.items():
+        if meta.get("name") == card.name:
+            return k
+    return ""
+
+
+def _recent_backtest(db, strategy_key: str) -> dict | None:
+    """该策略最近一次回测的关键指标（不含净值曲线，列表/详情都够用）。"""
+    if not strategy_key:
+        return None
+    from app.models import Backtest
+
+    r = db.execute(
+        select(Backtest).where(Backtest.strategy_key == strategy_key)
+        .order_by(Backtest.id.desc()).limit(1)
+    ).scalar_one_or_none()
+    if not r:
+        return None
     return {
+        "id": r.id, "start": r.start_date, "end": r.end_date,
+        "total_return": r.total_return, "benchmark_total_return": r.benchmark_total_return,
+        "excess_return": r.excess_return, "sharpe": r.sharpe,
+        "max_drawdown": r.max_drawdown, "trade_count": r.trade_count,
+        "win_rate": r.win_rate,
+    }
+
+
+def _card_dict(r: ResearchCard, db=None) -> dict:
+    """卡片字典。传 db 时附带「对应策略 + 最近回测」，供详情页直接展示。"""
+    d = {
         "id": r.id, "card_type": r.card_type, "key": r.key, "name": r.name,
         "hypothesis": r.hypothesis, "data_spec": r.data_spec,
         "evidence": json.loads(r.evidence_json or "{}"),
@@ -36,6 +78,13 @@ def _card_dict(r: ResearchCard) -> dict:
         "history": json.loads(r.history_json or "[]"),
         "updated_at": r.updated_at.isoformat(timespec="seconds") if r.updated_at else None,
     }
+    if db is not None:
+        skey = match_strategy_key(r)
+        d["strategy_key"] = skey
+        # strategy 卡：有回测就是有，没有就明确 None（前端据此说「还没跑过」）
+        # factor 卡：本来就不是可回测的东西，恒 None，前端按 card_type 区分措辞
+        d["backtest"] = _recent_backtest(db, skey) if r.card_type == "strategy" else None
+    return d
 
 
 @router.get("/cards")
@@ -44,7 +93,7 @@ def list_cards():
     try:
         rows = db.execute(select(ResearchCard)
                           .order_by(ResearchCard.card_type, ResearchCard.id)).scalars().all()
-        cards = [_card_dict(r) for r in rows]
+        cards = [_card_dict(r, db) for r in rows]
         cards.sort(key=lambda c: (_STATE_ORDER.get(c["state"], 9), c["card_type"], c["id"]))
         state_count: dict[str, int] = {}
         for c in cards:
@@ -127,7 +176,7 @@ def upsert_card(body: CardIn):
 
         db.commit()
         db.refresh(card)
-        return _card_dict(card)
+        return _card_dict(card, db)
     finally:
         db.close()
 
@@ -274,7 +323,7 @@ def get_card(card_id: int):
         card = db.get(ResearchCard, card_id)
         if not card:
             raise HTTPException(404, "研究卡不存在")
-        return _card_dict(card)
+        return _card_dict(card, db)
     finally:
         db.close()
 
@@ -337,6 +386,6 @@ def transition_card(card_id: int, body: TransitionIn):
             card.evidence_json = json.dumps(ev, ensure_ascii=False)
         db.commit()
         return {"ok": True, "changed": True, "state": card.state,
-                "card": _card_dict(card)}
+                "card": _card_dict(card, db)}
     finally:
         db.close()
