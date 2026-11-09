@@ -12,6 +12,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Btn, Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
 import EChart from "../components/EChart";
+import FundStylePanel from "../components/FundStylePanel";
 import { get } from "../api/client";
 import { useTheme } from "../theme";
 
@@ -669,6 +670,10 @@ export default function FundPenetrationPage() {
           （它们会以「100% 单一行业」挤满榜首）。点基金名跳到下方单基金钻取。
         </div>
       </Card>
+
+      <div style={{ height: 14 }} />
+
+      <FundStylePanel />
 
       <div style={{ height: 14 }} />
 
