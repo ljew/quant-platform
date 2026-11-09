@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as dtime, timedelta
 
 from sqlalchemy import select
 
@@ -191,6 +191,80 @@ def _run_digest() -> None:
         db.close()
 
 
+def _find_missing_digest(days: int = 7) -> str:
+    """找「有简报、但没有日报」的最近一天（最多回看 days 天）。没有则返回空串。
+
+    为什么要按「有简报」筛：周末或休市日简报本来就不跑，那几天没有日报是正常的，
+    不该补。只有「那天有提炼要点却漏了复盘」才值得补。
+    """
+    from app.database import SessionLocal
+    from app.models import BriefDigest, HotBrief
+
+    db = SessionLocal()
+    try:
+        today = datetime.now().date()
+        for i in range(1, days + 1):
+            d = today - timedelta(days=i)
+            start = datetime.combine(d, dtime.min)
+            end = datetime.combine(d, dtime.max)
+            has_brief = db.query(HotBrief).filter(
+                HotBrief.created_at >= start, HotBrief.created_at <= end).first()
+            if not has_brief:
+                continue          # 那天没跑简报，跳过
+            has_digest = db.query(BriefDigest).filter(
+                BriefDigest.day == d.isoformat(),
+                BriefDigest.error == "").first()
+            if has_digest:
+                return ""         # 最近一个有简报的日子已经有日报 → 不缺
+            return d.isoformat()  # 这一天有简报但没日报 → 补它
+        return ""
+    except Exception as e:  # noqa: BLE001
+        logger.info("检查缺失日报失败：%s", str(e)[:80])
+        return ""
+    finally:
+        db.close()
+
+
+def _catchup_digest() -> None:
+    """开机补跑：容器启动后检查最近是否有「漏掉的日报」，缺则补一份。
+
+    为什么需要：日报只在每天 21:45 生成一次，机器/容器当时不在就永久缺失。
+    2026-11-09 体检时发现昨晚（周日）整晚容器没起来，21:45 的日报直接没了，
+    只能手动调接口补。
+
+    时机上等 180 秒再动手：
+      - 避开 init_db / 各调度器启动时的资源竞争
+      - 更重要的是等容器 DNS 就绪 —— 实测冷启动后头几十分钟偶发
+        `Name or service not known`，那时调模型必失败（今早 09:02 那轮就是）
+    """
+    threading.Event().wait(180)
+    day = _find_missing_digest()
+    if not day:
+        logger.info("开机检查：近期日报齐全，无需补跑")
+        return
+    logger.info("开机检查：%s 有简报但缺日报，开始补跑", day)
+    _run_digest_for(day)
+
+
+def _run_digest_for(day: str) -> None:
+    """补跑指定日期的日报。"""
+    from app.database import SessionLocal
+    from app.services.brief_digest import run as run_digest
+
+    db = SessionLocal()
+    try:
+        r = run_digest(db, day=day)
+        if r.get("ok"):
+            logger.info("补跑日报完成：%s · %d 字 · %s 秒", r.get("day"),
+                        r.get("chars"), r.get("seconds"))
+        else:
+            logger.warning("补跑日报失败（%s）：%s", day, r.get("error"))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("补跑日报异常（%s）：%s", day, str(e)[:160])
+    finally:
+        db.close()
+
+
 def _loop(enabled: bool) -> None:
     while True:
         try:
@@ -254,6 +328,9 @@ def start_hot_brief_scheduler(enabled: bool | None = None) -> threading.Thread:
 
     t = threading.Thread(target=_loop, args=(enabled,), daemon=True, name="hot-brief")
     t.start()
+
+    # 开机补跑：容器启动后检查最近是否漏了日报（错过 21:45 就永久缺失）
+    threading.Thread(target=_catchup_digest, daemon=True, name="brief-digest-catchup").start()
     _sched_thread = t
     logger.info("热点简报调度器已启动（enabled=%s）：交易日 %s，非交易日 %s（均 :%02d 触发）",
                 enabled, list(SLOTS_TRADING), list(SLOTS_OFFDAY), SLOT_MINUTE)

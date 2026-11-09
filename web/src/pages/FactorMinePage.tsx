@@ -961,14 +961,55 @@ function MineReport({ report, colors, start, end, onForce }: { report: FactorMin
         />
         <KpiCard label="ICIR" value={report.icir.toFixed(3)} sub="IC 稳定性"
           tone={Math.abs(report.icir) >= 0.3 ? "accent" : "neutral"} colors={colors} />
-        <KpiCard label="t 统计量" value={report.t_stat.toFixed(2)} sub={Math.abs(report.t_stat) >= 2 ? "|t|≥2 显著" : "不显著"}
-          tone={Math.abs(report.t_stat) >= 2 ? "up" : "neutral"} colors={colors} />
+        <KpiCard label="t 统计量" value={report.t_stat.toFixed(2)}
+          sub={(() => {
+            const gate = report.t_thresholds?.["优秀"] ?? report.multiple_testing?.t_thresholds?.["优秀"] ?? 2;
+            return Math.abs(report.t_stat) >= gate ? `|t|≥${gate} 达优秀门` : `优秀门 |t|≥${gate}`;
+          })()}
+          tone={(() => {
+            const gate = report.t_thresholds?.["优秀"] ?? report.multiple_testing?.t_thresholds?.["优秀"] ?? 2;
+            return Math.abs(report.t_stat) >= gate ? "up" : "neutral";
+          })()} colors={colors} />
         <KpiCard label="IC 胜率" value={`${(report.ic_win_rate * 100).toFixed(0)}%`} sub="IC>0 占比" tone="neutral" colors={colors} />
         <KpiCard label="多空单调差" value={report.monotonic_spread.toFixed(4)} sub="Top−Bottom 组均值差"
           tone={Math.abs(report.monotonic_spread) > 0.01 ? "down" : "neutral"} colors={colors} />
         <KpiCard label="单调评分" value={report.mono_score.toFixed(2)} sub="相邻组同向占比"
           tone={report.mono_score >= 0.6 ? "down" : "neutral"} colors={colors} />
       </div>
+
+      {(report.n_tested != null || report.n_tested_cum != null || report.multiple_testing) && (
+        <Card title="多重检验" colors={colors}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 14, color: colors.text }}>
+              <span>累计检验 N=<b>{report.n_tested_cum ?? report.multiple_testing?.n_tested_cum ?? "—"}</b></span>
+              <span>本次评级 N=<b>{report.n_tested ?? report.multiple_testing?.n_tested ?? "—"}</b></span>
+              <span>luck_bar=<b>{(() => { const v = report.luck_bar ?? report.multiple_testing?.luck_bar; return v != null ? Number(v).toFixed(3) : "—"; })()}</b></span>
+              <span>优秀门 t≥<b>{report.t_thresholds?.["优秀"] ?? report.multiple_testing?.t_thresholds?.["优秀"] ?? "—"}</b></span>
+              <span>可用门 t≥<b>{report.t_thresholds?.["可用"] ?? report.multiple_testing?.t_thresholds?.["可用"] ?? "—"}</b></span>
+            </div>
+            <div style={{ color: colors.muted, fontSize: 12.5 }}>
+              Bonferroni α≈{(report.bonferroni_alpha ?? report.multiple_testing?.bonferroni_alpha) != null
+                ? Number(report.bonferroni_alpha ?? report.multiple_testing?.bonferroni_alpha).toExponential(3)
+                : "—"}（仅提示，不二次抬门）
+            </div>
+            <div style={{ color: colors.muted, fontSize: 12.5 }}>
+              {report.mt_note
+                ?? report.multiple_testing?.formula
+                ?? "评级门槛随累计挖掘次数抬升（luck_bar），抑制挑运气；非完整 PBO/CSCV。"}
+            </div>
+            {(report.mt_stale || report.mt_replay_note) && (
+              <div style={{
+                marginTop: 2, padding: "8px 10px", borderRadius: 8,
+                background: "rgba(217, 119, 6, 0.12)", border: "1px solid rgba(217, 119, 6, 0.35)",
+                color: "#b45309", fontSize: 12.5,
+              }}>
+                {report.mt_replay_note
+                  ?? `历史回放：评级按当时 N；当前累计已增至 ${report.n_tested_cum ?? "—"}`}
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
 
       {report.factor_stats && (
         <Card title="因子值统计（全区间全部样本）" colors={colors}>

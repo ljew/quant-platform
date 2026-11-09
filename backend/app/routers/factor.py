@@ -7,6 +7,7 @@
 - GET  /factor/mine/results       历史挖掘结果列表
 - GET  /factor/mine/results/{id}  挖掘结果详情
 - POST /factor/mine/results/{id}/delete  删除
+- GET  /factor/mt/state           多重检验累计只读（W47-3）
 """
 from __future__ import annotations
 
@@ -26,6 +27,10 @@ from app.services.factor_mining import (
     snapshot_dates, news_event_test,
 )
 from app.services.factor_gp import gp_search, DIRECTION_TEMPLATES
+from app.services.factor_mt import (
+    attach_mt_replay, bump_n_tested, enrich_mt_fields, get_n_tested,
+    SCOPE_GLOBAL,
+)
 
 router = APIRouter(prefix="/factor", tags=["factor"])
 
@@ -207,16 +212,23 @@ def mine(payload: MinePayload, db: Session = Depends(get_db)):
     if not payload.force and cached is not None:
         cached["duplicate_of"] = row.id
         cached["duplicate_created_at"] = row.created_at.isoformat() if row.created_at else None
+        # W47-3：回放不 bump、不改历史 rating；附当前累计提示
+        attach_mt_replay(cached, db)
         return cached
 
+    # W47-3 读-评-写：评级用 bump 前 N，成功后再 +1（ortho 开/关均只计 1）
+    n_before = get_n_tested(db)
     result = mine_factor(
         db, expr, name=payload.name,
         start=payload.start, end=payload.end,
         groups=payload.groups, forward=payload.forward,
         orthogonalize=ortho,
+        n_tested=max(n_before, 1),
     )
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "挖掘失败"))
+    n_cum = bump_n_tested(db, delta=1)
+    enrich_mt_fields(result, n_tested=max(n_before, 1), n_tested_cum=n_cum)
     # 同参数已有记录 → 原地更新（顺带补齐 factor_stats 等新增字段），否则新增
     if row is None:
         row = FactorMineResult(expr=expr, params_json=sig)
@@ -247,18 +259,24 @@ def mine_horizons(payload: HorizonsPayload, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="forwards 最多 8 个窗口")
 
     rows: list[dict] = []
+    bumped = 0
     for fwd in forwards:
+        n_before = get_n_tested(db)
         result = mine_factor(
             db, expr, name=payload.name,
             start=payload.start, end=payload.end,
             groups=payload.groups, forward=fwd,
             orthogonalize=bool(payload.orthogonalize),
+            n_tested=max(n_before, 1),
         )
         if not result.get("ok"):
             raise HTTPException(
                 status_code=400,
                 detail=f"horizon={fwd} 失败：{result.get('error', '挖掘失败')}",
             )
+        n_cum = bump_n_tested(db, delta=1)
+        bumped += 1
+        enrich_mt_fields(result, n_tested=max(n_before, 1), n_tested_cum=n_cum)
         oos = result.get("oos") or {}
         rows.append({
             "horizon": fwd,
@@ -266,6 +284,10 @@ def mine_horizons(payload: HorizonsPayload, db: Session = Depends(get_db)):
             "icir": result.get("icir"),
             "t_stat": result.get("t_stat"),
             "rating": result.get("rating"),
+            "n_tested": result.get("n_tested"),
+            "n_tested_cum": result.get("n_tested_cum"),
+            "luck_bar": result.get("luck_bar"),
+            "t_thresholds": result.get("t_thresholds"),
             "oos": {
                 "verdict": oos.get("verdict") if isinstance(oos, dict) else None,
                 "enabled": oos.get("enabled") if isinstance(oos, dict) else None,
@@ -275,7 +297,10 @@ def mine_horizons(payload: HorizonsPayload, db: Session = Depends(get_db)):
             "valuation_pit": result.get("valuation_pit"),
             "cost_profile": result.get("cost_profile"),
         })
-    return {"ok": True, "expr": expr, "name": payload.name, "horizons": rows}
+    return {
+        "ok": True, "expr": expr, "name": payload.name, "horizons": rows,
+        "n_tested_bumped": bumped,
+    }
 
 
 @router.post("/mine/{rid}/save")
@@ -377,6 +402,19 @@ def gp_mine(payload: GpMinePayload, db: Session = Depends(get_db)):
         saved.append(row.id)
     result["saved_ids"] = saved
     return result
+
+
+@router.get("/mt/state")
+def mt_state(db: Session = Depends(get_db)):
+    """只读：当前多重检验累计（页眉徽章 / 调试）。"""
+    from app.models import FactorMtState
+    n = get_n_tested(db)
+    row = db.get(FactorMtState, SCOPE_GLOBAL)
+    return {
+        "scope": SCOPE_GLOBAL,
+        "n_tested_cum": n,
+        "updated_at": row.updated_at.isoformat() if row and row.updated_at else None,
+    }
 
 
 @router.get("/mine/results")

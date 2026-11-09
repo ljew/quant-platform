@@ -645,11 +645,26 @@ def _parse(text: str, ref_map: dict[str, dict] | None = None,
     return clean, str(d.get("mainline") or "")[:200], str(d.get("summary") or "")[:1600]
 
 
-def _today_rows(db: Session) -> list[HotBrief]:
-    """今天（自然日）已经生成的所有简报，按 id 升序。"""
-    start = datetime.combine(datetime.now().date(), dtime.min)
+def _today_rows(db: Session, day: str | None = None) -> list[HotBrief]:
+    """某自然日已经生成的所有简报，按 id 升序。`day` 缺省为今天。
+
+    ⚠️ 必须支持指定日期：`brief_digest._gather(db, day)` 补跑历史日报时，
+    原来它是「先取今天、再按 day 过滤」—— 传历史日期必然过滤成空，
+    结果是「补跑历史日报永远失败」（2026-11-09 发现）。
+    """
+    if day:
+        try:
+            d = datetime.strptime(str(day)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            d = datetime.now().date()
+    else:
+        d = datetime.now().date()
+    start = datetime.combine(d, dtime.min)
+    end = datetime.combine(d, dtime.max)
     return list(db.execute(
-        select(HotBrief).where(HotBrief.created_at >= start).order_by(HotBrief.id)
+        select(HotBrief)
+        .where(HotBrief.created_at >= start, HotBrief.created_at <= end)
+        .order_by(HotBrief.id)
     ).scalars().all())
 
 

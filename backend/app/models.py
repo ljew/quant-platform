@@ -523,6 +523,19 @@ class FactorMineResult(Base):
         return f"<FactorMineResult #{self.id} {self.name} {self.rating}>"
 
 
+class FactorMtState(Base):
+    """多重检验累计计数（W47-3）：跨 run 的 n_tested，scope 本切片仅用 global。"""
+
+    __tablename__ = "factor_mt_state"
+
+    scope: Mapped[str] = mapped_column(String(32), primary_key=True)
+    n_tested: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    def __repr__(self):
+        return f"<FactorMtState {self.scope} n={self.n_tested}>"
+
+
 class NewsMarketDaily(Base):
     """市场新闻情绪日频因子（文本数据管道第一层，词典法打分）。"""
 

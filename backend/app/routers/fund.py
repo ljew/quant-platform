@@ -689,6 +689,236 @@ def penetration_fund(code: str, end_date: str = "", detail: int = 0):
 
 
 # ---------------------------------------------------------------------------
+# 风格穿透
+#
+# 与行业穿透互补：行业穿透回答「拿什么行业」，风格穿透回答「拿什么风格」。
+# 全部由持仓加权到个股因子得出，不经净值反推，因此可追溯到具体股票。
+# 数据由 backend/scripts/build_fund_style.py 每日生成。
+# ---------------------------------------------------------------------------
+STYLE_FACTORS = ("size", "value", "momentum", "volatility", "quality")
+STYLE_CN = {"size": "规模", "value": "价值", "momentum": "动量",
+            "volatility": "波动", "quality": "质量"}
+# 风格结论的最低样本门槛。
+# 港股基金（如 006923）A 股仓位只剩 5%，4 只股票就能把 z 拉到 ±2.5 —— 那不是风格，
+# 是个股权重的噪声。门槛以下不给标签、不进漂移榜，避免把偶然当信号。
+MIN_COVER = 20.0
+MIN_HOLDINGS = 5
+MIN_NAV = 5000.0        # 万元。迷你基金打新获配会让风格失真（107 万规模的 ETF 联接
+                        # 能出现 37% 单一次新股），这类基金不给标签、不进漂移榜。
+
+
+def _pct(xs, p):
+    """分位数（已排序列表中取位）。"""
+    if not xs:
+        return None
+    i = min(len(xs) - 1, max(0, int(round(p / 100 * (len(xs) - 1)))))
+    return round(xs[i], 3)
+
+
+_NAME_CACHE: dict = {"ts": 0.0, "map": {}}
+
+
+def _fund_names() -> dict[str, str]:
+    """base_code → 名称，5 分钟缓存。
+
+    研究库 fund_master_lite 只有 1.7 万只，主库 fund_basic 有 3.3 万只，
+    合并取全，否则榜单里一半基金只有代码没有名字。
+    """
+    now = time.time()
+    if _NAME_CACHE["map"] and now - _NAME_CACHE["ts"] < 300:
+        return _NAME_CACHE["map"]
+    m: dict[str, str] = {}
+    try:
+        with SessionLocal() as db:
+            for tc, nm in db.execute(text("SELECT ts_code, name FROM fund_basic")):
+                if nm:
+                    m[str(tc)[:6]] = nm
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        for c, nm in _research("SELECT base_code, name FROM fund_master_lite"):
+            if nm:
+                m.setdefault(c, nm)
+    except Exception:  # noqa: BLE001
+        pass
+    _NAME_CACHE.update({"ts": now, "map": m})
+    return m
+
+
+def _style_periods() -> list[str]:
+    """可用报告期（仅法定报告期，降序）。
+
+    表里可能混入零星入库日期（如 20260929 只有 1 只基金），
+    若不剔除，跨期对比会拿它当「上一期」，导致 JOIN 全空。
+    """
+    return [r[0] for r in _research(
+        "SELECT DISTINCT end_date FROM fund_style_summary "
+        "WHERE substr(end_date,5,4) IN ('0331','0630','0930','1231') "
+        "ORDER BY end_date DESC")]
+
+
+@router.get("/style/summary")
+def style_summary(end_date: str | None = None):
+    """风格总览：可用期次、标签分布、五因子分位、覆盖质量。"""
+    try:
+        eds = _style_periods()
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"风格表尚未生成：{e}"}
+    if not eds:
+        return {"ok": False, "error": "尚无风格数据，请先运行 build_fund_style.py"}
+    ed = end_date if end_date in eds else eds[0]
+
+    rows = _research(
+        "SELECT z_size,z_value,z_momentum,z_volatility,z_quality,style_tag,w_cover,w_disc "
+        "FROM fund_style_summary WHERE end_date=?", (ed,))
+    if not rows:
+        return {"ok": False, "error": f"{ed} 无风格记录"}
+
+    tags: dict[str, int] = {}
+    covers, discs = [], []
+    cols = {f: [] for f in STYLE_FACTORS}
+    for r in rows:
+        tags[r[5] or "未定"] = tags.get(r[5] or "未定", 0) + 1
+        if r[6] is not None:
+            covers.append(float(r[6]))
+        if r[7] is not None:
+            discs.append(float(r[7]))
+        for i, f in enumerate(STYLE_FACTORS):
+            if r[i] is not None:
+                cols[f].append(float(r[i]))
+
+    factors = []
+    for f in STYLE_FACTORS:
+        v = sorted(cols[f])
+        factors.append({
+            "factor": f, "label": STYLE_CN[f], "n": len(v),
+            "p10": _pct(v, 10), "p25": _pct(v, 25), "median": _pct(v, 50),
+            "p75": _pct(v, 75), "p90": _pct(v, 90),
+        })
+
+    return {
+        "ok": True, "end_date": ed, "available_periods": eds[:12],
+        "n_funds": len(rows),
+        "tags": sorted(({"tag": k, "n": v} for k, v in tags.items()),
+                       key=lambda x: -x["n"]),
+        "factors": factors,
+        "coverage": {"median": _median(covers), "p10": _pct(sorted(covers), 10),
+                     "disclosed_median": _median(discs)},
+    }
+
+
+@router.get("/style/drift")
+def style_drift(min_abs: float = 0.8, limit: int = 30, end_date: str | None = None):
+    """风格漂移榜：与上一期相比，风格坐标变化最大的基金。
+
+    用途：找出「悄悄换风格」的基金 —— 半年报还是小盘价值，三季报变成大盘成长。
+    只用相邻两期的 z 差值，不做任何外推。
+    """
+    try:
+        eds = _style_periods()
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"风格表尚未生成：{e}"}
+    if len(eds) < 2:
+        return {"ok": False, "error": "期次不足两期，无法计算漂移"}
+    cur = end_date if end_date in eds else eds[0]
+    prev = next((e for e in eds if e < cur), None)
+    if not prev:
+        return {"ok": False, "error": f"{cur} 之前没有更早的期次"}
+
+    rows = _research(
+        """SELECT a.base_code, a.style_tag, b.style_tag,
+                  a.z_size-b.z_size, a.z_value-b.z_value, a.z_momentum-b.z_momentum,
+                  a.z_volatility-b.z_volatility, a.z_quality-b.z_quality,
+                  a.w_cover, a.n_holdings, a.nav_wan
+           FROM fund_style_summary a
+           JOIN fund_style_summary b
+             ON b.base_code=a.base_code AND b.end_date=?
+           WHERE a.end_date=?
+             AND a.z_size IS NOT NULL AND b.z_size IS NOT NULL
+             AND a.w_cover >= ? AND b.w_cover >= ?
+             AND a.n_holdings >= ? AND b.n_holdings >= ?
+             AND (a.nav_wan IS NULL OR a.nav_wan >= ?)""",
+        (prev, cur, MIN_COVER, MIN_COVER, MIN_HOLDINGS, MIN_HOLDINGS, MIN_NAV))
+    if not rows:
+        return {"ok": False, "error": "两期无法对齐（或样本量不足）"}
+
+    names = _fund_names()
+
+    items = []
+    for r in rows:
+        d = {f: (float(r[3 + i]) if r[3 + i] is not None else 0.0)
+             for i, f in enumerate(STYLE_FACTORS)}
+        mag = max(abs(v) for v in d.values())
+        if mag < min_abs:
+            continue
+        top = max(d, key=lambda k: abs(d[k]))
+        items.append({
+            "code": r[0], "name": names.get(r[0] or "", ""),
+            "tag_prev": r[2], "tag_now": r[1],
+            "changed": r[1] != r[2],
+            "delta": {f: round(d[f], 3) for f in STYLE_FACTORS},
+            "main": {"factor": top, "label": STYLE_CN[top], "value": round(d[top], 3)},
+            "magnitude": round(mag, 3), "w_cover": r[8],
+        })
+    items.sort(key=lambda x: -x["magnitude"])
+    return {"ok": True, "end_date": cur, "prev_date": prev,
+            "n_scanned": len(rows), "items": items[:limit]}
+
+
+@router.get("/style/fund/{code}")
+def style_fund(code: str, periods: int = 8):
+    """单基金风格轨迹：近 N 期的风格坐标 + 当期行业 TOP。"""
+    if not CODE_RE.match(code):
+        return {"ok": False, "error": "代码格式不合法"}
+    base = code.split(".")[0]
+    try:
+        rows = _research(
+            """SELECT end_date,z_size,z_value,z_momentum,z_volatility,z_quality,
+                      style_tag,w_cover,w_disc,n_holdings,nav_wan
+               FROM fund_style_summary WHERE base_code=?
+               ORDER BY end_date DESC LIMIT ?""", (base, max(1, min(periods, 24))))
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"风格表尚未生成：{e}"}
+    if not rows:
+        return {"ok": False, "error": f"{base} 无风格记录（可能不在股票型/混合型池内）"}
+
+    ed = rows[0][0]
+    inds = []
+    try:
+        inds = [{"industry": r[0], "total_w": r[1]} for r in _research(
+            """SELECT industry,total_w FROM fund_industry_exposure
+               WHERE base_code=? AND end_date=? ORDER BY total_w DESC LIMIT 8""",
+            (base, ed))]
+    except Exception:  # noqa: BLE001
+        pass
+
+    trend = [{
+        "end_date": r[0],
+        **{f: r[1 + i] for i, f in enumerate(STYLE_FACTORS)},
+        "style_tag": r[6], "w_cover": r[7], "w_disc": r[8], "n_holdings": r[9],
+        "nav_wan": r[10],
+        "reliable": bool((r[7] or 0) >= MIN_COVER and (r[9] or 0) >= MIN_HOLDINGS
+                         and (r[10] is None or r[10] >= MIN_NAV)),
+    } for r in rows]
+    cur = trend[0]
+    warn = None
+    if not cur["reliable"]:
+        if cur["nav_wan"] is not None and cur["nav_wan"] < MIN_NAV:
+            warn = f"规模仅 {cur['nav_wan']:,.0f} 万，迷你基金的新股获配会主导风格，结论不可用"
+        elif cur["w_cover"] is not None:
+            warn = (f"A 股覆盖仅 {cur['w_cover']:.1f}%、持仓 {cur['n_holdings']} 只，"
+                    f"样本不足以判定风格")
+        else:
+            warn = "覆盖数据缺失"
+    return {"ok": True, "code": base, "name": _fund_names().get(base, ""),
+            "end_date": ed,
+            "current": cur, "trend": trend, "top_industries": inds,
+            "reliable": cur["reliable"], "warning": warn,
+            "threshold": {"min_cover": MIN_COVER, "min_holdings": MIN_HOLDINGS,
+                          "min_nav": MIN_NAV}}
+
+
+# ---------------------------------------------------------------------------
 # 基金数据管道（监控 + 应急）
 #
 # 调度逻辑在 app/core/fund_scheduler.py；这里只做「看状态」和「手动触发」。

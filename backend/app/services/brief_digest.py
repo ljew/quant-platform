@@ -86,9 +86,8 @@ def _gather(db: Session, day: str) -> dict:
     """汇总当天的三层素材。"""
     from app.services.hot_brief import _latest_today_items, _today_rows
 
-    rows = _today_rows(db)
-    if day:
-        rows = [r for r in rows if r.created_at and r.created_at.date().isoformat() == day]
+    # 直接按日期取，不要「先取今天再过滤」——那样补跑历史日报永远为空
+    rows = _today_rows(db, day=day)
     items = _latest_today_items(db) if not day else []
     if day and rows:
         # 指定日期时不能复用「今日」缓存，从该日各轮重新合并
