@@ -1121,6 +1121,8 @@ export interface FundPipelineStage {
   today_rows: number | null;
   today_error: string | null;
   today_detail: string | null;
+  today_attempts: number | null;    // 今日尝试次数（>1 说明被自动重试过）
+  today_heartbeat: string | null;   // 子进程心跳（判断僵尸用）
   last_ok_at: string | null;
   last_fail_at: string | null;
   last_error: string | null;

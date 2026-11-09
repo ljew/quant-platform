@@ -786,6 +786,11 @@ function FundPipelineCard({ colors }: { colors: ThemeColors }) {
                       {s.today_error && (
                         <div style={{ color: colors.up, fontSize: 11, marginTop: 2 }}>{s.today_error}</div>
                       )}
+                      {!!s.today_attempts && s.today_attempts > 1 && (
+                        <div style={{ color: colors.muted, fontSize: 11, marginTop: 2 }}>
+                          已重试 {s.today_attempts - 1} 次
+                        </div>
+                      )}
                     </td>
                     <td style={{ padding: "7px 10px", color: colors.muted }}>
                       {s.last_ok_at ? s.last_ok_at.replace("T", " ").slice(0, 16) : "—"}
@@ -806,7 +811,7 @@ function FundPipelineCard({ colors }: { colors: ThemeColors }) {
                       {zombie && (
                         <button
                           onClick={() => reset(s.key)} disabled={busy === s.key}
-                          title={`记录为运行中但进程已不存在（已 ${Math.round(elapsedMin)} 分钟），点此作废后重跑`}
+                          title={`记录为运行中但进程已不存在（已 ${Math.round(elapsedMin)} 分钟）。调度器会在 4 分钟内自动接管重跑；急用可点此立即作废`}
                           style={{ marginRight: 6, padding: "2px 8px", fontSize: 11, cursor: "pointer",
                                    background: "transparent", color: colors.up,
                                    border: `1px solid ${colors.up}`, borderRadius: 4 }}
