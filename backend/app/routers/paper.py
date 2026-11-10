@@ -138,6 +138,23 @@ def task_detail(task_id: int, db=Depends(get_db)):
     return get_paper_task_detail(db, t)
 
 
+@router.get("/tasks/{task_id}/snapshots")
+def task_snapshots(task_id: int, limit: int = 500):
+    """净值快照序列（画曲线用）。按日期升序，方便直接喂图表。"""
+    from app.models import PaperSnapshot
+
+    db = SessionLocal()
+    try:
+        rows = (db.query(PaperSnapshot).filter(PaperSnapshot.task_id == task_id)
+                .order_by(PaperSnapshot.date.desc())
+                .limit(max(1, min(limit, 2000))).all())
+        out = [{"date": str(r.date)[:10], "equity": r.equity, "pnl_pct": r.pnl_pct}
+               for r in reversed(rows)]
+        return {"task_id": task_id, "total": len(out), "points": out}
+    finally:
+        db.close()
+
+
 @router.post("/tasks/{task_id}/run")
 def run_task(task_id: int):
     """手动触发一次运行。

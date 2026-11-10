@@ -6,11 +6,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { Badge, Btn, Card, KpiCard } from "../components/ui";
 import EChart from "../components/EChart";
+import type { EChartsOption } from "echarts";
 import {
   ACTION_LABEL, actionBadge, EvidenceBars, MiniTable, Signed, STATE_META, TransitionBox,
 } from "../components/cardShared";
 import {
-  api, BacktestListItem, CardSignalsResp, OptimizeRunRow, researchApi,
+  api, BacktestFull, BacktestListItem, CardSignalsResp, OptimizeRunRow, researchApi,
   ResearchCardItem, StatRow,
 } from "../api/client";
 import { useTheme, ThemeColors } from "../theme";
@@ -24,6 +25,238 @@ function pct(v: number | null | undefined): string {
 function pctColor(v: number | null | undefined, colors: ThemeColors): string {
   if (v == null) return colors.text;
   return v >= 0 ? colors.up : colors.down;
+}
+
+const TABS = [
+  { key: "overview", label: "概览" },
+  { key: "backtests", label: "回测" },
+  { key: "optimize", label: "参数寻优" },
+  { key: "paper", label: "模拟盘" },
+  { key: "attribution", label: "归因" },
+] as const;
+type TabKey = (typeof TABS)[number]["key"];
+
+/** 净值曲线：策略 vs 基准，都正常化到 1.0（绝对值不同量级，不然基准会贴地）。 */
+function EquityChart({ detail, colors }: { detail: BacktestFull; colors: ThemeColors }) {
+  const pts = detail.equity_curve ?? [];
+  if (pts.length < 2) {
+    return <div style={{ fontSize: 12, color: colors.muted }}>这条回测没有净值曲线数据。</div>;
+  }
+  const base = pts[0].equity || 1;
+  const b0 = pts[0].benchmark || null;
+  const dates = pts.map((p) => p.date.slice(5));
+  const eq = pts.map((p) => +(p.equity / base).toFixed(4));
+  const bm = pts.map((p) => (p.benchmark && b0 ? +(p.benchmark / b0).toFixed(4) : null));
+  const option: EChartsOption = {
+    grid: { left: 46, right: 14, top: 26, bottom: 26 },
+    tooltip: { trigger: "axis", valueFormatter: (v) => (typeof v === "number" ? v.toFixed(3) : "—") },
+    legend: { data: ["策略", "基准"], right: 0, top: 0, itemWidth: 12, itemHeight: 8, textStyle: { fontSize: 10 } },
+    xAxis: { type: "category", data: dates, axisLabel: { fontSize: 10, interval: Math.max(0, Math.floor(dates.length / 6)) }, axisLine: { lineStyle: { color: colors.border } } },
+    yAxis: { type: "value", scale: true, axisLabel: { fontSize: 10 }, splitLine: { lineStyle: { color: colors.border, type: "dashed" } } },
+    series: [
+      { name: "策略", type: "line", data: eq, showSymbol: false, lineStyle: { width: 1.8 }, itemStyle: { color: colors.accent } },
+      { name: "基准", type: "line", data: bm, showSymbol: false, lineStyle: { width: 1.2 }, itemStyle: { color: colors.muted } },
+    ],
+  };
+  return <EChart option={option} height={260} />;
+}
+
+/** 回测页签：左列表右详情（曲线 + 关键指标）。 */
+function BacktestsTab({ list, detail, sel, onSelect, colors }: {
+  list: BacktestListItem[] | null;
+  detail: BacktestFull | null;
+  sel: number | null;
+  onSelect: (id: number) => void;
+  colors: ThemeColors;
+}) {
+  if (list === null) return <div style={{ fontSize: 12, color: colors.muted }}>加载中…</div>;
+  if (list.length === 0) {
+    return <div style={{ fontSize: 12.5, color: colors.muted, lineHeight: 1.8 }}>
+      这个策略还没有回测记录。去「回测寻优」跑一次，结果会出现在这里。
+    </div>;
+  }
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(300px, 1fr) minmax(0, 1.6fr)", gap: 16, alignItems: "start" }}>
+      <Card title={`全部回测（${list.length}）`} colors={colors}
+            extra={<span style={{ fontSize: 11, color: colors.muted }}>点一行看曲线</span>}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ color: colors.muted }}>
+              {["#", "区间", "超额", "回撤"].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "6px 6px", fontWeight: 500 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {list.map((b) => (
+              <tr key={b.id} onClick={() => onSelect(b.id)}
+                  style={{
+                    borderTop: `1px solid ${colors.border}`, cursor: "pointer",
+                    background: sel === b.id ? `${colors.accent}12` : "transparent",
+                  }}>
+                <td style={{ padding: "7px 6px", color: colors.muted }}>{b.id}</td>
+                <td style={{ padding: "7px 6px" }}>
+                  {b.start_date.slice(0, 7)} ~ {b.end_date.slice(0, 7)}
+                </td>
+                <td style={{ padding: "7px 6px", fontWeight: 600, color: pctColor(b.excess_return, colors) }}>
+                  {pct(b.excess_return)}
+                </td>
+                <td style={{ padding: "7px 6px", color: colors.muted }}>{pct(b.max_drawdown)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+      <Card title={detail ? `#${detail.id} 净值曲线（正常化到 1.0）` : "净值曲线"} colors={colors}>
+        {!detail ? <div style={{ fontSize: 12, color: colors.muted }}>加载中…</div> : (
+          <>
+            <EquityChart detail={detail} colors={colors} />
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginTop: 10 }}>
+              {([
+                ["总收益", detail.total_return], ["基准", detail.benchmark_total_return],
+                ["超额", detail.excess_return], ["最大回撤", detail.max_drawdown],
+              ] as [string, number | null][]).map(([k, v]) => (
+                <div key={k} style={{ border: `1px solid ${colors.border}`, borderRadius: 8, padding: "7px 9px" }}>
+                  <div style={{ fontSize: 10.5, color: colors.muted }}>{k}</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: pctColor(v, colors), fontVariantNumeric: "tabular-nums" }}>
+                    {pct(v)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/** 模拟盘页签：该策略的任务 + 净值曲线。 */
+function PaperTab({ strategyKey, colors }: { strategyKey: string; colors: ThemeColors }) {
+  const [tasks, setTasks] = useState<{ id: number; name: string; equity: number | null; pnl_pct: number | null; positions_count: number | null; last_bar_date: string | null; last_run_at: string | null; enabled: boolean }[] | null>(null);
+  const [points, setPoints] = useState<{ date: string; equity: number }[] | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const all = await api.paperTasks();
+        if (!alive) return;
+        const mine = (all as unknown as { id: number; name: string; strategy_key: string }[])
+          .filter((t) => t.strategy_key === strategyKey);
+        setTasks(mine as never);
+        if (mine.length > 0) {
+          const snap = await api.paperSnapshots(mine[0].id, 500);
+          if (alive) setPoints(snap.points);
+        } else {
+          setPoints([]);
+        }
+      } catch {
+        if (alive) { setTasks([]); setPoints([]); }
+      }
+    })();
+    return () => { alive = false; };
+  }, [strategyKey]);
+
+  if (tasks === null) return <div style={{ fontSize: 12, color: colors.muted }}>加载中…</div>;
+  if (tasks.length === 0) {
+    return <div style={{ fontSize: 12.5, color: colors.muted, lineHeight: 1.8 }}>
+      这个策略还没有模拟盘任务。可以在「回测寻优」页跑一次回测后建盘，
+      或让智能体用 <code>create_paper_task</code> 发起（走审批）。
+    </div>;
+  }
+  const t = tasks[0];
+  const cnt = points?.length ?? 0;
+  const option: EChartsOption | null = cnt > 1 ? {
+    grid: { left: 52, right: 14, top: 20, bottom: 26 },
+    tooltip: { trigger: "axis" },
+    xAxis: { type: "category", data: points!.map((p) => p.date.slice(2)), axisLabel: { fontSize: 10, interval: Math.max(0, Math.floor(cnt / 6)) } },
+    yAxis: { type: "value", scale: true, axisLabel: { fontSize: 10 }, splitLine: { lineStyle: { color: colors.border, type: "dashed" } } },
+    series: [{ name: "净值", type: "line", data: points!.map((p) => p.equity), showSymbol: false, lineStyle: { width: 1.8 }, itemStyle: { color: colors.accent } }],
+  } : null;
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 14 }}>
+        {([
+          ["净值", t.equity == null ? "—" : t.equity.toLocaleString("zh-CN", { maximumFractionDigits: 0 })],
+          ["收益率", t.pnl_pct == null ? "—" : `${t.pnl_pct >= 0 ? "+" : ""}${(t.pnl_pct * 100).toFixed(2)}%`],
+          ["持仓", t.positions_count == null ? "—" : String(t.positions_count)],
+          ["净值日期", t.last_bar_date ?? "—"],
+        ] as [string, string][]).map(([k, v]) => (
+          <div key={k} style={{ background: colors.card, border: `1px solid ${colors.border}`, borderRadius: 10, padding: "10px 12px" }}>
+            <div style={{ fontSize: 11, color: colors.muted }}>{k}</div>
+            <div style={{ fontSize: 16, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{v}</div>
+          </div>
+        ))}
+      </div>
+      <Card title={`${t.name} · 净值走势（${cnt} 个交易日）`} colors={colors}
+            extra={<span style={{ fontSize: 11, color: colors.muted }}>最后运行 {(t.last_run_at ?? "").replace("T", " ").slice(0, 16)}</span>}>
+        {option ? <EChart option={option} height={280} />
+          : <div style={{ fontSize: 12, color: colors.muted, lineHeight: 1.8 }}>
+              还没有足够的净值快照。任务每天收盘后跑一次，攒够两天就能画。
+            </div>}
+      </Card>
+    </div>
+  );
+}
+
+/** 归因页签：行业集中度 + 对冲后指标 + 逐笔明细可用性。 */
+function AttributionTab({ detail, colors }: { detail: BacktestFull | null; colors: ThemeColors }) {
+  if (!detail) return <div style={{ fontSize: 12, color: colors.muted }}>先选一条回测（在「回测」页签点一行）</div>;
+  const ind = detail.industry_distribution ?? {};
+  const top = Object.entries(ind).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  const max = top.length ? top[0][1] : 1;
+  const noTrades = typeof detail.round_trips === "number" && detail.round_trips === 0;
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.2fr) minmax(0, 1fr)", gap: 16, alignItems: "start" }}>
+      <Card title="行业分布（前 10）" colors={colors}
+            extra={<span style={{ fontSize: 11, color: colors.muted }}>#{detail.id}</span>}>
+        {top.length === 0
+          ? <div style={{ fontSize: 12, color: colors.muted }}>这条回测没记录行业分布。</div>
+          : top.map(([name, w]) => (
+            <div key={name} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <span style={{ width: 76, fontSize: 11.5, color: colors.muted }}>{name}</span>
+              <div style={{ flex: 1, height: 8, background: colors.border, borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ width: `${(w / max) * 100}%`, height: "100%", background: colors.accent }} />
+              </div>
+              <span style={{ width: 46, textAlign: "right", fontSize: 11.5, fontVariantNumeric: "tabular-nums" }}>
+                {(w * 100).toFixed(1)}%
+              </span>
+            </div>
+          ))}
+      </Card>
+      <div>
+        <Card title="对冲与风险" colors={colors}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
+            {([
+              ["对冲后收益", detail.hedged_total_return],
+              ["对冲后夏普", detail.hedged_sharpe],
+              ["对冲后回撤", detail.hedged_max_drawdown],
+            ] as [string, number | null][]).map(([k, v]) => (
+              <div key={k} style={{ border: `1px solid ${colors.border}`, borderRadius: 8, padding: "8px 10px" }}>
+                <div style={{ fontSize: 10.5, color: colors.muted }}>{k}</div>
+                <div style={{ fontSize: 14, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
+                  {v == null ? "—" : k.includes("夏普") ? v.toFixed(2) : pct(v)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+        <Card title="逐笔与持仓" colors={colors} style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 12.5, lineHeight: 1.9, color: colors.text }}>
+            持仓 <b>{detail.holdings?.length ?? 0}</b> 只 · 成交 <b>{detail.trade_count ?? 0}</b> 笔
+          </div>
+          {noTrades && (
+            <div style={{ marginTop: 8, fontSize: 11.5, color: "#b9770e", lineHeight: 1.8 }}>
+              这条回测没有存逐笔明细（`round_trips=0`），所以算不了胜率分解、
+              持有期分布这类归因。要看得重跑一次带明细的回测。
+            </div>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
 }
 
 function Field({ label, children, colors }: { label: string; children: React.ReactNode; colors: ThemeColors }) {
@@ -320,13 +553,16 @@ function EvidenceDetail({ ev, colors }: { ev: Record<string, unknown>; colors: T
   );
 }
 
-export default function ResearchCardDetailPage({ cardId, onBack }: { cardId: number; onBack: () => void }) {
+export default function ResearchCardDetailPage({ cardId, onBack, initialTab }: { cardId: number; onBack: () => void; initialTab?: string }) {
   const { colors } = useTheme();
   const [card, setCard] = useState<ResearchCardItem | null>(null);
   const [err, setErr] = useState<string | null>(null);
   // 回测全部历史 + 寻优落库记录：设计文档 09 节要求「回测列全部而不是最近一条」
   const [backtests, setBacktests] = useState<BacktestListItem[] | null>(null);
   const [runs, setRuns] = useState<OptimizeRunRow[] | null>(null);
+  const [tab, setTab] = useState<TabKey>((TABS.some((t) => t.key === initialTab) ? initialTab : "overview") as TabKey);
+  const [btId, setBtId] = useState<number | null>(null);
+  const [btDetail, setBtDetail] = useState<BacktestFull | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -350,14 +586,25 @@ export default function ResearchCardDetailPage({ cardId, onBack }: { cardId: num
           api.optimizeRuns(strategyKey, 10),
         ]);
         if (!alive) return;
-        setBacktests(bs.filter((b) => b.strategy_key === strategyKey));
+        const mine = bs.filter((b) => b.strategy_key === strategyKey);
+        setBacktests(mine);
         setRuns(rs.runs);
+        if (mine.length > 0) setBtId(mine[0].id);
       } catch {
         if (alive) { setBacktests([]); setRuns([]); }
       }
     })();
     return () => { alive = false; };
   }, [strategyKey]);
+
+  useEffect(() => {
+    if (!btId) { setBtDetail(null); return; }
+    let alive = true;
+    api.backtestFull(btId)
+      .then((d) => { if (alive) setBtDetail(d); })
+      .catch(() => { if (alive) setBtDetail(null); });
+    return () => { alive = false; };
+  }, [btId]);
 
   if (err) return <div style={{ color: colors.up }}>加载失败：{err} <Btn small kind="ghost" onClick={onBack}>返回</Btn></div>;
   if (!card) return <div style={{ color: colors.muted }}>加载中…</div>;
@@ -378,6 +625,28 @@ export default function ResearchCardDetailPage({ cardId, onBack }: { cardId: num
         <span style={{ fontSize: 12, color: colors.muted }}>{meta.desc}</span>
       </div>
 
+      {/* 页签：概览=原有档案；其余四页是设计文档 09 节要求的「枢纽」 */}
+      <div style={{ display: "flex", gap: 2, borderBottom: `1px solid ${colors.border}`, marginBottom: 16 }}>
+        {TABS.map((t) => {
+          const n = t.key === "backtests" ? backtests?.length
+            : t.key === "optimize" ? runs?.length : undefined;
+          const on = tab === t.key;
+          return (
+            <button key={t.key} onClick={() => setTab(t.key)}
+              style={{
+                padding: "7px 13px", fontSize: 13, cursor: "pointer",
+                border: "none", background: "transparent",
+                color: on ? colors.accent : colors.muted,
+                borderBottom: `2px solid ${on ? colors.accent : "transparent"}`,
+                marginBottom: -1, fontWeight: on ? 700 : 400,
+              }}>
+              {t.label}{n != null ? `（${n}）` : ""}
+            </button>
+          );
+        })}
+      </div>
+
+      {tab === "overview" && (<>
       {/* KPI 带 */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 18 }}>
         {!isFactor && <>
@@ -503,113 +772,6 @@ export default function ResearchCardDetailPage({ cardId, onBack }: { cardId: num
         </Card>
       )}
 
-      {/* —— 回测全部历史 ——
-          原来只显示最近一条，看不出「2019~2023 赚了 41.8% 但跑输基准 6.22pp」这种事。
-          超额单列出来，跑输的那行会自己变绿，不用人算。 */}
-      {!isFactor && card.strategy_key && (
-        <Card
-          title={`回测历史（${backtests?.length ?? "…"}）`}
-          colors={colors}
-          style={{ marginTop: 18 }}
-          extra={<span style={{ fontSize: 11, color: colors.muted }}>
-            全部区间 · 带基准才看得出跑输
-          </span>}
-        >
-          {backtests === null ? (
-            <div style={{ fontSize: 12, color: colors.muted }}>加载中…</div>
-          ) : backtests.length === 0 ? (
-            <div style={{ fontSize: 12.5, color: colors.muted, lineHeight: 1.8 }}>
-              这个策略还没有回测记录。
-            </div>
-          ) : (
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead>
-                <tr style={{ color: colors.muted }}>
-                  {["#", "区间", "收益", "基准", "超额", "回撤", "成交"].map((h) => (
-                    <th key={h} style={{ textAlign: "left", padding: "6px 8px", fontWeight: 500 }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {backtests.map((b) => (
-                  <tr key={b.id} style={{ borderTop: `1px solid ${colors.border}` }}>
-                    <td style={{ padding: "7px 8px", color: colors.muted }}>{b.id}</td>
-                    <td style={{ padding: "7px 8px" }}>{b.start_date} ~ {b.end_date}</td>
-                    <td style={{ padding: "7px 8px", color: pctColor(b.total_return, colors) }}>{pct(b.total_return)}</td>
-                    <td style={{ padding: "7px 8px", color: colors.muted }}>{pct(b.benchmark_total_return)}</td>
-                    <td style={{ padding: "7px 8px", fontWeight: 700, color: pctColor(b.excess_return, colors) }}>
-                      {pct(b.excess_return)}
-                    </td>
-                    <td style={{ padding: "7px 8px", color: colors.muted }}>{pct(b.max_drawdown)}</td>
-                    <td style={{ padding: "7px 8px", color: colors.muted }}>{b.trade_count ?? "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </Card>
-      )}
-
-      {/* —— 参数寻优（落库的那几次） —— */}
-      {!isFactor && card.strategy_key && (
-        <Card
-          title={`参数寻优（${runs?.length ?? "…"}）`}
-          colors={colors}
-          style={{ marginTop: 14 }}
-          extra={<span style={{ fontSize: 11, color: colors.muted }}>
-            已落库 · 跨重启可回看
-          </span>}
-        >
-          {runs === null ? (
-            <div style={{ fontSize: 12, color: colors.muted }}>加载中…</div>
-          ) : runs.length === 0 ? (
-            <div style={{ fontSize: 12.5, color: colors.muted, lineHeight: 1.8 }}>
-              还没有寻优记录。去「回测寻优」跑一次，结果会自动落库并出现在这里。
-            </div>
-          ) : (
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead>
-                <tr style={{ color: colors.muted }}>
-                  {["时间", "状态", "组数", "最优夏普", "最优参数", "耗时"].map((h) => (
-                    <th key={h} style={{ textAlign: "left", padding: "6px 8px", fontWeight: 500 }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {runs.map((r) => {
-                  const tone = r.status === "done" ? colors.down
-                    : r.status === "failed" ? colors.up
-                    : r.status === "running" ? colors.accent : colors.muted;
-                  const secs = r.started_at && r.finished_at
-                    ? Math.round((new Date(r.finished_at).getTime() - new Date(r.started_at).getTime()) / 1000)
-                    : null;
-                  return (
-                    <tr key={r.id} style={{ borderTop: `1px solid ${colors.border}` }}>
-                      <td style={{ padding: "7px 8px", color: colors.muted }}>
-                        {(r.finished_at ?? r.started_at ?? "").replace("T", " ").slice(5, 16)}
-                      </td>
-                      <td style={{ padding: "7px 8px", color: tone, fontWeight: 600 }}>{r.status}</td>
-                      <td style={{ padding: "7px 8px" }}>{r.total}</td>
-                      <td style={{ padding: "7px 8px", fontWeight: 600 }}>
-                        {r.best_sharpe == null ? "—" : r.best_sharpe.toFixed(2)}
-                      </td>
-                      <td style={{ padding: "7px 8px", color: colors.muted, fontSize: 11.5 }}>
-                        {Object.keys(r.best_params ?? {}).length === 0
-                          ? "—"
-                          : Object.entries(r.best_params).map(([k, v]) => `${k}=${v}`).join(" / ")}
-                      </td>
-                      <td style={{ padding: "7px 8px", color: colors.muted }}>
-                        {secs == null ? "—" : `${secs}s`}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </Card>
-      )}
-
       <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 1fr) minmax(0, 2.2fr)", gap: 18, alignItems: "start" }}>
         {/* 左栏：档案 */}
         <Card title="卡片档案" colors={colors}>
@@ -661,6 +823,68 @@ export default function ResearchCardDetailPage({ cardId, onBack }: { cardId: num
       <Card title="人工状态迁移（下一次跑批生效，理由自动留痕）" colors={colors} style={{ marginTop: 18 }}>
         <TransitionBox cardId={card.id} current={card.state} colors={colors} onDone={load} />
       </Card>
+      </>)}
+
+      {tab === "backtests" && (
+        <BacktestsTab list={backtests} detail={btDetail} sel={btId}
+          onSelect={setBtId} colors={colors} />
+      )}
+
+      {tab === "optimize" && (
+        <Card title={`参数寻优（${runs?.length ?? "…"}）`} colors={colors}
+              extra={<span style={{ fontSize: 11, color: colors.muted }}>已落库 · 跨重启可回看</span>}>
+          {runs === null ? (
+            <div style={{ fontSize: 12, color: colors.muted }}>加载中…</div>
+          ) : runs.length === 0 ? (
+            <div style={{ fontSize: 12.5, color: colors.muted, lineHeight: 1.8 }}>
+              还没有寻优记录。去「回测寻优」跑一次，结果会自动落库并出现在这里。
+            </div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ color: colors.muted }}>
+                  {["时间", "状态", "组数", "最优夏普", "最优参数", "耗时"].map((h) => (
+                    <th key={h} style={{ textAlign: "left", padding: "6px 8px", fontWeight: 500 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map((r) => {
+                  const tone = r.status === "done" ? colors.down
+                    : r.status === "failed" ? colors.up
+                    : r.status === "running" ? colors.accent : colors.muted;
+                  const secs = r.started_at && r.finished_at
+                    ? Math.round((new Date(r.finished_at).getTime() - new Date(r.started_at).getTime()) / 1000)
+                    : null;
+                  return (
+                    <tr key={r.id} style={{ borderTop: `1px solid ${colors.border}` }}>
+                      <td style={{ padding: "7px 8px", color: colors.muted }}>
+                        {(r.finished_at ?? r.started_at ?? "").replace("T", " ").slice(5, 16)}
+                      </td>
+                      <td style={{ padding: "7px 8px", color: tone, fontWeight: 600 }}>{r.status}</td>
+                      <td style={{ padding: "7px 8px" }}>{r.total}</td>
+                      <td style={{ padding: "7px 8px", fontWeight: 600 }}>
+                        {r.best_sharpe == null ? "—" : r.best_sharpe.toFixed(2)}
+                      </td>
+                      <td style={{ padding: "7px 8px", color: colors.muted, fontSize: 11.5 }}>
+                        {Object.keys(r.best_params ?? {}).length === 0
+                          ? "—"
+                          : Object.entries(r.best_params ?? {}).map(([k, v]) => `${k}=${v}`).join(" / ")}
+                      </td>
+                      <td style={{ padding: "7px 8px", color: colors.muted }}>
+                        {secs == null ? "—" : `${secs}s`}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </Card>
+      )}
+
+      {tab === "paper" && <PaperTab strategyKey={strategyKey} colors={colors} />}
+      {tab === "attribution" && <AttributionTab detail={btDetail} colors={colors} />}
     </div>
   );
 }

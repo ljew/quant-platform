@@ -42,6 +42,32 @@ export interface BacktestListItem {
   created_at: string | null;
 }
 
+/** 回测详情（/strategy/backtests/{id} 的实际返回，含双线曲线与归因字段）。
+ *  注意与 BacktestResult 的区别：后端这个接口给的是 start/end（不是 start_date），
+ *  equity_curve 带 benchmark/hedged。 */
+export interface BacktestFull {
+  id: number;
+  symbol: string;
+  start: string;
+  end: string;
+  strategy_key: string;
+  total_return: number | null;
+  benchmark_total_return: number | null;
+  excess_return: number | null;
+  sharpe: number | null;
+  max_drawdown: number | null;
+  trade_count: number | null;
+  final_equity: number | null;
+  equity_curve: { date: string; equity: number; benchmark?: number | null; hedged?: number | null }[];
+  industry_distribution: Record<string, number> | null;
+  holdings: unknown[];
+  round_trips: unknown;
+  hedged_total_return: number | null;
+  hedged_sharpe: number | null;
+  hedged_max_drawdown: number | null;
+  params: Record<string, unknown> | null;
+}
+
 /** 一次寻优（/strategy/optimize/runs，已落库）。 */
 export interface OptimizeRunRow {
   id: number;
@@ -360,6 +386,11 @@ export const api = {
   // 参数寻优
   strategyBacktests: (limit = 20) =>
     get<BacktestListItem[]>(`/strategy/backtests?limit=${limit}`),
+  paperSnapshots: (taskId: number, limit = 500) =>
+    get<{ task_id: number; total: number; points: { date: string; equity: number; pnl_pct: number }[] }>(
+      `/paper/tasks/${taskId}/snapshots?limit=${limit}`),
+  backtestFull: (btId: number) =>
+    get<BacktestFull>(`/strategy/backtests/${btId}`),
   optimizeRuns: (strategyKey?: string, limit = 10) =>
     get<{ total: number; runs: OptimizeRunRow[] }>(
       `/strategy/optimize/runs?limit=${limit}` +

@@ -94,14 +94,16 @@ function findHub(sub: string): { hub: HubKey; sub: string } | null {
  * 第二段是可选的记录 id —— 智能体平台的产物「跳回核对」就靠它：
  * 那边只能拼 URL，派不了 quant-nav 事件（跨进程、跨端口）。
  */
-type Nav = { hub: HubKey; sub: string; id?: number };
+type Nav = { hub: HubKey; sub: string; id?: number; inner?: string };
 
 function parseHash(raw: string): Nav | null {
-  const [tab, idRaw] = raw.split("/");
+  const [tab, idRaw, inner] = raw.split("/");
   const hit = tab ? findHub(tab) : null;
   if (!hit) return null;
   const id = Number(idRaw);
-  return Number.isFinite(id) && id > 0 ? { ...hit, id } : hit;
+  const withId = Number.isFinite(id) && id > 0 ? { ...hit, id } : hit;
+  // 第三段是页面内部的子页签（如 #cards/2/backtests）
+  return inner ? { ...withId, inner } : withId;
 }
 
 function initialNav(): Nav {
@@ -109,7 +111,7 @@ function initialNav(): Nav {
   return parseHash(raw) || { hub: "today", sub: "today" };
 }
 
-function HubContent({ sub, id }: { sub: string; id?: number }) {
+function HubContent({ sub, id, inner }: { sub: string; id?: number; inner?: string }) {
   switch (sub) {
     case "today": return <TodayPage />;
     case "news": return <NewsFeedPage />;
@@ -118,7 +120,7 @@ function HubContent({ sub, id }: { sub: string; id?: number }) {
     case "market": return <MarketPage />;
     case "etfflow": return <EtfFlowPage />;
     case "wechat": return <WechatPage />;
-    case "cards": return <ResearchCardsPage initialDetailId={id} />;
+    case "cards": return <ResearchCardsPage initialDetailId={id} initialTab={inner} />;
     case "fund": return <FundPersistencePage />;
     case "fund-holding": return <FundPenetrationPage />;
     case "btopt": return <BacktestOptimizePage />;
@@ -135,7 +137,7 @@ function HubContent({ sub, id }: { sub: string; id?: number }) {
 
 /** 应用骨架：左侧 4 入口导航 + 枢纽页（二级 Tab）。 */
 export default function App() {
-  const [{ hub, sub, id }, setNav] = useState<Nav>(initialNav);
+  const [{ hub, sub, id, inner }, setNav] = useState<Nav>(initialNav);
   const setHub = (h: HubKey) => setNav((n) => ({ ...n, hub: h }));
   const setSub = (s: string) => setNav((n) => ({ ...n, sub: s }));
   const { mode, colors, toggle } = useTheme();
@@ -143,11 +145,11 @@ export default function App() {
 
   // 地址栏 hash 跟随当前页：刷新不回首页、也方便存链接直达（如 /#wechat、/#cards/384）
   useEffect(() => {
-    const want = id ? `${sub}/${id}` : sub;
+    const want = id ? `${sub}/${id}${inner ? `/${inner}` : ""}` : sub;
     if (window.location.hash.replace(/^#/, "") !== want) {
       window.history.replaceState(null, "", `#${want}`);
     }
-  }, [sub, id]);
+  }, [sub, id, inner]);
 
   // 跨页跳转：dispatch(new CustomEvent("quant-nav", { detail: { tab } }))，tab 可为新旧任意 tab 名
   useEffect(() => {
@@ -269,7 +271,7 @@ export default function App() {
           onChange={setSub}
         >
           <Suspense fallback={<div role="status" style={{ padding: 36, color: colors.muted }}>页面加载中…</div>}>
-            <HubContent sub={sub} id={id} />
+            <HubContent sub={sub} id={id} inner={inner} />
           </Suspense>
         </Hub>
       </main>

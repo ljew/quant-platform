@@ -165,7 +165,7 @@ function CardSummary({ card, onOpen }: { card: ResearchCardItem; onOpen: () => v
   );
 }
 
-export default function ResearchCardsPage({ initialDetailId }: { initialDetailId?: number }) {
+export default function ResearchCardsPage({ initialDetailId, initialTab }: { initialDetailId?: number; initialTab?: string }) {
   const { colors } = useTheme();
   const [data, setData] = useState<{ total: number; state_count: Record<string, number>; cards: ResearchCardItem[] } | null>(null);
   const [suggestions, setSuggestions] = useState<CardSuggestion[]>([]);
@@ -200,6 +200,7 @@ export default function ResearchCardsPage({ initialDetailId }: { initialDetailId
     return (
       <ResearchCardDetailPage
         cardId={detailId}
+        initialTab={initialTab}
         onBack={() => {
           setDetailId(null);
           // 同步把地址栏的 /384 去掉，否则刷新又跳回详情
