@@ -25,6 +25,31 @@ export const del = <T>(path: string) => request<T>(path, { method: "DELETE" });
 
 // —— 类型 ——
 /** 策略参数元数据（后端 registry 提供，含分组）。 */
+/** 表级新鲜度（/monitor/table-freshness）。 */
+export interface TableFreshnessRow {
+  table: string;
+  date_col: string | null;
+  rows: number;
+  latest: string | null;
+  days_ago: number | null;
+  status: "OK" | "WARN" | "FAIL" | "EMPTY" | "n/a";
+  note?: string;
+}
+
+export interface TableFreshness {
+  as_of: string;
+  grace_days: number;
+  total: number;
+  counts: Record<string, number>;
+  worst: string;
+  tables: TableFreshnessRow[];
+}
+
+export interface AlertLogItem {
+  id: number; level: string; channel: string; status: string;
+  title: string; error: string | null; at: string | null;
+}
+
 export interface ParamField {
   key: string;
   label: string;
@@ -394,6 +419,11 @@ export const api = {
   llmTestDraft: (p: { id?: number; base_url: string; model: string; api_key?: string }) =>
     post<LlmTestResult>("/llm/test", p),
   // 数据健康度 + 数据流全景
+  tableFreshness: (force = false) =>
+    get<TableFreshness>(`/monitor/table-freshness?fresh=${force}`),
+  alertLog: (limit = 50, level?: string) =>
+    get<{ total: number; counts: Record<string, number>; items: AlertLogItem[] }>(
+      `/monitor/alert-log?limit=${limit}${level ? `&level=${level}` : ""}`),
   monitorHealth: () => get<HealthReport>(`/monitor/health-report`),
   frameworkHealth: () => get<FrameworkHealth>(`/monitor/framework-health`),
   holidayMode: () => get<HolidayMode>(`/monitor/holiday-mode`),

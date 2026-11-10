@@ -17,6 +17,7 @@ const EtfFlowPage = lazy(() => import("./pages/EtfFlowPage"));
 const AttributionPage = lazy(() => import("./pages/AttributionPage"));
 const AutoResearchHubPage = lazy(() => import("./pages/AutoResearchHubPage"));
 const DataSystemPage = lazy(() => import("./pages/DataSystemPage"));
+const DataHealthPage = lazy(() => import("./pages/DataHealthPage"));
 const WechatPage = lazy(() => import("./pages/WechatPage"));
 const FundPersistencePage = lazy(() => import("./pages/FundPersistencePage"));
 const FundPenetrationPage = lazy(() => import("./pages/FundPenetrationPage"));
@@ -58,6 +59,8 @@ const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; lab
   ] },
   { key: "data", label: "数据中心", icon: "⇉", tabs: [
     { key: "auto", label: "自动研究" },
+    // 数据健康：87 张表逐张新鲜度 + 五层体检（2026-11-10 新增）
+    { key: "datahealth", label: "数据健康" },
     { key: "datasys", label: "数据与系统" },
   ] },
 ];
@@ -124,6 +127,7 @@ function HubContent({ sub, id }: { sub: string; id?: number }) {
     case "signal": return <SignalPage />;
     case "attribution": return <AttributionPage />;
     case "auto": return <AutoResearchHubPage />;
+    case "datahealth": return <DataHealthPage />;
     case "datasys": return <DataSystemPage />;
     default: return null;
   }
