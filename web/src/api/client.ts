@@ -117,6 +117,44 @@ export interface AlertLogItem {
   title: string; error: string | null; at: string | null;
 }
 
+/** 凭证集中（系统服务页）：一把钥匙一行，只给尾号不给明文。 */
+/** 研究卡决策时间线：一张卡从建卡到上模拟盘的全部事件（人工决策 + 机器事实）。 */
+export interface TimelineEvent {
+  at: string;
+  kind: string;   // created / state / backtest / optimize / paper
+  title: string;
+  detail: string;
+  metric: { label: string; value: string; good: boolean } | null;
+}
+
+export interface CardTimeline {
+  card_id: number;
+  key: string;
+  name: string;
+  strategy_key: string;
+  count: number;
+  counts: Record<string, number>;
+  events: TimelineEvent[];
+}
+
+export interface CredentialItem {
+  key: string;
+  label: string;
+  kind: string;          // 数据源 / 能力 / 出口 / 凭证 / 退路
+  status: string;        // ok / warn / missing
+  detail: string;
+  where: string;
+  updated_at: string | null;
+  hint: string;
+  action: { label: string; href: string } | null;
+}
+
+export interface CredentialsReport {
+  checked_at: string;
+  counts: { ok: number; warn: number; missing: number };
+  items: CredentialItem[];
+}
+
 export interface ParamField {
   key: string;
   label: string;
@@ -503,6 +541,7 @@ export const api = {
     get<{ total: number; counts: Record<string, number>; items: AlertLogItem[] }>(
       `/monitor/alert-log?limit=${limit}${level ? `&level=${level}` : ""}`),
   monitorHealth: () => get<HealthReport>(`/monitor/health-report`),
+  monitorCredentials: () => get<CredentialsReport>(`/monitor/credentials`),
   frameworkHealth: () => get<FrameworkHealth>(`/monitor/framework-health`),
   holidayMode: () => get<HolidayMode>(`/monitor/holiday-mode`),
   setHolidayMode: (mode: "auto" | "on" | "off") =>
@@ -1576,6 +1615,8 @@ export const researchApi = {
   transition: (id: number, to_state: string, reason: string) =>
     post<{ ok: boolean; changed: boolean; state: string }>(`/research/cards/${id}/transition`, { to_state, reason }),
   card: (id: number) => get<ResearchCardItem>(`/research/cards/${id}`),
+  /** 决策时间线：人工决策（状态流转）+ 机器事实（回测/寻优/模拟盘）按时间合并。 */
+  timeline: (id: number) => get<CardTimeline>(`/research/cards/${id}/timeline`),
   /** 建卡（因子入册用）。evidence 里带 source_mine_id，卡片就能回答「来自哪次挖掘」。 */
   create: (payload: {
     card_type: "strategy" | "factor";

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, AlertLogItem, DataflowReport, FrameworkHealth, HealthReport, MonitorStatus } from "../api/client";
+import { api, AlertLogItem, CredentialsReport, DataflowReport, FrameworkHealth, HealthReport, MonitorStatus } from "../api/client";
 import { Badge, Card } from "../components/ui";
 import { Arrow, FlowCol, LayerRow } from "../components/flow";
 import type { ThemeColors } from "../theme";
@@ -218,6 +218,10 @@ export default function MonitorPage() {
 
       {fw && <FrameworkCard fw={fw} colors={colors} style={{ marginBottom: 14 }} />}
 
+      {/* 凭证集中：五把钥匙一屏看齐。放这里而不是最后 —— 简报没发出去时，
+          第一个该怀疑的就是 SMTP / Cookie / 大模型 Key，不是先看数据表。 */}
+      <CredentialsCard colors={colors} />
+
       {/* —— 第二层：系统服务 ——
           「最近管道执行」已删：数据管道页有完整的「运行历史」（含每步耗时条形图），
           两处各存一份只会让「上一次跑成功没有」要查两个地方。 */}
@@ -247,6 +251,113 @@ export default function MonitorPage() {
 }
 
 /* ================= 子组件 ================= */
+
+/** 凭证集中：数据源 / 大模型 / 邮件 / 公众号 Cookie / 数据库备份。
+ *
+ * 以前这五把钥匙散在五个地方：Tushare 在 .env、大模型在配置弹窗、
+ * 公众号在「资讯库」、邮件根本没界面、备份只能 ls 目录。
+ * 简报没发出去时，要判断是哪一把断了，得翻五遍 —— 所以收一屏。
+ *
+ * 全绿时收成一行（这页平时不该占屏幕），有异常才自动展开。
+ */
+function CredentialsCard({ colors }: { colors: ThemeColors }) {
+  const [rep, setRep] = useState<CredentialsReport | null>(null);
+  const [open, setOpen] = useState(false);
+
+  const load = useCallback(() => {
+    api.monitorCredentials().then((r) => {
+      setRep(r);
+      setOpen(r.counts.warn + r.counts.missing > 0);
+    }).catch(() => {});
+  }, []);
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 60000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  if (!rep) return null;
+  const bad = rep.counts.warn + rep.counts.missing;
+  const tone = bad === 0 ? colors.down : rep.counts.missing > 0 ? colors.up : "#e8a520";
+  const dot = (st: string) => (st === "ok" ? colors.down : st === "missing" ? colors.up : "#e8a520");
+
+  return (
+    <Card
+      colors={colors}
+      style={{ marginBottom: 14 }}
+      title="🔑 凭证"
+      extra={
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 12, color: tone, fontWeight: 600 }}>
+            {bad === 0 ? `全部 ${rep.counts.ok} 项正常` : `${bad} 项要处理`}
+          </span>
+          <button
+            onClick={() => setOpen((v) => !v)}
+            style={{ fontSize: 12, color: colors.accent, background: "none", border: 0, cursor: "pointer" }}
+          >
+            {open ? "收起" : "展开"}
+          </button>
+        </div>
+      }
+      pad={open ? 0 : 12}
+    >
+      {!open ? (
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12, color: colors.muted }}>
+          {rep.items.map((it) => (
+            <span key={it.key} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+              <span style={{ width: 6, height: 6, borderRadius: 99, background: dot(it.status) }} />
+              {it.label}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div>
+          {rep.items.map((it) => (
+            <div
+              key={it.key}
+              style={{
+                display: "flex", alignItems: "center", gap: 10, padding: "9px 14px",
+                borderBottom: `1px solid ${colors.border}`, fontSize: 12.5,
+              }}
+            >
+              <span style={{ width: 7, height: 7, borderRadius: 99, background: dot(it.status), flexShrink: 0 }} />
+              <span style={{ width: 96, fontWeight: 600, flexShrink: 0 }}>{it.label}</span>
+              <span style={{
+                fontSize: 10.5, color: colors.muted, border: `1px solid ${colors.border}`,
+                borderRadius: 4, padding: "1px 5px", flexShrink: 0,
+              }}>{it.kind}</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ color: it.status === "ok" ? colors.text : dot(it.status) }}>{it.detail}</div>
+                {it.hint && <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 2 }}>{it.hint}</div>}
+              </div>
+              <span
+                style={{
+                  fontSize: 11, color: colors.muted, flexShrink: 0, maxWidth: 220,
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                }}
+                title={it.where}
+              >
+                {it.where}
+              </span>
+              {it.action && (
+                <a
+                  href={it.action.href}
+                  style={{
+                    fontSize: 11.5, color: colors.accent, textDecoration: "none",
+                    border: `1px solid ${colors.accent}30`, borderRadius: 5, padding: "2px 8px", flexShrink: 0,
+                  }}
+                >{it.action.label} →</a>
+              )}
+            </div>
+          ))}
+          <div style={{ padding: "7px 14px", fontSize: 11, color: colors.muted }}>
+            核对于 {rep.checked_at} · 60s 自动刷新 · 只显示状态，不回明文
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
 
 /** 告警历史：读 notify_log（不新建表）—— 「昨天半夜出过什么事」不用再翻 docker logs。 */
 function AlertLogCard({ colors }: { colors: ThemeColors }) {

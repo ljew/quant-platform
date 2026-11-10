@@ -316,6 +316,104 @@ def card_signals(card_id: int, date: str | None = None):
         db.close()
 
 
+_KIND_LABEL = {
+    "created": "建卡", "state": "状态变更",
+    "backtest": "回测", "optimize": "参数寻优", "paper": "模拟盘",
+}
+
+
+@router.get("/cards/{card_id}/timeline")
+def card_timeline(card_id: int, limit: int = 80):
+    """一张卡的决策时间线：从写下假设到上模拟盘，每一步是什么时候做的。
+
+    设计文档 09 节标的缺口（「策略主页 · 缺决策时间线」）。原来页面上只有
+    「当前是什么状态」，看不到「为什么变成这样、中间试过几轮」—— 复盘时
+    只能翻聊天记录。
+
+    三类事件按时间合并，但**不混为一谈**（kind 分开，前端按类上色）：
+    · state / created：人的决策，带理由（history_json，actor=human 才是人改的）
+    · backtest / optimize / paper：机器跑出来的客观事实，看得出来「试过几次」
+    """
+    from app.models import Backtest, OptimizeRun, PaperTask
+
+    db = SessionLocal()
+    try:
+        card = db.get(ResearchCard, card_id)
+        if not card:
+            raise HTTPException(404, "研究卡不存在")
+        skey = match_strategy_key(card)
+        ev: list[dict] = []
+
+        def add(at: str, kind: str, title: str, detail: str = "", metric=None):
+            if not at:
+                return
+            ev.append({"at": at[:16], "kind": kind, "title": title,
+                       "detail": detail, "metric": metric})
+
+        # ① 建卡
+        if card.created_at:
+            add(card.created_at.strftime("%Y-%m-%d %H:%M"), "created",
+                f"建卡 · {card.name}", card.hypothesis or "")
+
+        # ② 人工/系统状态流转
+        state_cn = {"candidate": "候选", "enabled": "启用", "watch": "观察",
+                    "downgraded": "降级", "retired": "退役"}
+        for h in json.loads(card.history_json or "[]"):
+            at = h.get("at") or (h.get("date", "") + " 00:00")
+            frm, to = h.get("from"), h.get("to")
+            title = (f"{state_cn.get(frm, frm or '—')} → {state_cn.get(to, to)}")
+            actor = "人工" if h.get("actor") == "human" else "系统"
+            add(at, "state", f"{actor}改状态：{title}", h.get("reason", ""))
+
+        if skey:
+            # ③ 回测（最多 12 次，多了时间线会被淹掉）
+            for b in db.execute(
+                select(Backtest).where(Backtest.strategy_key == skey)
+                .order_by(Backtest.id.desc()).limit(12)
+            ).scalars().all():
+                r = b.total_return or 0
+                add(b.created_at.strftime("%Y-%m-%d %H:%M") if b.created_at else "",
+                    "backtest",
+                    f"回测 {b.start_date} ~ {b.end_date}",
+                    f"最大回撤 {(b.max_drawdown or 0) * 100:.1f}% · 夏普 {b.sharpe or 0:.2f}"
+                    f" · {b.trade_count or 0} 笔",
+                    {"label": "累计收益", "value": f"{r * 100:+.2f}%", "good": r >= 0})
+
+            # ④ 参数寻优
+            for o in db.execute(
+                select(OptimizeRun).where(OptimizeRun.strategy_key == skey)
+                .order_by(OptimizeRun.id.desc()).limit(6)
+            ).scalars().all():
+                at = o.finished_at or o.started_at
+                add(at.strftime("%Y-%m-%d %H:%M") if at else "", "optimize",
+                    f"寻优 {o.total or 0} 组 · {o.status}",
+                    f"最优夏普 {o.best_sharpe:.2f}" if o.best_sharpe is not None else "",
+                    {"label": "最优夏普", "value": f"{o.best_sharpe:.2f}",
+                     "good": (o.best_sharpe or 0) > 0} if o.best_sharpe is not None else None)
+
+            # ⑤ 模拟盘
+            for t in db.execute(
+                select(PaperTask).where(PaperTask.strategy_key == skey)
+                .order_by(PaperTask.id.desc()).limit(6)
+            ).scalars().all():
+                at = t.account_start or t.start_date
+                add(f"{at} 00:00" if at else "", "paper",
+                    f"建模拟盘 · {t.name}",
+                    f"初始 {t.initial_cash / 1e4:.0f} 万 · 跑到 {t.last_bar_date or '—'}"
+                    + ("" if t.enabled else " · 已停用"),
+                    None)
+
+        ev.sort(key=lambda x: x["at"], reverse=True)
+        return {
+            "card_id": card.id, "key": card.key, "name": card.name,
+            "strategy_key": skey, "count": len(ev),
+            "counts": {k: sum(1 for e in ev if e["kind"] == k) for k in _KIND_LABEL},
+            "events": ev[:max(1, min(limit, 200))],
+        }
+    finally:
+        db.close()
+
+
 @router.get("/cards/{card_id}")
 def get_card(card_id: int):
     db = SessionLocal()

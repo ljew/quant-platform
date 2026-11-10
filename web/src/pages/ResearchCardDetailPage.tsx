@@ -11,7 +11,7 @@ import {
   ACTION_LABEL, actionBadge, EvidenceBars, MiniTable, Signed, STATE_META, TransitionBox,
 } from "../components/cardShared";
 import {
-  api, BacktestFull, BacktestListItem, CardSignalsResp, OptimizeRunRow, researchApi,
+  api, BacktestFull, BacktestListItem, CardSignalsResp, CardTimeline, OptimizeRunRow, researchApi,
   ResearchCardItem, StatRow,
 } from "../api/client";
 import { useTheme, ThemeColors } from "../theme";
@@ -338,6 +338,102 @@ function Field({ label, children, colors }: { label: string; children: React.Rea
 }
 
 /** 信号日历 + 当日标的明细（点日期切换）。 */
+
+/** 决策时间线：建卡 → 回测 → 寻优 → 模拟盘 → 状态流转，按时间倒序。
+ *
+ * 为什么单独一屏而不是塞进左栏「⑦ 决策历史」：那里只记状态变更，
+ * 回答不了「这张卡到底试过几轮、哪次回测之后被降级的」。
+ * 时间线把机器事实（回测/寻优/模拟盘）和人的决策放在同一条轴上 —— 复盘要靠这个。
+ */
+const TL_KIND: Record<string, { label: string; color: string }> = {
+  created: { label: "建卡", color: "#94a3b8" },
+  state: { label: "决策", color: "#6c5ce7" },
+  backtest: { label: "回测", color: "#2e86de" },
+  optimize: { label: "寻优", color: "#e67e22" },
+  paper: { label: "模拟盘", color: "#16a34a" },
+};
+
+function CardTimelineCard({ cardId, colors }: { cardId: number; colors: ThemeColors }) {
+  const [tl, setTl] = useState<CardTimeline | null>(null);
+  const [all, setAll] = useState(false);
+
+  useEffect(() => {
+    researchApi.timeline(cardId).then(setTl).catch(() => {});
+  }, [cardId]);
+
+  if (!tl || tl.count === 0) return null;
+  const shown = all ? tl.events : tl.events.slice(0, 8);
+  const summary = Object.entries(tl.counts)
+    .filter(([, n]) => n > 0)
+    .map(([k, n]) => `${TL_KIND[k]?.label ?? k} ${n}`)
+    .join(" · ");
+
+  return (
+    <Card
+      title="决策时间线"
+      colors={colors}
+      style={{ marginTop: 18 }}
+      extra={<span style={{ fontSize: 11, color: colors.muted }}>{summary}</span>}
+    >
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        {shown.map((e, i) => {
+          const k = TL_KIND[e.kind] ?? { label: e.kind, color: colors.muted };
+          const last = i === shown.length - 1;
+          return (
+            <div key={`${e.at}-${i}`} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+              <div style={{
+                width: 78, flexShrink: 0, textAlign: "right", paddingTop: 2,
+                fontSize: 11.5, color: colors.muted, fontVariantNumeric: "tabular-nums",
+              }}>
+                {e.at.slice(5)}
+              </div>
+              <div style={{
+                position: "relative", flex: 1, minWidth: 0,
+                paddingLeft: 16, paddingBottom: last ? 0 : 14,
+                borderLeft: last ? "1px solid transparent" : `1px solid ${colors.border}`,
+              }}>
+                <span style={{
+                  position: "absolute", left: -4, top: 5, width: 7, height: 7,
+                  borderRadius: 99, background: k.color,
+                }} />
+                <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.5 }}>
+                  <span style={{ color: k.color, marginRight: 7, fontSize: 11.5 }}>{k.label}</span>
+                  {e.title}
+                </div>
+                {e.detail && (
+                  <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 2, lineHeight: 1.65 }}>
+                    {e.detail}
+                  </div>
+                )}
+              </div>
+              {e.metric && (
+                <div style={{ flexShrink: 0, textAlign: "right", minWidth: 84 }}>
+                  <div style={{ fontSize: 10.5, color: colors.muted }}>{e.metric.label}</div>
+                  <div style={{
+                    fontSize: 13, fontWeight: 700, fontVariantNumeric: "tabular-nums",
+                    color: e.metric.good ? colors.up : colors.down,
+                  }}>{e.metric.value}</div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {tl.events.length > 8 && (
+        <button
+          onClick={() => setAll((v) => !v)}
+          style={{
+            marginTop: 10, fontSize: 12, color: colors.accent,
+            background: "none", border: 0, cursor: "pointer", padding: 0,
+          }}
+        >
+          {all ? "收起" : `展开全部 ${tl.events.length} 条`}
+        </button>
+      )}
+    </Card>
+  );
+}
+
 function SignalExplorer({ card, colors }: { card: ResearchCardItem; colors: ThemeColors }) {
   const [data, setData] = useState<CardSignalsResp | null>(null);
   const [dayDetail, setDayDetail] = useState<CardSignalsResp | null>(null);
@@ -887,6 +983,10 @@ export default function ResearchCardDetailPage({ cardId, onBack, initialTab }: {
           )}
         </div>
       </div>
+
+      {/* 决策时间线（设计文档 09 节的缺口）：左栏 ⑦ 只列状态变更，
+          这里把回测/寻优/模拟盘也串进来 —— 「试过几轮」比「现在是什么」更能解释一张卡。 */}
+      <CardTimelineCard cardId={card.id} colors={colors} />
 
       {/* 底部：人工迁移 */}
       <Card title="人工状态迁移（下一次跑批生效，理由自动留痕）" colors={colors} style={{ marginTop: 18 }}>
