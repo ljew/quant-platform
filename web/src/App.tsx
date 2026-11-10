@@ -20,8 +20,7 @@ const AutoResearchHubPage = lazy(() => import("./pages/AutoResearchHubPage"));
 const DataSystemPage = lazy(() => import("./pages/DataSystemPage"));
 const DataHealthPage = lazy(() => import("./pages/DataHealthPage"));
 const WechatPage = lazy(() => import("./pages/WechatPage"));
-const FundPersistencePage = lazy(() => import("./pages/FundPersistencePage"));
-const FundPenetrationPage = lazy(() => import("./pages/FundPenetrationPage"));
+const FundResearchPage = lazy(() => import("./pages/FundResearchPage"));
 
 /**
  * 重构 v2.1：13 个二级 Tab → 9 个（2026-10-08 精简）。
@@ -51,8 +50,8 @@ const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; lab
     { key: "strategy-overview", label: "总览" },
     // 「卡」是内部黑话，用户说的是「策略」；因子卡也在这个库里（设计文档 09 节）
     { key: "cards", label: "策略库" },
-    { key: "fund", label: "基金持续性" },
-    { key: "fund-holding", label: "持仓穿透" },
+    // 基金研究：持续性 + 持仓穿透合一（设计文档 09 节）
+    { key: "fund-research", label: "基金研究" },
     { key: "btopt", label: "回测寻优" },
     { key: "factorlab", label: "因子实验室" },
   ] },
@@ -83,6 +82,8 @@ const LEGACY_TAB_MAP: Record<string, string> = {
   market_report: "reports",
   foreign: "foreign-news",
   overseas_news: "foreign-news",
+  fund: "fund-research",          // 2026-11-10 合并
+  "fund-holding": "fund-research",
 };
 
 function findHub(sub: string): { hub: HubKey; sub: string } | null {
@@ -126,8 +127,7 @@ function HubContent({ sub, id, inner }: { sub: string; id?: number; inner?: stri
     case "wechat": return <WechatPage />;
     case "strategy-overview": return <StrategyOverviewPage />;
     case "cards": return <ResearchCardsPage initialDetailId={id} initialTab={inner} />;
-    case "fund": return <FundPersistencePage />;
-    case "fund-holding": return <FundPenetrationPage />;
+    case "fund-research": return <FundResearchPage />;
     case "btopt": return <BacktestOptimizePage />;
     case "factorlab": return <FactorMinePage />;
     case "paper": return <PaperPage />;
