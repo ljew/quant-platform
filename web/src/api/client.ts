@@ -78,7 +78,15 @@ export interface OptimizeRunRow {
   done: number;
   best_sharpe: number | null;
   best_excess: number | null;
+  /** 最优组的样本外夏普（读时从 result_json 算，单标的是唯一能看的防过拟合指标） */
+  best_oos_sharpe?: number | null;
   best_params: Record<string, unknown>;
+  /** 这次跑的标的与区间（来自 payload_json）—— 同一策略两次寻优要靠它区分 */
+  symbol?: string;
+  start?: string;
+  end?: string;
+  rank_by?: string;
+  oos_ratio?: number | null;
   error: string;
   started_at: string | null;
   finished_at: string | null;

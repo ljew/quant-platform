@@ -697,10 +697,9 @@ export default function OptimizePage() {
               <tr style={{ color: colors.muted, textAlign: "left" }}>
                 <th style={{ padding: "9px 14px", fontWeight: 500 }}>时间</th>
                 <th style={{ fontWeight: 500 }}>状态</th>
-                <th style={{ fontWeight: 500 }}>区间</th>
                 <th style={{ fontWeight: 500 }}>组数</th>
                 <th style={{ fontWeight: 500 }}>最优夏普</th>
-                <th style={{ fontWeight: 500 }}>最优超额</th>
+                <th style={{ fontWeight: 500 }}>样本外夏普</th>
                 <th style={{ fontWeight: 500 }}>最优参数</th>
                 <th style={{ fontWeight: 500, textAlign: "right", paddingRight: 14 }}>耗时</th>
               </tr>
@@ -717,16 +716,27 @@ export default function OptimizePage() {
                 return (
                   <tr key={r.id} style={{ borderTop: `1px solid ${colors.border}` }}>
                     <td style={{ padding: "8px 14px", color: colors.muted }}>
-                      {(r.finished_at ?? r.started_at ?? "").replace("T", " ").slice(5, 16)}
+                      <div>{(r.finished_at ?? r.started_at ?? "").replace("T", " ").slice(5, 16)}</div>
+                      <div style={{ fontSize: 10.5, color: colors.muted, marginTop: 2 }}>
+                        {r.symbol || "—"}
+                        {r.start && r.end ? ` · ${r.start.slice(2, 7)}~${r.end.slice(2, 7)}` : ""}
+                      </div>
                     </td>
                     <td style={{ color: tone, fontWeight: 600 }}>{r.status}</td>
-                    <td style={{ color: colors.muted }}>{r.done}/{r.total} 组</td>
-                    <td>{r.total}</td>
+                    <td style={{ color: colors.muted }}>
+                      {/* 只在跑的时候显示进度；跑完 done 可能因历史原因为 0，
+                          这时显示 "12 组" 比 "0/12 组" 诚实（总量是真的）*/}
+                      {r.status === "running" ? `${r.done}/${r.total}` : r.total}
+                    </td>
                     <td style={{ fontWeight: 600 }}>
                       {r.best_sharpe == null ? "—" : r.best_sharpe.toFixed(3)}
                     </td>
-                    <td style={{ color: (r.best_excess ?? 0) >= 0 ? colors.up : colors.down }}>
-                      {r.best_excess == null ? "—" : `${(r.best_excess * 100).toFixed(2)}%`}
+                    <td style={{
+                      color: r.best_oos_sharpe == null ? colors.muted
+                        : r.best_oos_sharpe >= 0 ? colors.up : colors.down,
+                      fontWeight: r.best_oos_sharpe == null ? 400 : 600,
+                    }}>
+                      {r.best_oos_sharpe == null ? "—" : r.best_oos_sharpe.toFixed(3)}
                     </td>
                     <td style={{ color: colors.muted, fontSize: 11.5 }}>
                       {params.length === 0 ? "—" : params.map(([k, v]) => `${k}=${v}`).join(" / ")}

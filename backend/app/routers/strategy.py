@@ -1106,6 +1106,12 @@ def _watch_job(job_id: str, proc) -> None:
             job["ok"] = res.get("ok")
             job["error"] = res.get("error") or job["error"]
             job["results"] = res.get("results") or []
+            # 收尾补一次进度：progress.json 只在「前端轮询且任务还在跑」时被读，
+            # 任务跑得比轮询快（实测 12 组 1.8 秒）job["done"] 会一直是 0，
+            # 落库就成了 "0/12 组"，看着像没跑。
+            prog = _read_json(os.path.join(_job_dir(job_id), "progress.json")) or {}
+            job["done"] = prog.get("done") or len(job["results"])
+            job["total"] = prog.get("total") or job["total"]
         else:
             # 连结果文件都没有 —— 多半是被取消或超时杀掉的
             job["ok"] = False
@@ -1138,11 +1144,35 @@ def list_optimize_runs(limit: int = 20, strategy_key: str | None = None):
                 params = json.loads(r.best_params or "{}")
             except json.JSONDecodeError:
                 params = {}
+            # 回看必须知道「跑的是哪只票、哪段区间」——否则同一策略两次寻优
+            # 参数没法比。payload_json 里存了，取出来一起返回。
+            try:
+                payload = json.loads(r.payload_json or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            # 样本外夏普：寻优只支持单标的，单标的回测没有基准，best_excess 恒为
+            # null —— 那一列在页面上永远是「—」。改从 result_json 里取最优组的
+            # 样本外夏普（不加列，纯读时算），这一列才真的能用来防过拟合。
+            best_oos = None
+            try:
+                trials = json.loads(r.result_json or "[]")
+                if isinstance(trials, list) and trials:
+                    top = max(trials, key=lambda t: (t.get("sharpe") or -9e9))
+                    best_oos = top.get("oos_sharpe")
+            except (json.JSONDecodeError, TypeError, ValueError):
+                best_oos = None
+
             out.append({
                 "id": r.id, "job_id": r.job_id, "strategy_key": r.strategy_key,
                 "status": r.status, "total": r.total, "done": r.done,
                 "best_sharpe": r.best_sharpe, "best_excess": r.best_excess,
+                "best_oos_sharpe": best_oos,
                 "best_params": params, "error": r.error,
+                "symbol": payload.get("symbol") or "",
+                "start": payload.get("start") or "",
+                "end": payload.get("end") or "",
+                "rank_by": payload.get("rank_by") or "",
+                "oos_ratio": payload.get("oos_ratio"),
                 "started_at": r.started_at.isoformat(timespec="seconds") if r.started_at else None,
                 "finished_at": r.finished_at.isoformat(timespec="seconds") if r.finished_at else None,
             })
