@@ -1,5 +1,5 @@
 /**
- * 研究卡（策略研究 · 首个 Tab）：一个策略/因子 = 一张标准卡片。
+ * 策略库（策略研究 · 首个 Tab，原「研究卡」）：一个策略/因子 = 一张标准卡片。
  * 平时不用看；有建议时顶部横幅提醒你，点「同意」即执行（下一次跑批生效）。
  * 点击卡片进入整页详情：完整档案 + 信号日历 + 绩效细分 + 决策历史。
  * 数据源：GET /research/cards + /research/suggestions（证据由每周复盘自动刷新）。
@@ -112,7 +112,12 @@ function CardSummary({ card, onOpen }: { card: ResearchCardItem; onOpen: () => v
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <span style={{ fontWeight: 700, fontSize: 15 }}>
           {card.name}
-          <span style={{ color: colors.muted, fontSize: 10.5, marginLeft: 6, border: `1px solid ${colors.border}`, borderRadius: 4, padding: "0 5px" }}>
+          <span style={{
+            color: isFactor ? "#6c5ce7" : colors.accent,
+            border: `1px solid ${isFactor ? "#6c5ce744" : `${colors.accent}44`}`,
+            background: isFactor ? "#6c5ce710" : `${colors.accent}10`,
+            fontSize: 10.5, marginLeft: 6, borderRadius: 4, padding: "0 5px",
+          }}>
             {isFactor ? "因子" : "策略"}
           </span>
         </span>
@@ -226,7 +231,7 @@ export default function ResearchCardsPage({ initialDetailId, initialTab }: { ini
   return (
     <div>
       <PageHeader
-        title="研究卡"
+        title="策略库"
         desc="一个策略/因子 = 一张标准卡片 · 平时不用看，有建议时顶部会提醒你 · 点卡片进详情页看完整分析"
         actions={<Btn onClick={load} kind="ghost" small>{loading ? "刷新中…" : "刷新"}</Btn>}
       />
@@ -280,7 +285,7 @@ export default function ResearchCardsPage({ initialDetailId, initialTab }: { ini
         ))}
       </div>
       {!loading && cards.length === 0 && !err && (
-        <div style={{ color: colors.muted, fontSize: 13, padding: 30, textAlign: "center" }}>暂无研究卡</div>
+        <div style={{ color: colors.muted, fontSize: 13, padding: 30, textAlign: "center" }}>暂无策略</div>
       )}
 
       {/* —— 名词解释 —— */}

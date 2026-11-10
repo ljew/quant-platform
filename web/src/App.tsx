@@ -11,6 +11,7 @@ const MarketPage = lazy(() => import("./pages/MarketPage"));
 const BacktestOptimizePage = lazy(() => import("./pages/BacktestOptimizePage"));
 const PaperPage = lazy(() => import("./pages/PaperPage"));
 const FactorMinePage = lazy(() => import("./pages/FactorMinePage"));
+const StrategyOverviewPage = lazy(() => import("./pages/StrategyOverviewPage"));
 const ResearchCardsPage = lazy(() => import("./pages/ResearchCardsPage"));
 const SignalPage = lazy(() => import("./pages/SignalPage"));
 const EtfFlowPage = lazy(() => import("./pages/EtfFlowPage"));
@@ -46,7 +47,10 @@ const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; lab
     { key: "wechat", label: "公众号" },
   ] },
   { key: "research", label: "策略研究", icon: "⚗", tabs: [
-    { key: "cards", label: "研究卡" },
+    // 总览当门面：几条线、各自走到哪、今天该处理什么（设计文档 09 节）
+    { key: "strategy-overview", label: "总览" },
+    // 「卡」是内部黑话，用户说的是「策略」；因子卡也在这个库里（设计文档 09 节）
+    { key: "cards", label: "策略库" },
     { key: "fund", label: "基金持续性" },
     { key: "fund-holding", label: "持仓穿透" },
     { key: "btopt", label: "回测寻优" },
@@ -120,6 +124,7 @@ function HubContent({ sub, id, inner }: { sub: string; id?: number; inner?: stri
     case "market": return <MarketPage />;
     case "etfflow": return <EtfFlowPage />;
     case "wechat": return <WechatPage />;
+    case "strategy-overview": return <StrategyOverviewPage />;
     case "cards": return <ResearchCardsPage initialDetailId={id} initialTab={inner} />;
     case "fund": return <FundPersistencePage />;
     case "fund-holding": return <FundPenetrationPage />;
