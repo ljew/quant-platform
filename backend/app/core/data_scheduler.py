@@ -350,6 +350,15 @@ def _mark_zombie_runs_failed() -> None:
                 " finished_at=COALESCE(finished_at, started_at)"
                 " WHERE status='RUNNING'"
             ))
+            # research_runs 同理：进程重启后它不可能还活着。不清的话会变成一个
+            # 永久误判源 —— 既不是 SUCCESS（`_orchestrator_ran_today` 判「没跑过」），
+            # 也不肯收尾（页面上的编排横条永远显示「运行中」）。
+            db.execute(text(
+                "UPDATE research_runs SET status='FAILED',"
+                " error=COALESCE(error||' | ','')||'进程重启，run 未收尾',"
+                " finished_at=COALESCE(finished_at, started_at)"
+                " WHERE status='RUNNING'"
+            ))
             db.commit()
     except Exception as e:  # noqa: BLE001
         logger.warning("超时僵尸 run 清理失败: %s", e)
@@ -588,11 +597,24 @@ def _orchestrator_ran_today() -> bool:
         from app.models import ResearchRun
 
         with SessionLocal() as db:
+            from datetime import timedelta
+
+            from sqlalchemy import and_, or_
+
+            day0 = datetime.combine(_date.today(), datetime.min.time())
+            # RUNNING 也算「在跑」：编排 17:30 启动后，调度器同一分钟就可能来问
+            # 「今天跑过没有」。只认 SUCCESS 的话会判「没跑过」→ 再起一轮 ETL，
+            # 两份管道同时写同一批表（2026-11-10 20:01 就是这么撞的）。
+            # 加 2 小时窗口兜住「进程被杀留下的永久 RUNNING」。
+            fresh = datetime.now() - timedelta(hours=2)
             row = db.execute(
                 select(ResearchRun).where(
-                    ResearchRun.status == "SUCCESS",
-                    ResearchRun.finished_at >= datetime.combine(
-                        _date.today(), datetime.min.time()),
+                    or_(
+                        and_(ResearchRun.status == "SUCCESS",
+                             ResearchRun.finished_at >= day0),
+                        and_(ResearchRun.status == "RUNNING",
+                             ResearchRun.started_at >= fresh),
+                    )
                 ).order_by(ResearchRun.id.desc()).limit(1)
             ).scalars().first()
             return row is not None

@@ -309,21 +309,48 @@ _running_pipeline = {"locked": False}
 
 @router.post("/pipeline/run")
 def pipeline_run_now():
-    """手动立即运行数据管道（后台线程）。"""
+    """手动立即运行数据管道（**子进程**执行，带硬超时）。
+
+    🔴 原来是在 uvicorn 里起个线程直接跑 run_pipeline，踩了两个坑：
+    ① 违反「长任务必须子进程隔离」这条铁律 —— 卡住就杀不掉，只能重启容器；
+    ② 最后一步 sync_duckdb 会开 DuckDB 的**写连接**。2026-11-10 实测它卡在
+       Docker 卷 I/O 上不返回，写锁留在主进程里，之后所有读 DuckDB 的接口都
+       降级到 SQLite，而且再也 sync 不进去。
+    改成子进程后：超时能 kill，锁随进程一起释放。
+    """
     if _running_pipeline["locked"]:
         return {"ok": False, "error": "已有管道在运行中"}
-    from app.datahub.runner import run_pipeline
+
+    code = (
+        "from app.datahub.runner import run_pipeline;"
+        "rid = run_pipeline('manual');"
+        "print('PIPELINE_RID', rid, flush=True)"
+    )
+    backend = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    env = dict(os.environ)
+    env["PYTHONPATH"] = backend
 
     def _bg():
+        from app.core.subproc import run_with_timeout
+
         _running_pipeline["locked"] = True
         try:
-            rid = run_pipeline(trigger="manual")
-            logger.info("手动管道完成 run_id=%s", rid)
+            proc = run_with_timeout(
+                [sys.executable, "-c", code], timeout=3600, cwd=backend, env=env,
+            )
+            rid = (re.search(r"PIPELINE_RID\s+(\d+)", proc.stdout or "") or [None, None])[1]
+            logger.info("手动管道完成 run_id=%s rc=%s", rid, proc.returncode)
+        except subprocess.TimeoutExpired:
+            logger.error("手动管道超过 3600s，已终止子进程")
+            from app.core.data_scheduler import _mark_zombie_runs_failed
+            _mark_zombie_runs_failed()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("手动管道失败：%s", str(e)[:160])
         finally:
             _running_pipeline["locked"] = False
 
     threading.Thread(target=_bg, daemon=True).start()
-    return {"ok": True}
+    return {"ok": True, "mode": "subprocess"}
 
 
 # ——— 一键修复：把「资产清单里的异常项」翻译成可执行的修复动作 ———
