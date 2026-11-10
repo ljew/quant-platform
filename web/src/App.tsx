@@ -44,11 +44,13 @@ const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; lab
     { key: "fund-research", label: "基金研究" },
     { key: "btopt", label: "回测寻优" },
     { key: "factorlab", label: "因子实验室" },
+    // 信号归因：测的是「信号有没有效」，不涉及资金 —— 属于研究，不属于跟踪（设计文档 10 节）
+    { key: "attribution", label: "信号归因" },
   ] },
   { key: "track", label: "组合跟踪", icon: "◷", tabs: [
-    { key: "paper", label: "模拟盘" },
+    // 模拟盘 + 镜像 / 实验合成一张表（设计文档 10 节），tab 名改「组合」
+    { key: "paper", label: "组合" },
     { key: "signal", label: "信号组合" },
-    { key: "attribution", label: "归因分析" },
   ] },
   { key: "data", label: "数据中心", icon: "⇉", tabs: [
     { key: "auto", label: "自动研究" },

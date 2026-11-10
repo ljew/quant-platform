@@ -1110,6 +1110,11 @@ export interface PaperTask {
   pnl_pct: number;
   positions_count: number;
   last_run_at?: string;
+  /** 净值算到哪天（数据日期），与 last_run_at（最后运行时刻）不是一回事 */
+  last_bar_date?: string | null;
+  /** 建仓日：vs 基准要按「同一段时间」比，所以基准区间用这个而不是今天减一年 */
+  account_start?: string | null;
+  start_date?: string | null;
   error_msg?: string | null;
 }
 
