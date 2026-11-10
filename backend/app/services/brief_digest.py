@@ -217,8 +217,15 @@ def _merge_rows(rows: list) -> list[dict]:
     return merged
 
 
-def run(db: Session, day: str | None = None) -> dict:
-    """生成（或重新生成）某日的全景综述。幂等：同一天覆盖。"""
+def run(db: Session, day: str | None = None, fast: bool = False) -> dict:
+    """生成（或重新生成）某日的全景综述。幂等：同一天覆盖。
+
+    `fast=True`：简报每轮跑完后刷新用（老刘 2026-11-10 要求把「简报里的
+    今日综述」和「当日全景」合并成一份）。差异：
+      - 直接用 flash（跳过 v4-pro 的 70~100 秒），只试 1 次
+      - **不覆盖当天已有的 v4-pro 完整版** —— 21:45 精修过之后，
+        再来的盘中刷新不该把它冲掉
+    """
     from app.services.llm_config import chat, resolve_active
 
     day = day or datetime.now().date().isoformat()
@@ -233,6 +240,15 @@ def run(db: Session, day: str | None = None) -> dict:
     cfg = resolve_active()
     if not cfg.get("configured"):
         return {"ok": False, "error": "大模型通道未配置"}
+
+    if fast:
+        # 当天已有 v4-pro 完整版 → 直接跳过，别用短版覆盖长版
+        try:
+            exist = db.query(BriefDigest).filter(BriefDigest.day == day).first()
+        except Exception:  # noqa: BLE001
+            exist = None
+        if exist is not None and "pro" in (exist.model or "").lower():
+            return {"ok": False, "skipped": "已有 v4-pro 完整版，盘中不覆盖"}
 
     prompt = PROMPT.format(day=day, **{k: v for k, v in data.items()
                                        if k in ("n_items", "items_block", "n_news",
@@ -262,8 +278,12 @@ def run(db: Session, day: str | None = None) -> dict:
                     time.sleep(4)
         return "", last
 
-    body, err = _try(DIGEST_MODEL, DIGEST_MAX_TOKENS, 2)
-    used_model = DIGEST_MODEL
+    if fast:
+        body, err = _try("deepseek-flash", 8000, 1)
+        used_model = "deepseek-flash"
+    else:
+        body, err = _try(DIGEST_MODEL, DIGEST_MAX_TOKENS, 2)
+        used_model = DIGEST_MODEL
     if not body:
         # v4-pro 彻底不通时退回 flash：宁可质量降一档，也别让当天没有复盘。
         # flash 的 reasoning 也要 5000+，所以 max_tokens 给 8000 而不是默认值。
