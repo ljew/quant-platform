@@ -1,13 +1,40 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import EChart from "../components/EChart";
 import { api, BacktestResult, StockItem, StrategyInfo } from "../api/client";
-import { useTheme } from "../theme";
+import { ThemeColors, useTheme } from "../theme";
 import { Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
 import EvalBadges from "../components/EvalBadges";
 import CostSensitivityPanel from "../components/CostSensitivityPanel";
 import WalkForwardPanel from "../components/WalkForwardPanel";
 import { signalLabel } from "../signalLabel";
 import ParamPanel, { ParamMap, changedKeys, defaultParams } from "../components/ParamPanel";
+
+/** 单条回测的净值曲线，正常化到 1.0。
+ *  对比时两条各画一张：区间不同，硬塞进一张图会得到两段错位的线。 */
+function MiniEquity({ r, colors, tone }: { r: BacktestResult; colors: ThemeColors; tone: string }) {
+  const pts = r.equity_curve || [];
+  if (pts.length < 2) {
+    return <div style={{ fontSize: 12, color: colors.muted, padding: "18px 4px" }}>
+      这条回测没有净值曲线数据。
+    </div>;
+  }
+  const base = pts[0].equity || 1;
+  const option = {
+    tooltip: { trigger: "axis" },
+    grid: { left: 48, right: 12, top: 16, bottom: 24 },
+    xAxis: {
+      type: "category", data: pts.map((x) => x.date.slice(2)),
+      axisLabel: { fontSize: 10, interval: Math.max(0, Math.floor(pts.length / 5)) },
+    },
+    yAxis: { type: "value", scale: true, axisLabel: { fontSize: 10 } },
+    series: [{
+      name: "净值", type: "line",
+      data: pts.map((x) => +(x.equity / base).toFixed(4)),
+      showSymbol: false, lineStyle: { width: 1.6, color: tone }, itemStyle: { color: tone },
+    }],
+  };
+  return <EChart option={option as never} height={200} />;
+}
 
 /** 参数快照的稳定序列化（key 顺序无关），用于判断「参数改过但还没重跑」。 */
 const snap = (p: ParamMap) =>
@@ -26,6 +53,9 @@ export default function BacktestPage() {
   const [start, setStart] = useState("2023-01-01");
   const [end, setEnd] = useState("2025-06-30");
   const [result, setResult] = useState<BacktestResult | null>(null);
+  // 历史点选改为「对比」而不是覆盖：同一策略改了参数重跑，最想知道的就是
+  // 「跟上次差在哪」。覆盖掉就再也比不了 —— 这也是设计文档 09 节的那条。
+  const [compare, setCompare] = useState<BacktestResult | null>(null);
   const [history, setHistory] = useState<BacktestResult[]>([]);
   const validKeys = useMemo(() => new Set(strategies.map((x) => x.key)), [strategies]);
   // 注意 strategy_key 可能为空（老记录），统一成 "" 便于 Set 查询
@@ -141,17 +171,24 @@ export default function BacktestPage() {
     }
   }, [key, symbol, start, end, params]);
 
-  const loadHistory = async (id: number) => {
+  /** 点历史记录：默认进「对比」，不覆盖当前结果。
+   *  只有当前还没有结果、或明确点「载入」时才替换主视图。 */
+  const loadHistory = async (id: number, as: "compare" | "current" = "compare") => {
     try {
       const r = await api.backtestDetail(id);
-      setResult(r);
-      setProgress(`已加载回测 #${id}`);
+      if (as === "current" || !result) {
+        setResult(r);
+        setProgress(`已载入回测 #${id}（替换主视图）`);
+      } else {
+        setCompare(r);
+        setProgress(`已加入对比：回测 #${id} — 当前结果没有被覆盖`);
+      }
     } catch { /* noop */ }
   };
 
   // 净值曲线 + 买卖点标记（图表联动）
-  const equityOption = (() => {
-    const curve = result?.equity_curve || [];
+  const buildEquityOption = (r: BacktestResult | null) => {
+    const curve = r?.equity_curve || [];
     const trades = result?.trades || [];
     const dateIndex = new Map(curve.map((p, i) => [p.date, i]));
     const buys = trades.filter((t) => t.side === "BUY" && dateIndex.has(t.trade_date));
@@ -183,7 +220,14 @@ export default function BacktestPage() {
         },
       ],
     };
-  })();
+  };
+  const equityOption = buildEquityOption(result);
+
+  const chip = {
+    border: `1px solid ${colors.border}`, background: "transparent",
+    color: colors.muted, borderRadius: 6, padding: "2px 8px",
+    fontSize: 11, cursor: "pointer" as const,
+  };
 
   const calmar = result && result.max_drawdown
     ? result.total_return / Math.abs(result.max_drawdown)
@@ -390,6 +434,91 @@ export default function BacktestPage() {
             </>
           )}
 
+          {/* —— 对比：两条曲线并排，各自正常化。—— */}
+          {compare && result && (
+            <Card
+              title={`回测对比：#${result.id} vs #${compare.id}`}
+              colors={colors}
+              extra={
+                <button onClick={() => setCompare(null)}
+                  style={{
+                    border: `1px solid ${colors.border}`, background: "transparent",
+                    color: colors.muted, borderRadius: 999, padding: "2px 10px",
+                    fontSize: 11, cursor: "pointer",
+                  }}>清空对比</button>
+              }
+            >
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <div>
+                  <div style={{ fontSize: 12, marginBottom: 4 }}>
+                    <b>当前 #{result.id}</b>
+                    <span style={{ color: colors.muted, marginLeft: 8 }}>
+                      {result.strategy_key || "—"} · {result.start_date} ~ {result.end_date}
+                    </span>
+                  </div>
+                  <MiniEquity r={result} colors={colors} tone={colors.accent} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, marginBottom: 4 }}>
+                    <b style={{ color: colors.muted }}>历史 #{compare.id}</b>
+                    <span style={{ color: colors.muted, marginLeft: 8 }}>
+                      {compare.strategy_key || "—"} · {compare.start_date} ~ {compare.end_date}
+                    </span>
+                  </div>
+                  <MiniEquity r={compare} colors={colors} tone={colors.muted} />
+                </div>
+              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, marginTop: 10 }}>
+                <thead>
+                  <tr style={{ color: colors.muted, textAlign: "left" }}>
+                    <th style={{ padding: "6px 8px", fontWeight: 500 }}>指标</th>
+                    <th style={{ padding: "6px 8px", fontWeight: 500, textAlign: "right" }}>当前</th>
+                    <th style={{ padding: "6px 8px", fontWeight: 500, textAlign: "right" }}>历史</th>
+                    <th style={{ padding: "6px 8px", fontWeight: 500, textAlign: "right" }}>差</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {([
+                    ["总收益", result.total_return, compare.total_return, true],
+                    ["夏普", result.sharpe, compare.sharpe, false],
+                    ["最大回撤", result.max_drawdown, compare.max_drawdown, true],
+                    ["成交笔数", result.trade_count ?? 0, compare.trade_count ?? 0, false],
+                  ] as [string, number, number, boolean][]).map(([label, a, b, isPct]) => {
+                    const d = a - b;
+                    const tone = isPct ? (d >= 0 ? colors.up : colors.down) : (d >= 0 ? colors.up : colors.down);
+                    const fmt = (v: number) => isPct ? `${(v * 100).toFixed(2)}%` : v.toFixed(2);
+                    return (
+                      <tr key={label} style={{ borderTop: `1px solid ${colors.border}` }}>
+                        <td style={{ padding: "6px 8px" }}>{label}</td>
+                        <td className="num" style={{ padding: "6px 8px", textAlign: "right" }}>{fmt(a)}</td>
+                        <td className="num" style={{ padding: "6px 8px", textAlign: "right", color: colors.muted }}>{fmt(b)}</td>
+                        <td className="num" style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: tone }}>
+                          {d >= 0 ? "+" : ""}{fmt(d)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <div style={{ fontSize: 11, color: colors.muted, marginTop: 8, lineHeight: 1.8 }}>
+                两条线各自正常化到 1.0 —— 区间不同，纵轴不能直接比绝对净值。
+                看「差」列：同样的策略改参数后，收益差多少、回撤差多少。
+              </div>
+              {(result.strategy_key !== compare.strategy_key || result.symbol !== compare.symbol) && (
+                <div style={{
+                  marginTop: 8, padding: "8px 10px", borderRadius: 8, fontSize: 11.5,
+                  background: "rgba(217,119,6,0.10)", border: "1px solid rgba(217,119,6,0.32)",
+                  color: "#b45309", lineHeight: 1.8,
+                }}>
+                  ⚠️ 这两条<b>不是同一个策略或同一只标的</b>（{result.strategy_key || "—"}/{result.symbol}
+                  {" vs "}{compare.strategy_key || "—"}/{compare.symbol}）。
+                  曲线摆在一起可以看形态，但下面那列「差」<b>不代表参数改动的效果</b>，
+                  别把它当「换了参数好多少」。
+                </div>
+              )}
+            </Card>
+          )}
+
           {history.length > 0 && (
             <Card
               title={`最近回测（${shownHistory.length}${orphanCount > 0 && !showAllHistory ? ` / 共 ${history.length}` : ""}）`}
@@ -412,6 +541,7 @@ export default function BacktestPage() {
                   <tr style={{ color: colors.muted, textAlign: "left" }}>
                     <th style={{ padding: "9px 14px" }}>ID</th>
                     <th>策略</th><th>标的</th><th>区间</th><th>总收益</th><th>夏普</th><th>回撤</th>
+                    <th style={{ textAlign: "right", paddingRight: 14 }}>操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -428,6 +558,12 @@ export default function BacktestPage() {
                       <td className="num">{h.sharpe?.toFixed(2) ?? "—"}</td>
                       <td className="num" style={{ color: colors.muted }}>
                         {h.max_drawdown ? `${(h.max_drawdown * 100).toFixed(2)}%` : "—"}
+                      </td>
+                      <td style={{ textAlign: "right", paddingRight: 14 }} onClick={(e) => e.stopPropagation()}>
+                        <button onClick={() => loadHistory(h.id, "compare")}
+                          style={chip}>对比</button>
+                        <button onClick={() => loadHistory(h.id, "current")}
+                          style={{ ...chip, marginLeft: 6 }}>载入</button>
                       </td>
                     </tr>
                   ))}

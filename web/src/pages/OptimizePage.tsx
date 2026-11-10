@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, BacktestResult, OptimizeTrial, StrategyInfo } from "../api/client";
+import { api, BacktestResult, OptimizeRunRow, OptimizeTrial, StrategyInfo } from "../api/client";
 import { useTheme } from "../theme";
 import type { ThemeColors } from "../theme";
 import { Btn, Card, PageHeader } from "../components/ui";
@@ -68,6 +68,8 @@ export default function OptimizePage() {
   const [yKey, setYKey] = useState("");
   // 大网格后台任务
   const [jobId, setJobId] = useState("");
+  // 寻优落库记录：原来只写 job 目录且只留 10 个，页面一关就查不到。
+  const [runs, setRuns] = useState<OptimizeRunRow[]>([]);
   const [prog, setProg] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
   const [asyncMode, setAsyncMode] = useState(false);
   const polling = useRef(false);
@@ -127,6 +129,15 @@ export default function OptimizePage() {
     () => Object.values(ranges).reduce<number>((acc, v) => acc * Math.max(splitNums(v).length, 1), 1),
     [ranges]
   );
+
+  const reloadRuns = useCallback(() => {
+    if (!key) { setRuns([]); return; }
+    api.optimizeRuns(key, 10).then((r) => setRuns(r.runs)).catch(() => setRuns([]));
+  }, [key]);
+
+  useEffect(() => { reloadRuns(); }, [reloadRuns]);
+  // 跑完自动刷新一次：否则要手动切策略才看得到刚跑的那条
+  useEffect(() => { if (!running) reloadRuns(); }, [running, reloadRuns]);
 
   /** 轮询后台任务直到结束。polling.current 置 false 即退出（取消 / 离开页面）。 */
   const pollJob = useCallback(async (id: string) => {
@@ -665,6 +676,71 @@ export default function OptimizePage() {
           </div>
         </div>
       )}
+
+      {/* —— 寻优历史（落库的那些）—— */}
+      <Card
+        title={`寻优历史（${runs.length}）`}
+        colors={colors}
+        pad={0}
+        style={{ marginTop: 16 }}
+        extra={<span style={{ fontSize: 11, color: colors.muted }}>
+          已落库 · 跨重启可回看 · 最多 10 次
+        </span>}
+      >
+        {runs.length === 0 ? (
+          <div style={{ padding: "20px 14px", fontSize: 12.5, color: colors.muted, lineHeight: 1.8 }}>
+            还没有寻优记录。跑一次网格搜索后会自动落库，出现在这里（不再只留 10 个临时目录）。
+          </div>
+        ) : (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+            <thead>
+              <tr style={{ color: colors.muted, textAlign: "left" }}>
+                <th style={{ padding: "9px 14px", fontWeight: 500 }}>时间</th>
+                <th style={{ fontWeight: 500 }}>状态</th>
+                <th style={{ fontWeight: 500 }}>区间</th>
+                <th style={{ fontWeight: 500 }}>组数</th>
+                <th style={{ fontWeight: 500 }}>最优夏普</th>
+                <th style={{ fontWeight: 500 }}>最优超额</th>
+                <th style={{ fontWeight: 500 }}>最优参数</th>
+                <th style={{ fontWeight: 500, textAlign: "right", paddingRight: 14 }}>耗时</th>
+              </tr>
+            </thead>
+            <tbody>
+              {runs.map((r) => {
+                const tone = r.status === "done" ? colors.down
+                  : r.status === "failed" ? colors.up
+                  : r.status === "running" ? colors.accent : colors.muted;
+                const secs = r.started_at && r.finished_at
+                  ? Math.round((new Date(r.finished_at).getTime() - new Date(r.started_at).getTime()) / 1000)
+                  : null;
+                const params = Object.entries(r.best_params ?? {});
+                return (
+                  <tr key={r.id} style={{ borderTop: `1px solid ${colors.border}` }}>
+                    <td style={{ padding: "8px 14px", color: colors.muted }}>
+                      {(r.finished_at ?? r.started_at ?? "").replace("T", " ").slice(5, 16)}
+                    </td>
+                    <td style={{ color: tone, fontWeight: 600 }}>{r.status}</td>
+                    <td style={{ color: colors.muted }}>{r.done}/{r.total} 组</td>
+                    <td>{r.total}</td>
+                    <td style={{ fontWeight: 600 }}>
+                      {r.best_sharpe == null ? "—" : r.best_sharpe.toFixed(3)}
+                    </td>
+                    <td style={{ color: (r.best_excess ?? 0) >= 0 ? colors.up : colors.down }}>
+                      {r.best_excess == null ? "—" : `${(r.best_excess * 100).toFixed(2)}%`}
+                    </td>
+                    <td style={{ color: colors.muted, fontSize: 11.5 }}>
+                      {params.length === 0 ? "—" : params.map(([k, v]) => `${k}=${v}`).join(" / ")}
+                    </td>
+                    <td style={{ textAlign: "right", paddingRight: 14, color: colors.muted }}>
+                      {secs == null ? "—" : `${secs}s`}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </Card>
         </div>
       </div>
     </div>
