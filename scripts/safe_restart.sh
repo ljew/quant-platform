@@ -28,11 +28,29 @@ echo "→ 等健康检查"
 i=0
 while [ $i -lt 30 ]; do
     if curl -sf --noproxy '*' -o /dev/null http://127.0.0.1:8000/openapi.json; then
-        echo "✅ 已恢复（$(date +%H:%M:%S)）"
-        exit 0
+        break
     fi
     i=$((i + 1))
     sleep 2
 done
-echo "❌ 90 秒内没起来，看日志：docker logs --tail 50 quant-backend"
+if [ $i -ge 30 ]; then
+    echo "❌ 90 秒内没起来，看日志：docker logs --tail 50 quant-backend"
+    exit 1
+fi
+
+# openapi 只是路由表，不碰数据库。重建容器后 Docker 卷要重新挂载，
+# 这中间几秒 SQLite 会报 disk I/O error（库本身没坏，宿主 quick_check 是 ok 的）。
+# 之前只探 openapi 就宣布恢复，结果马上请求接口拿到 500 —— 多等这一步。
+echo "→ 等数据库可读"
+j=0
+while [ $j -lt 15 ]; do
+    code=$(curl -s -o /dev/null -w '%{http_code}' --noproxy '*' \
+        "http://127.0.0.1:8000/api/v1/strategy/optimize/runs?limit=1")
+    [ "$code" = "200" ] && { echo "✅ 已恢复（$(date +%H:%M:%S)）"; exit 0; }
+    j=$((j + 1))
+    sleep 2
+done
+echo "⚠️  路由已起但数据库接口返回 $code —— 等 20 秒再试；"
+echo "    若持续报 disk I/O error 而宿主 sqlite3 quick_check 正常，就是卷挂载问题："
+echo "    docker compose restart backend"
 exit 1
