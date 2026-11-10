@@ -190,6 +190,122 @@ function SignalExplorer({ card, colors }: { card: ResearchCardItem; colors: Them
   );
 }
 
+/** 证据明细：把 evidence 里「详情页不认识」的结构化数据渲染出来。
+ *
+ * 为什么需要（2026-11-10 老刘：「基金规模与次年超额，这些卡片点开后，
+ * 里面没有啥内容」）：原来详情页只认一种形状 —— `w240/w120/w60`（三窗口超额）
+ * 和 `ic_mean/icir`。但三张基金卡的 evidence 各是各的结构：
+ *   #18 levels（分档：<2亿 / 2-10亿 / … 各自的 exc、t、pos）
+ *   #23 monthly / quarterly / annual（各含 gross/net/cost/t）
+ *   #26 1m / 3m / 12m（留存概率）
+ * 于是一个字段都对不上，整页空白。
+ *
+ * 这里做通用渲染：标量 → 键值行；对象（值是标量）→ 单行表；
+ * 对象（值是对象）→ 多行表。列取并集，缺的留空。
+ */
+type EvTable = { title: string; headers: string[]; rows: { label: string; cells: unknown[] }[] };
+
+function buildEvidenceTables(ev: Record<string, unknown>) {
+  const scalars: [string, string][] = [];
+  const tables: EvTable[] = [];
+  const others: [string, unknown][] = [];
+  const isScalar = (v: unknown) =>
+    typeof v === "number" || typeof v === "string" || typeof v === "boolean";
+
+  for (const [k, v] of Object.entries(ev || {})) {
+    if (v == null || v === "") continue;
+    if (isScalar(v)) { scalars.push([k, String(v)]); continue; }
+    if (typeof v !== "object" || Array.isArray(v)) { others.push([k, v]); continue; }
+
+    const obj = v as Record<string, unknown>;
+    const vals = Object.values(obj);
+    if (vals.every(isScalar)) {
+      tables.push({
+        title: k, headers: Object.keys(obj),
+        rows: [{ label: "—", cells: Object.values(obj) }],
+      });
+      continue;
+    }
+    // 值是对象 → 多行表
+    const subKeys = Object.keys(obj);
+    const cols = [...new Set(subKeys.flatMap((sk) => {
+      const cell = obj[sk];
+      return cell && typeof cell === "object" && !Array.isArray(cell)
+        ? Object.keys(cell as Record<string, unknown>) : [];
+    }))];
+    if (!cols.length) { others.push([k, v]); continue; }
+    tables.push({
+      title: k, headers: cols,
+      rows: subKeys.map((sk) => {
+        const cell = (obj[sk] || {}) as Record<string, unknown>;
+        return { label: sk, cells: cols.map((c) => cell[c]) };
+      }),
+    });
+  }
+  return { scalars, tables, others };
+}
+
+function EvidenceDetail({ ev, colors }: { ev: Record<string, unknown>; colors: ThemeColors }) {
+  const { scalars, tables, others } = buildEvidenceTables(ev);
+  if (!scalars.length && !tables.length && !others.length) return null;
+
+  const fmt = (v: unknown) => {
+    if (v == null || v === "") return "—";
+    if (typeof v === "number") return Number.isInteger(v) ? v.toLocaleString() : v.toFixed(2);
+    return String(v);
+  };
+
+  return (
+    <Card title="证据明细（卡片里存的原始数据）" colors={colors}>
+      {scalars.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 20px", marginBottom: 12 }}>
+          {scalars.map(([k, v]) => (
+            <div key={k} style={{ fontSize: 12 }}>
+              <span style={{ color: colors.muted }}>{k}：</span>
+              <b style={{ color: colors.text }}>{v}</b>
+            </div>
+          ))}
+        </div>
+      )}
+      {tables.map((t) => (
+        <div key={t.title} style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 5 }}>{t.title}</div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+            <thead>
+              <tr style={{ color: colors.muted }}>
+                <th style={{ textAlign: "left", padding: "4px 8px", fontWeight: 500 }}></th>
+                {t.headers.map((h) => (
+                  <th key={h} style={{ textAlign: "right", padding: "4px 8px", fontWeight: 500 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {t.rows.map((r) => (
+                <tr key={r.label} style={{ borderTop: `1px solid ${colors.border}` }}>
+                  <td style={{ padding: "4px 8px", color: colors.muted }}>{r.label}</td>
+                  {r.cells.map((c, i) => (
+                    <td key={i} style={{
+                      padding: "4px 8px", textAlign: "right",
+                      fontVariantNumeric: "tabular-nums",
+                      color: typeof c === "number" && c < 0 ? colors.down : colors.text,
+                    }}>{fmt(c)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+      {others.map(([k, v]) => (
+        <div key={k} style={{ fontSize: 11.5, marginBottom: 6 }}>
+          <span style={{ color: colors.muted }}>{k}：</span>
+          <code style={{ fontSize: 11 }}>{JSON.stringify(v)}</code>
+        </div>
+      ))}
+    </Card>
+  );
+}
+
 export default function ResearchCardDetailPage({ cardId, onBack }: { cardId: number; onBack: () => void }) {
   const { colors } = useTheme();
   const [card, setCard] = useState<ResearchCardItem | null>(null);
@@ -256,10 +372,13 @@ export default function ResearchCardDetailPage({ cardId, onBack }: { cardId: num
           策略卡关联 registry 里同名策略的最近一次真实回测；
           因子卡本来就没有回测，这里正面说清它靠什么验证，而不是留空白。 */}
       {isFactor ? (
+        <>
         <Card title="这张卡怎么验证（没有「回测」）" colors={colors}>
           <div style={{ fontSize: 12.5, lineHeight: 1.85, color: colors.text }}>
-            因子卡验证的是<b>信号的预测力</b>，不是「能不能赚钱」：下面三根柱子是同一信号在
-            240 / 120 / 90 日窗口的平均超额，t 值是「这不是运气」的可信度。
+            因子卡验证的是<b>信号的预测力</b>，不是「能不能赚钱」。
+            不同卡片的证据形式不一样：策略类看三窗口超额（240/120/90 日），
+            基金类看分档统计、留存概率这类截面数据 ——
+            <b>下面「证据明细」里就是这张卡实际存的数据</b>，原样展开。
             要变成可交易策略，得先注册进策略注册表（带上持仓规则、成本、调仓周期），
             那时才会有净值曲线、回撤和成交明细。
           </div>
@@ -276,6 +395,8 @@ export default function ResearchCardDetailPage({ cardId, onBack }: { cardId: num
             </div>
           )}
         </Card>
+        <EvidenceDetail ev={card.evidence as unknown as Record<string, unknown>} colors={colors} />
+        </>
       ) : (
         <Card
           title="最近回测"
