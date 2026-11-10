@@ -224,9 +224,24 @@ def status(check: bool = False) -> dict:
     return info
 
 
+# 关键字段：wr_vid（用户 ID）+ wr_skey（会话密钥）。这两个是 **HttpOnly**，
+# `document.cookie` 读不到 —— 2026-11-10 实测用户按旧提示复制，拿到的 8 条里
+# 正好缺这两个，服务端直接 HTTP 401。必须在保存前挡住，并给出正确的复制路径。
+REQUIRED = ("wr_vid", "wr_skey")
+
+
 def save(text: str) -> dict:
     """保存新 Cookie 并立即验证。"""
     cookies = parse_cookie(text)
+    names = {c["name"] for c in cookies}
+    missing = [k for k in REQUIRED if k not in names]
+    if missing:
+        raise ValueError(
+            f"Cookie 不完整，缺 {'、'.join(missing)}。这两个是 HttpOnly，"
+            f"`document.cookie` 读不到它们。请改用："
+            f"F12 → Network（网络）→ 刷新页面 → 点任意 weread.qq.com 请求 → "
+            f"Headers → Request Headers 里的 Cookie，整串复制。"
+        )
     p = cookie_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     # 原子写：先写临时文件再替换，避免采集中途读到半截 JSON

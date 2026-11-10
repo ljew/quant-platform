@@ -170,6 +170,7 @@ export default function ResearchCardsPage() {
   const [data, setData] = useState<{ total: number; state_count: Record<string, number>; cards: ResearchCardItem[] } | null>(null);
   const [suggestions, setSuggestions] = useState<CardSuggestion[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [showRetired, setShowRetired] = useState(false);
   const [loading, setLoading] = useState(false);
   const [detailId, setDetailId] = useState<number | null>(null);
 
@@ -199,11 +200,17 @@ export default function ResearchCardsPage() {
     );
   }
 
-  const cards = [...(data?.cards ?? [])].sort((a, b) => {
-    const d = STATE_ORDER.indexOf(a.state) - STATE_ORDER.indexOf(b.state);
-    if (d !== 0) return d;
-    return (b.evidence?.exc_10 ?? b.evidence?.ic_mean ?? -99) - (a.evidence?.exc_10 ?? a.evidence?.ic_mean ?? -99);
-  });
+  // 默认隐藏已退役的（2026-11-10 老刘：「策略研究这里面垃圾还比较多」——
+  // 26 张里有 20 张 retired，全铺在页面上，能用的 6 张被淹了）。
+  // 数据不删，退役记录留着可追溯；要看时点漏斗里的「退役」格切换。
+  const retiredCount = data?.state_count?.retired ?? 0;
+  const cards = [...(data?.cards ?? [])]
+    .filter((c) => showRetired || c.state !== "retired")
+    .sort((a, b) => {
+      const d = STATE_ORDER.indexOf(a.state) - STATE_ORDER.indexOf(b.state);
+      if (d !== 0) return d;
+      return (b.evidence?.exc_10 ?? b.evidence?.ic_mean ?? -99) - (a.evidence?.exc_10 ?? a.evidence?.ic_mean ?? -99);
+    });
 
   return (
     <div>
@@ -237,9 +244,23 @@ export default function ResearchCardsPage() {
           );
         })}
       </div>
-      <div style={{ fontSize: 11.5, color: colors.muted, textAlign: "center", marginBottom: 20 }}>
+      <div style={{ fontSize: 11.5, color: colors.muted, textAlign: "center", marginBottom: 8 }}>
         这行数字是系统的「资产负债表」：启用几个 = 有几个策略在动钱 · 升级自动执行 · 降级/退役需你确认
       </div>
+      {retiredCount > 0 && (
+        <div style={{ textAlign: "center", marginBottom: 18 }}>
+          <button
+            onClick={() => setShowRetired((v) => !v)}
+            style={{
+              border: `1px solid ${colors.border}`, background: showRetired ? colors.card : "transparent",
+              color: colors.muted, borderRadius: 999, padding: "3px 14px",
+              fontSize: 11.5, cursor: "pointer",
+            }}
+          >
+            {showRetired ? `▾ 已显示 ${retiredCount} 张退役卡（点击收起）` : `▸ 展开 ${retiredCount} 张已退役（默认隐藏）`}
+          </button>
+        </div>
+      )}
 
       {/* —— 卡片墙 —— */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(330px, 1fr))", gap: 14 }}>

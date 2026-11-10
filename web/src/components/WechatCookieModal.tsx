@@ -78,20 +78,27 @@ export default function WechatCookieModal({
           borderRadius: 8, padding: "10px 14px", marginBottom: 14,
         }}>
           <div><b>①</b> 浏览器打开 <code>weread.qq.com</code>，用微信扫码登录</div>
-          <div><b>②</b> 按 <kbd>F12</kbd> → Console，粘贴下面这行并回车：</div>
-          <div style={{
-            fontFamily: "ui-monospace, monospace", fontSize: 12,
-            background: colors.card, border: `1px solid ${colors.border}`,
-            borderRadius: 6, padding: "6px 10px", margin: "4px 0 6px 16px",
-            userSelect: "all",
-          }}>
-            copy(document.cookie)
-          </div>
-          <div style={{ fontSize: 11.5, color: colors.muted, marginLeft: 16 }}>
-            （Console 可能提示「警告：不要粘贴…」，输入 <code>allow pasting</code> 回车即可）
-          </div>
           <div style={{ marginTop: 6 }}>
-            <b>③</b> 回到这里，在下面按 <kbd>Cmd/Ctrl+V</kbd> 粘贴，点保存
+            <b>②</b> 按 <kbd>F12</kbd> → 切到 <b>Network / 网络</b> 标签
+          </div>
+          <div><b>③</b> 刷新页面（<kbd>Cmd+R</kbd> / <kbd>F5</kbd>）</div>
+          <div><b>④</b> 点列表里任意一条 <code>weread.qq.com</code> 的请求</div>
+          <div>
+            <b>⑤</b> 右侧找 <b>Request Headers</b> 里的 <code>Cookie:</code>，
+            把冒号后面<b>整串</b>复制下来
+          </div>
+          <div style={{ marginTop: 8 }}>
+            <b>⑥</b> 回到这里，在下面按 <kbd>Cmd/Ctrl+V</kbd> 粘贴，点保存
+          </div>
+
+          <div style={{
+            marginTop: 10, padding: "8px 12px", borderRadius: 6,
+            background: "#b9770e14", border: "1px solid #b9770e44",
+            color: "#b9770e", fontSize: 11.5, lineHeight: 1.75,
+          }}>
+            ⚠️ <b>不要</b>用 Console 里的 <code>document.cookie</code> ——
+            关键字段 <code>wr_vid</code> / <code>wr_skey</code> 是 <b>HttpOnly</b>，
+            那一行读不到，复制出来会缺两条，服务端直接返回 401。
           </div>
         </div>
 
