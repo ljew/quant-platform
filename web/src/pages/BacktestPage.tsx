@@ -16,6 +16,10 @@ const snap = (p: ParamMap) =>
 /** 策略回测（React 版：异步任务 + WebSocket 进度 + 分组参数面板 + 历史列表 + 成交标记）。 */
 export default function BacktestPage() {
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
+  // 回测历史沉淀了 100+ 条，大量是已停用/改名的策略（turtle / rsi_reversal /
+  // bollinger / ma_alignment）留下的孤儿记录，把当前能用的挤没了。
+  // 默认只显示注册表里还在的策略，旧记录可展开。
+  const [showAllHistory, setShowAllHistory] = useState(false);
   const [key, setKey] = useState("");
   const [params, setParams] = useState<ParamMap>({});
   const [symbol, setSymbol] = useState("sh600519");
@@ -23,6 +27,18 @@ export default function BacktestPage() {
   const [end, setEnd] = useState("2025-06-30");
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [history, setHistory] = useState<BacktestResult[]>([]);
+  const validKeys = useMemo(() => new Set(strategies.map((x) => x.key)), [strategies]);
+  // 注意 strategy_key 可能为空（老记录），统一成 "" 便于 Set 查询
+  const shownHistory = useMemo(
+    () => (showAllHistory || strategies.length === 0)
+      ? history
+      : history.filter((h) => validKeys.has(h.strategy_key ?? "")),
+    [history, showAllHistory, strategies.length, validKeys]);
+  const orphanCount = useMemo(
+    () => (strategies.length === 0
+      ? 0
+      : history.filter((h) => !validKeys.has(h.strategy_key ?? "")).length),
+    [history, strategies.length, validKeys]);
   const [progress, setProgress] = useState("");
   const [running, setRunning] = useState(false);
   const [lastRun, setLastRun] = useState<string | null>(null);
@@ -375,7 +391,22 @@ export default function BacktestPage() {
           )}
 
           {history.length > 0 && (
-            <Card title={`最近回测（${history.length}）`} colors={colors} pad={0}>
+            <Card
+              title={`最近回测（${shownHistory.length}${orphanCount > 0 && !showAllHistory ? ` / 共 ${history.length}` : ""}）`}
+              colors={colors} pad={0}
+              extra={orphanCount > 0 ? (
+                <button
+                  onClick={() => setShowAllHistory((v) => !v)}
+                  style={{
+                    border: `1px solid ${colors.border}`,
+                    background: showAllHistory ? colors.card : "transparent",
+                    color: colors.muted, borderRadius: 999, padding: "2px 10px",
+                    fontSize: 11, cursor: "pointer",
+                  }}
+                >
+                  {showAllHistory ? `收起 ${orphanCount} 条旧策略记录` : `显示 ${orphanCount} 条旧策略记录`}
+                </button>
+              ) : null}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                 <thead>
                   <tr style={{ color: colors.muted, textAlign: "left" }}>
@@ -384,7 +415,7 @@ export default function BacktestPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {history.map((h) => (
+                  {shownHistory.map((h) => (
                     <tr key={h.id} onClick={() => loadHistory(h.id)}
                       style={{ cursor: "pointer", borderTop: `1px solid ${colors.border}` }}>
                       <td style={{ padding: "9px 14px" }}>#{h.id}</td>
