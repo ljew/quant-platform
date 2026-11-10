@@ -165,14 +165,19 @@ function CardSummary({ card, onOpen }: { card: ResearchCardItem; onOpen: () => v
   );
 }
 
-export default function ResearchCardsPage() {
+export default function ResearchCardsPage({ initialDetailId }: { initialDetailId?: number }) {
   const { colors } = useTheme();
   const [data, setData] = useState<{ total: number; state_count: Record<string, number>; cards: ResearchCardItem[] } | null>(null);
   const [suggestions, setSuggestions] = useState<CardSuggestion[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [showRetired, setShowRetired] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [detailId, setDetailId] = useState<number | null>(null);
+  // 深链：#cards/384 直接进详情（智能体产物「跳回核对」用）。
+  const [detailId, setDetailId] = useState<number | null>(initialDetailId ?? null);
+
+  useEffect(() => {
+    setDetailId(initialDetailId ?? null);
+  }, [initialDetailId]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -195,7 +200,12 @@ export default function ResearchCardsPage() {
     return (
       <ResearchCardDetailPage
         cardId={detailId}
-        onBack={() => { setDetailId(null); load(); }}
+        onBack={() => {
+          setDetailId(null);
+          // 同步把地址栏的 /384 去掉，否则刷新又跳回详情
+          window.history.replaceState(null, "", "#cards");
+          load();
+        }}
       />
     );
   }
