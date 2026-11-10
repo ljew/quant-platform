@@ -1067,3 +1067,128 @@ def fof_industry(code: str):
         ]
         sections.append(d)
     return {"ok": True, "base_code": base, "sections": sections}
+
+
+# ---------------------------------------------------------------- 当日估算截面
+# 与 /penetration/* 的分工：那组接口讲「按报告期的历史事实」（2026-09-30 披露了
+# 什么），这组讲「今天大概长什么样」—— 同样以最新披露为锚点，但按锚点年龄衰减，
+# 并把「数据距今多少天」明明白白摆出来，不伪装成当日实测。
+@router.get("/nowcast/summary")
+def nowcast_summary(as_of: str | None = None):
+    """当日估算截面：截至哪天 / 锚点在哪期 / 已补齐多久 / 可信度多少。"""
+    try:
+        metas = _research(
+            "SELECT as_of_date,n_funds,n_rows,conf_median,stale_median,"
+            "data_end_median,generated_at FROM fund_nowcast_meta "
+            "ORDER BY as_of_date DESC LIMIT 60")
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"当日截面尚未生成：{e}"}
+    if not metas:
+        return {"ok": False, "error": "尚无当日截面，请先跑 build_fund_penetration.py --nowcast"}
+
+    mkeys = ("as_of_date", "n_funds", "n_rows", "conf_median", "stale_median",
+             "data_end_median", "generated_at")
+    versions = [dict(zip(mkeys, m)) for m in metas]
+    cur = next((v for v in versions if v["as_of_date"] == as_of), versions[0])
+    d = cur["as_of_date"]
+    n = max(int(cur["n_funds"] or 1), 1)
+
+    inds = _research(
+        "SELECT industry,SUM(total_w),SUM(disclosed_w),SUM(carried_w),SUM(benchmark_w),"
+        "SUM(active_w),COUNT(*) FROM fund_industry_nowcast WHERE as_of_date=? "
+        "GROUP BY industry ORDER BY SUM(total_w) DESC", (d,))
+    industries = [{
+        "industry": r[0],
+        "avg_w": round(float(r[1] or 0) / n, 2),
+        "avg_disclosed": round(float(r[2] or 0) / n, 2),
+        "avg_carried": round(float(r[3] or 0) / n, 2),
+        "benchmark_w": round(float(r[4] or 0) / n, 2),
+        "active_w": round(float(r[5] or 0) / n, 2),
+        "n_funds": int(r[6] or 0),
+    } for r in inds]
+
+    # 昨日对比：只看权重变化最大的几个行业，用来看「这几天往哪挪」
+    prev = next((v for v in versions[1:] if v["as_of_date"] < d), None)
+    drift = []
+    if prev:
+        pv = _research(
+            "SELECT industry,SUM(total_w) FROM fund_industry_nowcast "
+            "WHERE as_of_date=? GROUP BY industry", (prev["as_of_date"],))
+        pm = {r[0]: float(r[1] or 0) / max(int(prev["n_funds"] or 1), 1) for r in pv}
+        for it in industries:
+            before = pm.get(it["industry"], 0.0)
+            it["chg"] = round(it["avg_w"] - before, 2)
+        drift = sorted(industries, key=lambda x: -abs(x.get("chg", 0)))[:6]
+
+    return {
+        "ok": True,
+        "as_of": d,
+        "anchor": cur["data_end_median"],
+        "n_funds": int(cur["n_funds"] or 0),
+        "n_rows": int(cur["n_rows"] or 0),
+        "confidence": cur["conf_median"],
+        "stale_days": int(cur["stale_median"] or 0),
+        "generated_at": cur["generated_at"],
+        "prev_as_of": prev["as_of_date"] if prev else None,
+        "versions": [{"as_of": v["as_of_date"], "n_funds": v["n_funds"],
+                      "confidence": v["conf_median"], "stale_days": v["stale_median"]}
+                     for v in versions[:14]],
+        "industries": industries,
+        "drift": drift,
+    }
+
+
+@router.get("/nowcast/style")
+def nowcast_style(as_of: str | None = None):
+    """当日风格截面：五因子分位、标签分布、数据新鲜度。"""
+    try:
+        eds = [r[0] for r in _research(
+            "SELECT DISTINCT as_of_date FROM fund_style_nowcast ORDER BY as_of_date DESC LIMIT 60")]
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"当日风格尚未生成：{e}"}
+    if not eds:
+        return {"ok": False, "error": "尚无当日风格截面，请先跑 build_fund_style.py --nowcast"}
+    d = as_of if as_of in eds else eds[0]
+
+    rows = _research(
+        "SELECT z_size,z_value,z_momentum,z_volatility,z_quality,style_tag,"
+        "w_cover,n_holdings,stale_days,confidence,nav_wan,data_end_date "
+        "FROM fund_style_nowcast WHERE as_of_date=?", (d,))
+    if not rows:
+        return {"ok": False, "error": f"{d} 无风格记录"}
+
+    tags: dict[str, int] = {}
+    cols = {f: [] for f in STYLE_FACTORS}
+    covers, stales, confs = [], [], []
+    for r in rows:
+        tags[r[5] or "未定"] = tags.get(r[5] or "未定", 0) + 1
+        if r[6] is not None:
+            covers.append(float(r[6]))
+        if r[8] is not None:
+            stales.append(int(r[8]))
+        if r[9] is not None:
+            confs.append(float(r[9]))
+        for i, f in enumerate(STYLE_FACTORS):
+            if r[i] is not None:
+                cols[f].append(float(r[i]))
+
+    factors = []
+    for f in STYLE_FACTORS:
+        v = sorted(cols[f])
+        factors.append({
+            "factor": f, "label": STYLE_CN[f], "n": len(v),
+            "p10": _pct(v, 10), "median": _pct(v, 50), "p90": _pct(v, 90),
+        })
+
+    return {
+        "ok": True, "as_of": d,
+        "data_end": rows[0][11],
+        "available": eds[:14],
+        "n_funds": len(rows),
+        "tags": sorted(({"tag": k, "n": v} for k, v in tags.items()),
+                       key=lambda x: -x["n"]),
+        "factors": factors,
+        "coverage": {"median": _median(covers)},
+        "stale_days": _median([float(x) for x in stales]),
+        "confidence": _median(confs),
+    }

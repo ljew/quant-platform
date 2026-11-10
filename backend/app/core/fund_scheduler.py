@@ -149,15 +149,21 @@ STAGES: list[dict] = [
         "key": "penetration", "label": "持仓穿透", "kind": "derived",
         "script": "build_fund_penetration.py", "args": [],
         "hour": 22, "minute": 0, "timeout": 5400,
-        # 显式日更：结构可信度随锚点年龄逐日衰减（structure_decay），
-        # 所以即使披露数据没变，隔天重算的行业结构也应该略有不同。
-        # 只在「上游变了」才跑会让估计停在披露日、越放越旧。
-        # every_day：周末/节假日也照跑 —— 补齐与行业穿透是「估值」，不是行情，
-        # 用户要的是每天打开页面都能看到最新的持仓补齐和行业暴露。
-        "on": "daily",
-        "every_day": True,
+        # 只在新披露落地后重算历史期次。原来这里挂了 every_day，是因为
+        # 误以为「隔天重算结果会不同」—— 实际 gap 是「锚点→本期」，是个常数，
+        # 每天重算 141 秒得到的数一模一样。真正的每日更新在下面的 nowcast。
         "depends": ["holdings", "csrc"],
         "desc": "双轨补齐 + 行业穿透 + 监管仓位约束 → fund_hold_coverage / fund_industry_exposure",
+    },
+    {
+        "key": "nowcast", "label": "当日持仓截面", "kind": "derived",
+        "script": "build_fund_penetration.py", "args": ["--nowcast"],
+        "hour": 22, "minute": 10, "timeout": 1800,
+        "depends": ["holdings", "csrc"],
+        # 每天都要出：as_of = 当天，gap = 锚点→今天，锚点越旧推算越不可信。
+        # 只算每只基金最新一期，实测 17 秒（全量历史期次要 141 秒）。
+        "every_day": True,
+        "desc": "以最新披露为锚点按衰减推算「截至今天」的行业结构 → fund_industry_nowcast",
     },
     {
         "key": "style", "label": "风格穿透", "kind": "derived",
@@ -165,6 +171,15 @@ STAGES: list[dict] = [
         "hour": 22, "minute": 25, "timeout": 2400,
         "depends": ["penetration"],
         "desc": "持仓 → 个股 → 五因子风格坐标（size/value/momentum/volatility/quality）",
+    },
+    {
+        "key": "style_nowcast", "label": "当日风格截面", "kind": "derived",
+        "script": "build_fund_style.py", "args": ["--nowcast"],
+        "hour": 22, "minute": 35, "timeout": 2400,
+        "depends": ["holdings"],
+        # 标准化基准固定在最新标准报告期，否则每天各标准一次、z 的日间差全是基准位移。
+        "every_day": True,
+        "desc": "最新持仓的五因子加权，截面日=今天 → fund_style_nowcast",
     },
     {
         "key": "regression", "label": "净值回归校验", "kind": "derived",
@@ -578,11 +593,13 @@ def _parse_rows(out: str) -> int | None:
     """从脚本输出里捞「本次 N 行 / 明细 N 行 / 落库 N 行」这类自报数。"""
     import re
     pats = (
+        # 顺序即优先级：先认「落库/新增」这类产出数，再退到「明细」这种输入数。
+        # 否则穿透会报出 641 万（那是读进来的明细行），而真正落库的是 4.4 万。
+        r"落库\s*(\d[\d,]*)\s*行",
+        r"新增\s*(\d[\d,]*)\s*行",
         r"明细\s*(\d[\d,]*)\s*行",
         r"本次\s*\d+\s*只\s*/\s*(\d[\d,]*)\s*行",
-        r"落库\s*(\d[\d,]*)\s*行",
         (r"(\d[\d,]*)\s*行行业明细"),
-        r"新增\s*(\d[\d,]*)\s*行",          # 净值按日拉取/增量入库的自报数
     )
     for p in pats:
         m = re.findall(p, out or "")

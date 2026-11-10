@@ -182,10 +182,24 @@ def test_retry_gives_up_after_max_attempts(db, monkeypatch):
 
 
 # ------------------------------------------------------------------ 节律 / 依赖
-def test_penetration_runs_every_day_including_weekend(monkeypatch):
+def test_nowcast_runs_every_day_including_weekend(monkeypatch):
+    """当日截面是「估值」不是「行情」，周末节假日也要出。
+
+    这才是用户要的「每天都能看到最新持仓补齐」；历史期次穿透本身不随时间变
+    （gap 是锚点→本期的常数），每天重算 141 秒得到的是同一个数。
+    """
     monkeypatch.setattr(fs, "_is_trading_day", lambda d=None: False)
+    for key in ("nowcast", "style_nowcast"):
+        st = fs.STAGE_MAP[key]
+        assert st.get("every_day") is True, key
+        assert fs._should_run_today(st, {}) is True, key
+
+
+def test_penetration_not_daily_anymore():
+    """历史穿透改回「上游变了才跑」，每日更新交给 nowcast。"""
     st = fs.STAGE_MAP["penetration"]
-    assert fs._should_run_today(st, {}) is True
+    assert not st.get("every_day")
+    assert st.get("on") != "daily"
 
 
 def test_nav_still_skips_non_trading_day(monkeypatch):

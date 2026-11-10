@@ -48,7 +48,7 @@ import math
 import sqlite3
 import time
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -239,7 +239,8 @@ def load_holdings(min_end: str, sample: int = 0) -> pd.DataFrame:
 
 # ---------------------------------------------------------------- 主计算
 def build(df: pd.DataFrame, sf: pd.DataFrame,
-          scale: dict[tuple[str, str], float] | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+          scale: dict[tuple[str, str], float] | None = None,
+          base_period: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     # 个股因子标准化（横截面，全市场口径）
     z = sf.copy()
     for f in FACTORS:
@@ -291,7 +292,10 @@ def build(df: pd.DataFrame, sf: pd.DataFrame,
     # 关键 —— 若每期各自 z 一次，两期基准不同，跨期「漂移」里混入的是基准位移，
     # 不是风格变化。故统一用最新期（样本最全）的均值/标准差做基准，所有期次共用，
     # 这样 z 的差值才真正可比。
-    latest = res.end_date.max()
+    #
+    # base_period：当日截面必须指定，否则每天用自己的横截面标准化，
+    # 今天和昨天的 z 基准不同，日间变化里混进的全是基准位移。
+    latest = base_period or res.end_date.max()
     base: dict[str, tuple[float, float]] = {}
     for f in FACTORS:
         s = res.loc[res.end_date == latest, f].dropna()
@@ -301,7 +305,7 @@ def build(df: pd.DataFrame, sf: pd.DataFrame,
         res[f"z_{f}"] = (res[f] - m) / sd
         res[f"z_d_{f}"] = (res[f"d_{f}"] - m) / sd
     res.attrs["base"] = base
-    log("  标准化基准（最新期 " + str(latest) + "）：" +
+    log("  标准化基准（" + str(latest) + "）：" +
         "  ".join(f"{f} μ={base[f][0]:+.2f} σ={base[f][1]:.2f}" for f in FACTORS))
 
     # 风格标签（四分象限）
@@ -392,10 +396,93 @@ def persist(res: pd.DataFrame, sf: pd.DataFrame, top_n: int = 3) -> dict:
     return prog
 
 
+# 结构衰减曲线，与 build_fund_penetration.py 同源（由 826 只基金 / 13,545 对
+# 历史「完整披露期 → 之后各期前十大」的行业结构秩相关标定）。
+_DECAY_POINTS = ((0, 1.0), (90, 0.50), (180, 0.47), (270, 0.31), (365, 0.235))
+
+
+def structure_decay(gap: int) -> float:
+    g = max(0, int(gap))
+    last_g, last_v = _DECAY_POINTS[-1]
+    if g >= last_g:
+        return last_v * (0.5 ** ((g - last_g) / 180.0))
+    for (g0, v0), (g1, v1) in zip(_DECAY_POINTS, _DECAY_POINTS[1:]):
+        if g0 <= g <= g1:
+            f = (g - g0) / (g1 - g0) if g1 > g0 else 0.0
+            return v0 + (v1 - v0) * f
+    return 1.0
+
+
+def persist_nowcast(res: pd.DataFrame, as_of: str, keep_days: int = 7) -> dict:
+    """把「截至 as_of」的风格截面写进 fund_style_nowcast。
+
+    与 summary 分表存放：summary 是「按报告期的历史事实」，是漂移分析的地基；
+    nowcast 是推算值，混进去会让「这条到底是披露的还是推的」再也分不清。
+    """
+    from datetime import datetime as _dt
+    sub = res[res.end_date == res.groupby("ts_code")["end_date"].transform("max")].copy()
+    if not len(sub):
+        log("当日风格截面为空，跳过落库")
+        return {}
+    sub["stale_days"] = [
+        abs((_dt.strptime(as_of, "%Y%m%d") - _dt.strptime(e, "%Y%m%d")).days)
+        for e in sub.end_date
+    ]
+    sub["confidence"] = [round(structure_decay(s), 4) for s in sub.stale_days]
+
+    zcols = [f"z_{f}" for f in FACTORS] + [f"z_d_{f}" for f in FACTORS]
+    con = sqlite3.connect(RES_DB, timeout=90)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("""CREATE TABLE IF NOT EXISTS fund_style_nowcast (
+        as_of_date TEXT NOT NULL, base_code TEXT NOT NULL, ts_code TEXT,
+        z_size REAL, z_value REAL, z_momentum REAL, z_volatility REAL, z_quality REAL,
+        z_d_size REAL, z_d_value REAL, z_d_momentum REAL, z_d_volatility REAL, z_d_quality REAL,
+        style_tag TEXT, w_cover REAL, w_disc REAL, n_holdings INTEGER,
+        nav_wan REAL, data_end_date TEXT, stale_days INTEGER, confidence REAL,
+        PRIMARY KEY (as_of_date, base_code))""")
+    con.execute("CREATE INDEX IF NOT EXISTS ix_fsn_base ON fund_style_nowcast(base_code,as_of_date)")
+    con.execute("DELETE FROM fund_style_nowcast WHERE as_of_date=?", (as_of,))
+    cols = ["base_code", "ts_code"] + zcols + [
+        "style_tag", "w_cover", "w_disc", "n_holdings", "nav_wan",
+        "end_date", "stale_days", "confidence"]
+    # res 里叫 end_date（数据期次），表里叫 data_end_date 以示与 as_of_date 区分
+    sql_cols = ["data_end_date" if c == "end_date" else c for c in cols]
+    rows = []
+    for r in sub[cols].itertuples(index=False, name=None):
+        rows.append((as_of,) + tuple(
+            round(float(v), 4) if isinstance(v, float) else v for v in r))
+    con.executemany(
+        f"INSERT OR REPLACE INTO fund_style_nowcast (as_of_date,{','.join(sql_cols)}) "
+        f"VALUES ({','.join('?' * (len(cols) + 1))})", rows)
+
+    cut = (_dt.strptime(as_of, "%Y%m%d") - timedelta(days=keep_days)).strftime("%Y%m%d")
+    con.execute("DELETE FROM fund_style_nowcast WHERE as_of_date < ?", (cut,))
+    con.commit()
+    con.close()
+
+    meta = {
+        "as_of_date": as_of,
+        "n_funds": int(len(sub)),
+        "stale_median": int(sub.stale_days.median()),
+        "conf_median": round(float(sub.confidence.median()), 4),
+        "tag_top": sub.style_tag.value_counts().head(3).to_dict(),
+    }
+    log(f"当日风格落库 {meta['n_funds']:,} 行：{as_of} / "
+        f"数据滞后中位 {meta['stale_median']} 天 / 置信度中位 {meta['conf_median']} / "
+        f"标签 {meta['tag_top']}")
+    return meta
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--periods", type=int, default=6, help="回溯报告期数（默认 6 期）")
     ap.add_argument("--sample", type=int, default=0, help="只扫前 N 个持仓文件")
+    ap.add_argument("--nowcast", action="store_true",
+                    help="产出「截至 as_of」的当日风格截面，写 fund_style_nowcast，"
+                         "不覆盖 fund_style_summary")
+    ap.add_argument("--as-of", dest="as_of", default="",
+                    help="截面日 YYYYMMDD，默认今天。仅在 --nowcast 下生效")
+    ap.add_argument("--keep-days", type=int, default=7, help="当日截面保留天数（默认 7）")
     args = ap.parse_args()
 
     dev = sqlite3.connect(f"file:{DEV_DB}?mode=ro", uri=True, timeout=60)
@@ -421,12 +508,24 @@ def main() -> None:
     before = df.ts_code.nunique()
     df = df[df.ts_code.isin(eq)]
     log(f"  类型过滤：{before:,} → {df.ts_code.nunique():,} 只（剔除债券/货币/REITs）")
+
+    if args.nowcast:
+        # 标准化基准固定在最新标准报告期，而不是「今天这批基金自己」：
+        # 每天各标准一次的话，z 的基准天天变，日间差异里混的是基准位移。
+        as_of = args.as_of or datetime.now().strftime("%Y%m%d")
+        out, _ = build(df, sf, scale, base_period=eds[0])
+        persist_nowcast(out, as_of, keep_days=args.keep_days)
+        return
+
     out, _ = build(df, sf, scale)
     prog = persist(out, sf)
 
     log("=" * 62)
     log(f"完成：{prog['n_funds']:,} 只基金 / {prog['n_sections']:,} 个截面 / "
         f"股票池 {prog['stock_universe']:,} 只")
+    # 「落库 N 行」是调度器 _parse_rows 认的措辞，别改成「明细」——
+    # 那会把它读成输入明细的 273 万行。
+    log(f"落库 {prog['n_sections']:,} 行风格截面")
     latest = out[out.end_date == out.end_date.max()]
     log(f"最新期 {latest.end_date.iloc[0]}：{len(latest):,} 只")
     for f in FACTORS:

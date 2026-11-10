@@ -209,6 +209,22 @@ interface GapInfo {
   items: { ts_code: string; name: string }[]; note?: string;
 }
 
+/** 当日估算截面：as_of=今天，锚点=最新披露期，按锚点年龄衰减推算 */
+interface NowcastInd {
+  industry: string; avg_w: number; avg_disclosed: number; avg_carried: number;
+  benchmark_w: number; active_w: number; n_funds: number; chg?: number;
+}
+interface Nowcast {
+  ok: boolean; error?: string;
+  as_of: string; anchor: string;
+  n_funds: number; n_rows: number;
+  confidence: number; stale_days: number;
+  generated_at: string; prev_as_of: string | null;
+  versions: { as_of: string; n_funds: number; confidence: number; stale_days: number }[];
+  industries: NowcastInd[];
+  drift: NowcastInd[];
+}
+
 export default function FundPenetrationPage() {
   const { colors, mode } = useTheme();
   const [ov, setOv] = useState<Overview | null>(null);
@@ -236,6 +252,8 @@ export default function FundPenetrationPage() {
   const [indErr, setIndErr] = useState("");
   // 最新期持仓缺口（源头未披露的那批，需扫全量净值表，异步加载不阻塞首屏）
   const [gaps, setGaps] = useState<GapInfo | null>(null);
+  // 当日估算截面：历史表按报告期存（最新只到 9-30），这一块是「截至今天」的推算
+  const [nc, setNc] = useState<Nowcast | null>(null);
 
   useEffect(() => {
     setBusy(true);
@@ -247,6 +265,9 @@ export default function FundPenetrationPage() {
     get<GapInfo>("/fund/penetration/gaps")
       .then((d) => { if (d.ok) setGaps(d); })
       .catch(() => { /* 缺口统计缺失不阻塞主页面 */ });
+    get<Nowcast>("/fund/nowcast/summary")
+      .then((d) => { if (d.ok) setNc(d); })
+      .catch(() => { /* 当日截面缺失不阻塞主页面 */ });
   }, []);
 
   useEffect(() => {
@@ -537,13 +558,87 @@ export default function FundPenetrationPage() {
         </>
       )}
 
+      {nc && (
+        <Card title={`当日估算截面 · 截至 ${fmtDate(nc.as_of)}`} colors={colors}
+          extra={<span style={{ fontSize: 11, color: colors.muted }}>
+            锚点 {fmtDate(nc.anchor)} · 已补齐 {nc.stale_days} 天 · 每日 22:10 重算
+          </span>}>
+          <div style={{ fontSize: 12, color: colors.muted, lineHeight: 1.75, marginBottom: 10 }}>
+            持仓明细只在法定报告期披露（最新 {fmtDate(nc.anchor)}）。这一块把它按
+            <b> 结构衰减</b> 推算到今天：锚点越旧、可信度越低，权重里同时给出披露部分与推算部分，
+            不把估算值伪装成实测值。覆盖 <b>{nc.n_funds.toLocaleString()}</b> 只基金，
+            置信度中位 <b>{nc.confidence}</b>。
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 12 }}>
+            <KpiCard label="截面日期" value={fmtDate(nc.as_of)} sub={`锚点 ${fmtDate(nc.anchor)}`} colors={colors} />
+            <KpiCard label="已补齐" value={`${nc.stale_days} 天`} sub={`置信度 ${nc.confidence}`} colors={colors} />
+            <KpiCard label="覆盖基金" value={nc.n_funds.toLocaleString()} sub={`${nc.n_rows.toLocaleString()} 条行业记录`} colors={colors} />
+            <KpiCard label="上次重算" value={nc.prev_as_of ? fmtDate(nc.prev_as_of) : "首次"} sub={nc.generated_at?.slice(11, 16) || ""} colors={colors} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>全池行业权重（%）</div>
+              {nc.industries.slice(0, 10).map((it) => {
+                const maxW = Math.max(...nc.industries.slice(0, 10).map((x) => x.avg_w), 1);
+                return (
+                  <div key={it.industry} style={{
+                    display: "grid", gridTemplateColumns: "72px 1fr 52px 54px",
+                    alignItems: "center", gap: 8, marginBottom: 4 }}>
+                    <span style={{ fontSize: 12, color: colors.text }}>{it.industry}</span>
+                    <div style={{ height: 12, background: colors.border, borderRadius: 3, overflow: "hidden" }}>
+                      <div style={{
+                        width: `${Math.min(100, (it.avg_w / maxW) * 100)}%`, height: "100%",
+                        background: colors.accent, borderRadius: 3,
+                      }} />
+                    </div>
+                    <span style={{ fontSize: 11.5, textAlign: "right" }}>{it.avg_w.toFixed(2)}</span>
+                    <span style={{
+                      fontSize: 11.5, textAlign: "right",
+                      // A 股习惯：超配（正）红、低配（负）绿
+                      color: it.active_w >= 0 ? colors.up : colors.down,
+                    }}>{it.active_w >= 0 ? "+" : ""}{it.active_w.toFixed(2)}</span>
+                  </div>
+                );
+              })}
+              <div style={{ fontSize: 10.5, color: colors.muted, marginTop: 4 }}>
+                右列 = 相对全池基准的超配（红）／低配（绿），单位 pp
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+                日变化 Top 6 {nc.prev_as_of ? `（对比 ${fmtDate(nc.prev_as_of)}）` : "（暂无对比版本）"}
+              </div>
+              {nc.drift.length === 0 && (
+                <div style={{ fontSize: 12, color: colors.muted }}>
+                  明天起这里会出现行业权重的日间漂移。当天只留一版，第二天就能比。
+                </div>
+              )}
+              {nc.drift.map((it) => (
+                <div key={it.industry} style={{
+                  display: "grid", gridTemplateColumns: "72px 1fr 60px",
+                  alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <span style={{ fontSize: 12 }}>{it.industry}</span>
+                  <span style={{ fontSize: 11.5, color: colors.muted }}>
+                    {it.avg_w.toFixed(2)}% <span style={{ opacity: 0.6 }}>({it.n_funds} 只)</span>
+                  </span>
+                  <span style={{
+                    fontSize: 12, textAlign: "right", fontWeight: 600,
+                    color: (it.chg ?? 0) >= 0 ? colors.up : colors.down,
+                  }}>{(it.chg ?? 0) >= 0 ? "+" : ""}{(it.chg ?? 0).toFixed(2)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Card>
+      )}
+
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 16 }}>
         <KpiCard label="覆盖基金" value={ov.scope.n_funds.toLocaleString()}
           sub={gaps
             ? `最新期 ${gaps.with_holdings} 只有披露 / ${gaps.active_funds_45d} 只活跃，缺 ${gaps.missing} 只`
             : ov.scope.fund_pool} colors={colors} />
-        <KpiCard label="持仓截面" value={ov.scope.n_sections.toLocaleString()}
-          sub={`${fmtDate(ov.scope.date_range[0])} ~ ${fmtDate(ov.scope.date_range[1])}`} colors={colors} />
+        <KpiCard label="历史截面数" value={ov.scope.n_sections.toLocaleString()}
+          sub={`按披露期存 · ${fmtDate(ov.scope.date_range[0])} ~ ${fmtDate(ov.scope.date_range[1])}`} colors={colors} />
         <KpiCard label="A 股行业映射命中" value={`${hitRate}%`} sub={`${mapped.toLocaleString()} / ${totalMap.toLocaleString()} 股票-期`} colors={colors} tone="accent" />
         <KpiCard label="补齐明细行" value={ov.detail_rows.toLocaleString()}
           sub={ov.scope.is_sample ? "⚠ 当前为小样本，全量补齐进行中" : "全量口径"} colors={colors} />

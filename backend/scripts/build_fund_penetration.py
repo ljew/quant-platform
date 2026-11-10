@@ -68,7 +68,7 @@ import os
 import sqlite3
 import time
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -86,6 +86,7 @@ OLD_CSV = Path("/Users/happyljew/WorkBuddy/2026-11-07-11-27-13/fm_analysis/fund_
 
 COMPLETE_COVER = 90.0     # cover>=90% 视为完整截面（半年报/年报）
 W_MIN = 0.01              # 行业暴露低于 0.01pp 不入库
+STALE_MAX = 365           # 当日截面：最新披露距今超过一年视为停更/清盘，剔除
 
 # Tushare 细分行业 → 申万 2021 一级（仅用于申万成分查不到时的兜底）
 SW_MAP: dict[str, str] = {}
@@ -321,7 +322,14 @@ def waterfill(weights: list[float], quota: float, cap: float) -> tuple[list[floa
 
 
 # ---------------------------------------------------------------- 主计算
-def build(df: pd.DataFrame, lookup: IndustryLookup) -> dict:
+def build(df: pd.DataFrame, lookup: IndustryLookup,
+          as_of: str | None = None, latest_only: bool = False) -> dict:
+    """as_of：截面日（YYYYMMDD）。给出时按「锚点 → as_of」算衰减，产出当日估算截面；
+    缺省则沿用原行为（锚点 → 本期 end_date），用于历史期次分析。
+
+    latest_only：每只基金只算最新一期。当日截面要的是「今天的样子」，
+    历史期次在这里没有意义，还会白算 90% 的算力。
+    """
     # 监管披露的真实 A 股仓位（优先读独立库，表为空时回退 CSV 快照）
     reg_equity: dict[tuple[str, str], float] = {}
     try:
@@ -387,12 +395,34 @@ def build(df: pd.DataFrame, lookup: IndustryLookup) -> dict:
     grp_idx = df.groupby(["ts_code", "end_date"], sort=False).indices
 
     # 每只基金的「完整截面」时间轴（升序）
+    # 用 cov_all 而不是过滤后的 cov：锚点查找需要全部历史完整期，
+    # 即使本次只算最新一期。
+    cov_all = cov
     full_axis: dict[str, list[tuple[str, float, str]]] = defaultdict(list)
-    for r in cov[cov.is_complete].itertuples(index=False):
+    for r in cov_all[cov_all.is_complete].itertuples(index=False):
         full_axis[r.ts_code].append((r.end_date, r.disclosed_cover, r.ann_date))
     for k in full_axis:
         full_axis[k].sort()
     axis_dates = {k: [x[0] for x in v] for k, v in full_axis.items()}
+
+    if latest_only:
+        # 只保留每只基金最新一期。df 同步裁掉其它期次，
+        # 否则 grp_idx 里留着几万个用不上的切片。
+        cov = cov.loc[cov.groupby("ts_code")["end_date"].idxmax()].reset_index(drop=True)
+        if as_of:
+            # 一年没披露过新持仓的基金（清盘/停更）不能出现在「今天」的截面里：
+            # 实测 000610.OF 最新持仓是 2016 年的，结构距今 3,600 天，
+            # 留着只会用十年前的地产仓位占位、把整体可信度拉下来。
+            fresh = [gap_days(d, as_of) <= STALE_MAX for d in cov.end_date]
+            dropped = len(fresh) - sum(fresh)
+            cov = cov[fresh].reset_index(drop=True)
+            if dropped:
+                log(f"剔除停更基金 {dropped} 只（最新披露距今 > {STALE_MAX} 天）")
+        keep = set(zip(cov.ts_code, cov.end_date))
+        mask = [(t, e) in keep for t, e in zip(df.ts_code, df.end_date)]
+        df = df[mask].reset_index(drop=True)
+        grp_idx = df.groupby(["ts_code", "end_date"], sort=False).indices
+        log(f"当日截面模式：只算 {len(cov):,} 只基金的最新一期，截面日 {as_of or '同本期'}")
 
     log("双轨补齐 + 行业穿透 ...")
     BY_FUND.mkdir(parents=True, exist_ok=True)
@@ -456,8 +486,12 @@ def build(df: pd.DataFrame, lookup: IndustryLookup) -> dict:
             pos = bisect.bisect_left(dates, r.end_date) - 1   # 严格取过去，避免前视
             if pos >= 0:
                 anchor_date, anchor_cover, anchor_ann = full_axis[r.ts_code][pos]
-                gap = gap_days(anchor_date, r.end_date)
-                lookahead = int(bool(anchor_ann and anchor_ann > r.end_date))
+                # as_of 给出时按「锚点 → 截面日」算间隔：这是当日估算的核心 ——
+                # 9-30 的前十大不会变，但拖到 11 月，锚点 6-30 的结构可信度必须下降。
+                # 按 end_date 算的话 gap 是个常数，每天重算出来的数一模一样。
+                ref = as_of or r.end_date
+                gap = gap_days(anchor_date, ref)
+                lookahead = int(bool(anchor_ann and anchor_ann > ref))
                 aidx = grp_idx.get((r.ts_code, anchor_date))
                 if aidx is not None:
                     anch = df.iloc[aidx]
@@ -576,11 +610,19 @@ def build(df: pd.DataFrame, lookup: IndustryLookup) -> dict:
             round(hhi, 6), round(top3, 2), round(float(anchor_cover or 0), 2),
             equity_source, round(float(reg_eq), 2), basis,
         ))
+        # 当日截面的置信度：
+        #   需补齐的（有 carried）→ 取本次 carried 的最小置信度；
+        #   完整披露的（无 carried）→ 按「真实数据距今多久」衰减，
+        #   否则一份半年前的完整持仓会被当成今天的事实。
+        nc_stale = gap if gap >= 0 else gap_days(r.end_date, as_of or r.end_date)
+        nc_conf = (round(min(conf_list), 4) if (conf_list := [c for _, _, c in carried])
+                   else round(structure_decay(nc_stale), 4))
         for ind in set(dw) | set(cw):
             d, c = dw[ind], cw.get(ind, 0.0)
             if d + c >= W_MIN:
                 industry_rows.append((r.base_code, r.ts_code, r.end_date, ind,
-                                      round(d, 4), round(c, 4)))
+                                      round(d, 4), round(c, 4),
+                                      nc_conf, nc_stale))
         if i % 20000 == 0:
             log(f"  截面 {i:,}/{len(cov):,}  用时 {time.time()-started:.0f}s")
 
@@ -590,7 +632,8 @@ def build(df: pd.DataFrame, lookup: IndustryLookup) -> dict:
     # 基准：只用 disclosed 归一化后的当期全池行业均值
     log("计算全池基准与超配 ...")
     exp = pd.DataFrame(industry_rows, columns=[
-        "base_code", "ts_code", "end_date", "industry", "disclosed_w", "carried_w"])
+        "base_code", "ts_code", "end_date", "industry", "disclosed_w", "carried_w",
+        "confidence", "stale_days"])
     exp["total_w"] = exp["disclosed_w"] + exp["carried_w"]
     # 归一化分子 / 分母：disclosed 部分按该基金当期 cover 放大到 100%
     cm = cov.set_index(["ts_code", "end_date"])["disclosed_cover"].to_dict()
@@ -618,6 +661,7 @@ def build(df: pd.DataFrame, lookup: IndustryLookup) -> dict:
         "proxy_w": round(proxy_w, 2),
         "carried_w": round(carried_w, 2),
         "industry_stats": dict(lookup.stats),
+        "as_of": as_of or "",
     }
 
 
@@ -639,6 +683,83 @@ CREATE TABLE IF NOT EXISTS fund_industry_exposure (
     industry TEXT NOT NULL, disclosed_w REAL, carried_w REAL, total_w REAL,
     benchmark_w REAL, active_w REAL,
     PRIMARY KEY (ts_code, end_date, industry))"""
+
+DDL_NOWCAST = """
+CREATE TABLE IF NOT EXISTS fund_industry_nowcast (
+    as_of_date TEXT NOT NULL, base_code TEXT NOT NULL, ts_code TEXT NOT NULL,
+    industry TEXT NOT NULL, disclosed_w REAL, carried_w REAL, total_w REAL,
+    benchmark_w REAL, active_w REAL,
+    data_end_date TEXT, stale_days INTEGER, confidence REAL,
+    PRIMARY KEY (as_of_date, ts_code, industry))"""
+DDL_NOWCAST_META = """
+CREATE TABLE IF NOT EXISTS fund_nowcast_meta (
+    as_of_date TEXT PRIMARY KEY, n_funds INTEGER, n_rows INTEGER,
+    conf_median REAL, stale_median INTEGER, data_end_median TEXT,
+    generated_at TEXT)"""
+
+
+def persist_nowcast(res: dict, keep_days: int = 7) -> dict:
+    """写当日估算截面，只留最近 keep_days 天。
+
+    为什么单开一张表而不复用 fund_industry_exposure：后者是「按报告期的历史
+    事实」，是回归校验与行业换手分析的地基；把估算值混进去会毁掉可追溯性，
+    以后没人分得清哪个数是披露的、哪个是推出来的。
+    """
+    as_of = res.get("as_of") or ""
+    if not as_of:
+        raise SystemExit("nowcast 模式必须给 as_of")
+    exp = res["exp"]
+    exp = exp[exp["total_w"] > 0]
+    if not len(exp):
+        log("当日截面为空，跳过落库")
+        return {}
+
+    con = sqlite3.connect(DB, timeout=60)
+    con.execute("PRAGMA busy_timeout=30000")
+    con.execute(DDL_NOWCAST)
+    con.execute(DDL_NOWCAST_META)
+    con.execute("CREATE INDEX IF NOT EXISTS ix_fin_base "
+                "ON fund_industry_nowcast(base_code,as_of_date)")
+    con.execute("CREATE INDEX IF NOT EXISTS ix_fin_ind "
+                "ON fund_industry_nowcast(industry,as_of_date)")
+    con.execute("DELETE FROM fund_industry_nowcast WHERE as_of_date=?", (as_of,))
+    con.executemany(
+        "INSERT OR REPLACE INTO fund_industry_nowcast (as_of_date,base_code,ts_code,"
+        "industry,disclosed_w,carried_w,total_w,benchmark_w,active_w,"
+        "data_end_date,stale_days,confidence) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        [(as_of,) + tuple(x) for x in exp[
+            ["base_code", "ts_code", "industry", "disclosed_w", "carried_w", "total_w",
+             "benchmark_w", "active_w", "end_date", "stale_days", "confidence"]
+        ].itertuples(index=False, name=None)],
+    )
+
+    # 一天约 28 万行，全留一年就是 1 亿行。留 7 天足够看日变化与周对比。
+    cut = (datetime.strptime(as_of, "%Y%m%d") - timedelta(days=keep_days)).strftime("%Y%m%d")
+    con.execute("DELETE FROM fund_industry_nowcast WHERE as_of_date < ?", (cut,))
+    con.execute("DELETE FROM fund_nowcast_meta WHERE as_of_date < ?", (cut,))
+
+    per_fund = exp.groupby("ts_code")["confidence"].max()
+    per_stale = exp.groupby("ts_code")["stale_days"].max()
+    meta = {
+        "as_of_date": as_of,
+        "n_funds": int(exp.ts_code.nunique()),
+        "n_rows": int(len(exp)),
+        "conf_median": round(float(per_fund.median()), 4),
+        "stale_median": int(per_stale.median()),
+        "data_end_median": exp.groupby("ts_code")["end_date"].max().mode().iloc[0]
+        if len(exp) else "",
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    con.execute("INSERT OR REPLACE INTO fund_nowcast_meta VALUES (?,?,?,?,?,?,?)",
+                (meta["as_of_date"], meta["n_funds"], meta["n_rows"],
+                 meta["conf_median"], meta["stale_median"],
+                 meta["data_end_median"], meta["generated_at"]))
+    con.commit()
+    con.close()
+    log(f"当日截面落库 {meta['n_rows']:,} 行：{meta['as_of_date']} / "
+        f"{meta['n_funds']:,} 只 / 置信度中位 {meta['conf_median']} / "
+        f"数据滞后中位 {meta['stale_median']} 天")
+    return meta
 
 
 def persist(res: dict, sample: int, old_diag: dict) -> dict:
@@ -866,6 +987,13 @@ def main() -> None:
                     help="指定明细 CSV，可多次传；缺省读 holdings_raw.csv + 所有增量批次")
     ap.add_argument("--db", type=str, default=None,
                     help="目标库路径，默认 data/fund_research.db。演练时指向临时库，避免污染生产数据")
+    ap.add_argument("--nowcast", action="store_true",
+                    help="产出「截至 as_of」的当日估算截面，写 fund_industry_nowcast，"
+                         "不覆盖 fund_industry_exposure 等历史表")
+    ap.add_argument("--as-of", dest="as_of", default="",
+                    help="截面日 YYYYMMDD，默认今天。仅在 --nowcast 下生效")
+    ap.add_argument("--keep-days", type=int, default=7,
+                    help="当日截面保留天数（默认 7，只影响 nowcast 表）")
     args = ap.parse_args()
     if args.db:
         # 演练用：只改写入目标，读取的监管锚等仍来自研究库
@@ -884,6 +1012,21 @@ def main() -> None:
         paths += sorted(p for p in DATA.glob("holdings_*.csv") if p.name != RAW.name)
     lookup = IndustryLookup()
     df = load_holdings(paths, args.sample)
+
+    if args.nowcast:
+        # 当日截面只算最新一期，若照写 by_fund/*.csv 会把单基金钻取缓存
+        # （多期明细序列）覆盖成只剩一期，接口的换手分析就废了。
+        WRITE_BY_FUND = False
+        as_of = args.as_of or datetime.now().strftime("%Y%m%d")
+        res = build(df, lookup, as_of=as_of, latest_only=True)
+        meta = persist_nowcast(res, keep_days=args.keep_days)
+        if meta:
+            log("=" * 66)
+            log(f"当日截面 {meta['as_of_date']}：{meta['n_funds']:,} 只基金 / "
+                f"{meta['n_rows']:,} 行 / 置信度中位 {meta['conf_median']} / "
+                f"数据滞后中位 {meta['stale_median']} 天")
+        return
+
     res = build(df, lookup)
     diag = diagnose_old()
     cache = persist(res, args.sample, diag)
