@@ -25,6 +25,27 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 TIMEOUT_PORTFOLIO = 900
 TIMEOUT_SINGLE = 180
 
+# 运行标记：重建容器前先看这个文件在不在。
+# 2026-11-10 事故：子进程正在写 6GB 的 quant_dev.db 时 `docker compose up --build`
+# 强杀了容器，Docker 卷共享层在写入中断处把 SQLite 文件头写坏
+# （文件变成 "SQLite format 3" 之外的东西，所有接口 500）。这个标记让人能提前发现。
+LOCK = BACKEND_DIR.parent / "data" / ".paper_running"
+
+
+def _set_lock(task_id: int) -> None:
+    try:
+        LOCK.parent.mkdir(parents=True, exist_ok=True)
+        LOCK.write_text(f"task={task_id} pid={os.getpid()}", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _clear_lock() -> None:
+    try:
+        LOCK.unlink(missing_ok=True)
+    except OSError:
+        pass
+
 
 def run_in_subprocess(task_id: int, kind: str = "portfolio") -> tuple[bool, dict]:
     """在子进程里跑一次任务。返回 (ok, info)，**不抛异常**。"""
@@ -36,6 +57,7 @@ def run_in_subprocess(task_id: int, kind: str = "portfolio") -> tuple[bool, dict
               "ALL_PROXY", "all_proxy"):
         env.pop(k, None)
 
+    _set_lock(task_id)
     try:
         proc = subprocess.Popen(
             [sys.executable, "scripts/paper_job.py", str(task_id)],
@@ -43,6 +65,7 @@ def run_in_subprocess(task_id: int, kind: str = "portfolio") -> tuple[bool, dict
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
     except Exception as e:  # noqa: BLE001
+        _clear_lock()
         return False, {"error": f"起子进程失败：{e}"}
 
     try:
@@ -50,6 +73,7 @@ def run_in_subprocess(task_id: int, kind: str = "portfolio") -> tuple[bool, dict
     except subprocess.TimeoutExpired:
         proc.kill()
         out, err = proc.communicate()
+        _clear_lock()
         logger.warning("模拟盘 #%s 子进程超时 %ss，已终止", task_id, timeout)
         return False, {"error": f"超过 {timeout}s 未完成，已终止"}
 
@@ -61,6 +85,7 @@ def run_in_subprocess(task_id: int, kind: str = "portfolio") -> tuple[bool, dict
         except json.JSONDecodeError:
             info = {"raw": line[:300]}
 
+    _clear_lock()
     if proc.returncode != 0:
         info.setdefault("error", (err or "")[-400:] or f"exit {proc.returncode}")
         return False, info
