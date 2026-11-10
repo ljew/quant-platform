@@ -1563,6 +1563,20 @@ export const researchApi = {
   transition: (id: number, to_state: string, reason: string) =>
     post<{ ok: boolean; changed: boolean; state: string }>(`/research/cards/${id}/transition`, { to_state, reason }),
   card: (id: number) => get<ResearchCardItem>(`/research/cards/${id}`),
+  /** 建卡（因子入册用）。evidence 里带 source_mine_id，卡片就能回答「来自哪次挖掘」。 */
+  create: (payload: {
+    card_type: "strategy" | "factor";
+    key: string;
+    name: string;
+    hypothesis?: string;
+    data_spec?: string;
+    evidence?: Record<string, unknown>;
+    cost_note?: string;
+    fail_condition?: string;
+    state?: string;
+    history_note?: string;
+    actor?: string;
+  }) => post<ResearchCardItem>("/research/cards", payload),
   cardSignals: (id: number, date?: string) =>
     get<CardSignalsResp>(`/research/cards/${id}/signals${date ? `?date=${date}` : ""}`),
 };
