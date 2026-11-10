@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import EChart from "../components/EChart";
-import { api, CostProfile, PaperDetail, PaperTask, PortfolioSnapshot, signalApi, StrategyInfo } from "../api/client";
+import { api, CostProfile, PaperDeviation, PaperDetail, PaperTask, PortfolioSnapshot, signalApi, StrategyInfo } from "../api/client";
 import { useTheme } from "../theme";
 import { PageHeader } from "../components/ui";
 import EvalBadges from "../components/EvalBadges";
@@ -50,6 +50,9 @@ export default function PaperPage() {
     sub: string; snap: PortfolioSnapshot | null }[]>([]);
   // 基准同期收益缓存，键 = 指数|起始日
   const [bench, setBench] = useState<Record<string, number | null>>({});
+  // 跟踪偏离：实际快照 vs 理论净值。键 = 任务 id。
+  // 只对比有快照的日子（快照从建盘那天才开始记），partial 时列头带 *。
+  const [devs, setDevs] = useState<Record<number, PaperDeviation>>({});
   const { colors } = useTheme();
 
   // 创建表单
@@ -60,7 +63,18 @@ export default function PaperPage() {
   const [cash, setCash] = useState(1000000);
 
   const refresh = useCallback(() => {
-    api.paperTasks().then(setTasks).catch((e) => setError((e as Error).message));
+    api.paperTasks().then((ts) => {
+      setTasks(ts);
+      // 偏离按任务逐个拉：任务数是个位数，一次性并发没问题；
+      // 将来上到几十个再改成批量接口（后端加 /paper/deviations?ids=）
+      Promise.all(ts.map((t) =>
+        api.paperDeviation(t.id).then((d) => [t.id, d] as const).catch(() => null),
+      )).then((pairs) => {
+        const m: Record<number, PaperDeviation> = {};
+        for (const p of pairs) if (p) m[p[0]] = p[1];
+        setDevs(m);
+      });
+    }).catch((e) => setError((e as Error).message));
     // 镜像 / 实验组合：与策略任务同一张表。任一失败不影响另一半（各自 catch）
     const load = (key: string, label: string, sub: string, fn: () => Promise<PortfolioSnapshot>) =>
       fn().then((snap) => ({ key, label, sub, snap: snap.ok ? snap : null }))
@@ -275,9 +289,9 @@ export default function PaperPage() {
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
           <thead>
             <tr style={{ background: colors.bg, color: colors.muted, fontSize: 11.5 }}>
-              {["#", "组合", "类型", "净值", "收益", "vs 基准", "持仓", "状态", "最近运行", "操作"].map((h, i) => (
-                <th key={h} style={{
-                  textAlign: i >= 3 && i <= 6 ? "right" : "left",
+              {["#", "组合", "类型", "净值", "收益", "vs 基准", "vs 理论", "持仓", "状态", "最近运行", "操作"].map((h, i) => (
+                <th key={h} title={h === "vs 理论" ? "实际快照 ÷ 同一天的理论净值 − 1。两条线本该重合，差值就是增量执行的损耗" : undefined} style={{
+                  textAlign: i >= 3 && i <= 7 ? "right" : "left",
                   padding: "8px 10px", fontWeight: 600, whiteSpace: "nowrap",
                 }}>{h}</th>
               ))}
@@ -318,6 +332,7 @@ export default function PaperPage() {
                     color: vs == null ? colors.muted : vs >= 0 ? colors.up : colors.down }}>
                     {vs == null ? "—" : `${vs >= 0 ? "+" : ""}${(vs * 100).toFixed(2)}pp`}
                   </td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", color: colors.muted }}>—</td>
                   <td style={{ padding: "8px 10px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
                     {sp?.summary.n_holdings ?? "—"}
                   </td>
@@ -385,6 +400,28 @@ export default function PaperPage() {
                     return `${vs >= 0 ? "+" : ""}${(vs * 100).toFixed(2)}pp`;
                   })()}
                 </td>
+                <td style={{
+                  padding: "8px 10px", textAlign: "right", fontVariantNumeric: "tabular-nums",
+                  color: (() => {
+                    const d = devs[t.id];
+                    if (!d || d.latest_dev_pct == null) return colors.muted;
+                    // 偏离是「差多少」，不分好坏方向：接近 0 才是这两条线对上了。
+                    // 用黄色提示，避免和涨跌的红绿撞语义。
+                    return Math.abs(d.latest_dev_pct) >= 0.5 ? "#b9770e" : colors.text;
+                  })(),
+                }}>
+                  {(() => {
+                    const d = devs[t.id];
+                    if (!d) return "—";
+                    if (d.latest_dev_pct == null) return <span title="还没有可对比的净值快照">—</span>;
+                    return (
+                      <span title={`理论 ${d.theory_days} 天 · 实际快照 ${d.actual_days} 天${d.partial ? "（只对比有快照的日子）" : ""} · 区间 ${d.min_dev_pct}% ~ ${d.max_dev_pct}%`}>
+                        {d.latest_dev_pct >= 0 ? "+" : ""}{d.latest_dev_pct.toFixed(2)}%
+                        {d.partial && <span style={{ color: colors.muted }}>*</span>}
+                      </span>
+                    );
+                  })()}
+                </td>
                 <td style={{ padding: "8px 10px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
                   {t.positions_count}
                 </td>
@@ -423,9 +460,12 @@ export default function PaperPage() {
         策略任务用它自己的基准（指数增强类看沪深300），镜像 / 实验统一看国证A指。
         跑输就是跑输，赚了也一样。
         <br />
-        <b>「跟踪偏离」这一列没有做</b>，不是漏了：它要拿「模拟盘实际净值」和
-        「同一条策略的回测理论曲线」比，而理论曲线必须在<b>建仓那天落库</b>、之后增量延伸。
-        现在库里只有实际净值，硬算出来的偏离是假的 —— 所以宁可空着，也不放一列猜出来的数。
+        <b>「vs 理论」</b>是<b>实际快照 ÷ 同一天的理论净值 − 1</b>。
+        理论 = 每次运行用回测引擎从建仓日<b>全量重算</b>的曲线（「完全按规则走，今天该值多少钱」），
+        实际 = 每天跑完<b>当场记下</b>、之后不再重算的快照。
+        两条线本该重合，差出来的就是增量执行的损耗（复权因子后补、停牌买不进、整手取整的现金残留）。
+        它衡量的是<b>这面镜子平不平</b>，不是策略好坏 —— 所以偏离大用黄标，不套涨跌的红绿。
+        带 <b>*</b> 表示快照还没覆盖全区间，这组数只代表有快照的那几天。
       </div>
 
       {/* 详情 */}

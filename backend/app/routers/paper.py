@@ -1,6 +1,7 @@
 """模拟盘(Paper Trading) API：任务 CRUD、手动运行、详情、启用切换、重置。"""
 from __future__ import annotations
 
+import json
 import threading
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -153,6 +154,67 @@ def task_snapshots(task_id: int, limit: int = 500):
         return {"task_id": task_id, "total": len(out), "points": out}
     finally:
         db.close()
+
+
+@router.get("/tasks/{task_id}/deviation")
+def task_deviation(task_id: int, db=Depends(get_db)):
+    """跟踪偏离：实际净值 vs 理论净值。
+
+    两条线从哪来，为什么必须分开：
+    · 理论 = equity_curve_json —— 每次运行都用回测引擎从 start_date **全量重算**，
+      相当于「如果完全按规则走，今天该值多少钱」。
+    · 实际 = paper_snapshots —— 每天增量跑完**当场记下**的那一格，是不再重算的历史事实。
+
+    两者本该重合。不重合的地方就是执行损耗：复权因子后补导致历史被重算、
+    停牌/涨跌停买不进、整手取整的现金残留、资金精度累积。
+    这个差值本身不说明策略好坏 —— 它是「模拟盘这面镜子平不平」的度量。
+
+    ⚠️ 只对比**有快照的日子**。快照从建盘那天开始记，之前的历史只有理论值，
+    拿没有实际值的日期去比会得到一条假的 0 偏离。
+    """
+    from app.models import PaperSnapshot
+
+    t = db.get(PaperTask, task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    theory: dict[str, float] = {}
+    try:
+        for pt in json.loads(t.equity_curve_json or "[]"):
+            d = str(pt.get("date", ""))[:10]
+            if d and pt.get("equity") is not None:
+                theory[d] = float(pt["equity"])
+    except (ValueError, TypeError):
+        theory = {}
+
+    rows = (db.query(PaperSnapshot)
+            .filter(PaperSnapshot.task_id == task_id)
+            .order_by(PaperSnapshot.date).all())
+    points, devs = [], []
+    for r in rows:
+        d = str(r.date)[:10]
+        th = theory.get(d)
+        act = float(r.equity) if r.equity is not None else None
+        if act is None:
+            continue
+        dev = (act / th - 1.0) * 100 if th else None
+        if dev is not None:
+            devs.append(dev)
+        points.append({"date": d, "theory": round(th, 2) if th else None,
+                       "actual": round(act, 2), "dev_pct": round(dev, 3) if dev is not None else None})
+
+    total_days = len(theory)
+    return {
+        "task_id": task_id, "name": t.name, "strategy_key": t.strategy_key,
+        "account_start": t.account_start, "last_bar_date": t.last_bar_date,
+        "theory_days": total_days, "actual_days": len(points),
+        # 快照没覆盖全区间时，这组数字只代表有快照的那几天 —— 前端必须显示这句
+        "partial": len(points) < total_days,
+        "latest_dev_pct": round(devs[-1], 3) if devs else None,
+        "max_dev_pct": round(max(devs), 3) if devs else None,
+        "min_dev_pct": round(min(devs), 3) if devs else None,
+        "points": points,
+    }
 
 
 @router.post("/tasks/{task_id}/run")

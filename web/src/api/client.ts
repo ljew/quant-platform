@@ -127,6 +127,22 @@ export interface TimelineEvent {
   metric: { label: string; value: string; good: boolean } | null;
 }
 
+/** 跟踪偏离：实际快照 vs 理论净值（回测重算）。partial=true 表示只覆盖有快照的日子。 */
+export interface PaperDeviation {
+  task_id: number;
+  name: string;
+  strategy_key: string;
+  account_start: string | null;
+  last_bar_date: string | null;
+  theory_days: number;
+  actual_days: number;
+  partial: boolean;
+  latest_dev_pct: number | null;
+  max_dev_pct: number | null;
+  min_dev_pct: number | null;
+  points: { date: string; theory: number | null; actual: number; dev_pct: number | null }[];
+}
+
 export interface CardTimeline {
   card_id: number;
   key: string;
@@ -464,6 +480,8 @@ export const api = {
     return r.json();
   },
   paperDetail: (id: number) => get<PaperDetail>(`/paper/tasks/${id}`),
+  /** 跟踪偏离：实际 vs 理论。只对比有快照的日子，partial 标记覆盖不全。 */
+  paperDeviation: (id: number) => get<PaperDeviation>(`/paper/tasks/${id}/deviation`),
   // 监控
   monitor: () => get<MonitorStatus>("/monitor/status"),
   // 因子挖掘
