@@ -159,14 +159,29 @@ export default function App() {
   // 跨页跳转：dispatch(new CustomEvent("quant-nav", { detail: { tab } }))，tab 可为新旧任意 tab 名
   useEffect(() => {
     const onNav = (e: Event) => {
-      const detail = (e as CustomEvent<{ tab?: string; id?: number | null }>).detail;
+      const detail = (e as CustomEvent<{ tab?: string; id?: number | null; inner?: string }>).detail;
       const t = detail?.tab;
       if (!t) return;
       const hit = findHub(t);
-      if (hit) setNav({ ...hit, id: detail?.id ?? undefined });
+      if (hit) setNav({ ...hit, id: detail?.id ?? undefined, inner: detail?.inner });
     };
     window.addEventListener("quant-nav", onNav as EventListener);
     return () => window.removeEventListener("quant-nav", onNav as EventListener);
+  }, []);
+
+  // 地址栏 hash 反向驱动导航。
+  // 之前只写了「导航 → hash」单向同步，没有反向监听：
+  // 于是 `window.location.hash = "cards/2"` 这类跳转、页面里的 <a href="#...">、
+  // 以及浏览器前进/后退，全都不生效 —— 看着有链接，点了没反应。
+  // replaceState 不触发 hashchange，所以和我们自己写 hash 的那条不会打架。
+  useEffect(() => {
+    const onHash = () => {
+      const raw = window.location.hash.replace(/^#/, "");
+      const hit = parseHash(raw);
+      if (hit) setNav(hit);
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
   const activeHub = HUBS.find((h) => h.key === hub)!;
