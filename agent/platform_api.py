@@ -103,3 +103,21 @@ def openapi_paths() -> set[str]:
     with _OPENER.open(req, timeout=API_TIMEOUT) as r:
         doc = json.loads(r.read().decode("utf-8"))
     return set((doc.get("paths") or {}).keys())
+
+
+def post(path: str, body: dict) -> tuple[Any, str]:
+    """POST 一个平台接口。只给审批通过后的写操作用。
+
+    平台侧这两个接口目前没有鉴权（设计文档 05 节第 3 条待定项），
+    所以「谁能调它」这件事完全靠 MCP 的令牌校验兜住 —— 这也是为什么
+    令牌不能出现在模型入参里。
+    """
+    url = f"{API_BASE}{path}"
+    raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=raw, method="POST",
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+    )
+    with _OPENER.open(req, timeout=API_TIMEOUT) as r:
+        payload = r.read().decode("utf-8")
+    return (json.loads(payload) if payload.strip() else {}), url

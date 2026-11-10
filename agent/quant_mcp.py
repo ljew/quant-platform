@@ -25,7 +25,8 @@ import time
 
 from mcp.server.mcpserver import MCPServer
 
-from platform_api import API_BASE, dumps, err, get, ok, openapi_paths
+import actions
+from platform_api import API_BASE, dumps, err, get, ok, openapi_paths, post
 
 mcp = MCPServer(
     "quant-mcp",
@@ -267,6 +268,83 @@ def _get_latest_digest() -> dict:
         return err(e, "GET /factor/brief-digest/latest")
 
 
+# ─────────────────────────── 写操作（两段式） ───────────────────────────
+# 这两个工具是全局唯一的写入口，都走「提议 → 人批准 → 执行」：
+# 第一次调用只写 pending，返回 action_id；用户在审批中心通过后，
+# 再带同一个 action_id 调一次才真正落库。
+# 令牌由 actions.consume() 内部取，**不出现在工具入参里** ——
+# 写成入参就可能被资讯正文里的注入文本骗走（这不是理论风险）。
+
+CARD_STATES = ("enabled", "candidate", "watch", "downgraded", "retired")
+
+
+def _create_paper_task(strategy_key: str, name: str = "", kind: str = "single",
+                       symbols: str = "", index_code: str = "",
+                       initial_cash: float = 2_000_000.0,
+                       commission: float = 0.0001, slippage: float = 0.0015,
+                       adj: str = "hfq", params_json: str = "{}",
+                       action_id: int | None = None) -> dict:
+    payload = {
+        "strategy_key": strategy_key,
+        "name": name or f"{strategy_key} 模拟盘",
+        "kind": kind or "single",
+        "symbols": symbols or "",
+        "index_code": index_code or "",
+        "initial_cash": float(initial_cash),
+        "commission": float(commission),
+        "slippage": float(slippage),
+        "adj": adj or "hfq",
+        "params_json": params_json or "{}",
+    }
+    if action_id is None:
+        r = actions.propose("create_paper_task", payload,
+                            reason=f"新建模拟盘：{payload['name']}",
+                            proposed_by="agent")
+        return ok({**r, "proposal": payload}, "agent_actions.propose", note=(
+            "已提交审批，**尚未建盘**。让用户在审批中心通过后，"
+            f"再带 action_id={r['action_id']} 调一次本工具才会真正创建。"
+            f"提案 {r['expires_at']} 前有效。"
+        ))
+
+    got = actions.consume(action_id)
+    if not got.get("ok"):
+        return {**got, "source": "agent_actions.consume", "as_of": actions.now_iso(),
+                "missing": ["未获得执行许可"], "hint": "审批没通过或已过期，不要重试；让用户重新审批。"}
+    if got.get("action") != "create_paper_task":
+        return {"ok": False, "error": f"action_id={action_id} 是 {got.get('action')}，不是建盘",
+                "source": "agent_actions", "as_of": actions.now_iso(),
+                "missing": ["动作类型不匹配"]}
+    try:
+        data, url = post("/paper/tasks", got["payload"])
+    except Exception as e:  # noqa: BLE001
+        actions.mark_failed(action_id, str(e))
+        return err(e, "POST /paper/tasks")
+    actions.mark_done(action_id, {"task_id": (data or {}).get("id")})
+    return ok({"action_id": action_id, "task": data,
+               "task_id": (data or {}).get("id")}, f"POST {url}",
+              note="审批已消耗，动作完成。")
+
+
+def _propose_card_transition(card_id: int, to_state: str, reason: str) -> dict:
+    if to_state not in CARD_STATES:
+        return {"ok": False, "error": f"to_state 必须是 {' / '.join(CARD_STATES)}",
+                "source": "agent_actions", "as_of": actions.now_iso(),
+                "missing": ["状态未变更"], "hint": "先看卡当前状态，再挑一个合法目标态。"}
+    if len((reason or "").strip()) < 2:
+        return {"ok": False, "error": "reason 至少要 2 个字",
+                "source": "agent_actions", "as_of": actions.now_iso(),
+                "missing": ["状态未变更"]}
+    r = actions.propose("card_transition",
+                        {"card_id": int(card_id), "to_state": to_state,
+                         "reason": reason.strip()[:500]},
+                        reason=f"研究卡 #{card_id} → {to_state}", proposed_by="agent")
+    return ok({**r, "card_id": card_id, "to_state": to_state},
+              "agent_actions.propose", note=(
+                  "**只提议，卡片状态没变**。人在审批中心通过后由平台执行；"
+                  f"提案 {r['expires_at']} 前有效。"
+              ))
+
+
 # ─────────────────────────── MCP 包装 ───────────────────────────
 # 工具名与设计文档 13 节的契约一一对应，改名会破坏 persona 白名单。
 
@@ -365,6 +443,36 @@ def get_latest_digest() -> str:
     return _wrap(_get_latest_digest)
 
 
+@mcp.tool()
+def create_paper_task(strategy_key: str, name: str = "", kind: str = "single",
+                      symbols: str = "", index_code: str = "",
+                      initial_cash: float = 2000000.0, commission: float = 0.0001,
+                      slippage: float = 0.0015, adj: str = "hfq",
+                      params_json: str = "{}", action_id: int | None = None) -> str:
+    """新建模拟盘。这是**两段式**操作，不要一次就以为建好了。
+
+    第一段：不带 action_id 调用 → 只写一条待审批提案，返回 action_id；
+    第二段：用户批准后，带同一个 action_id 再调一次 → 校验令牌并真正建盘。
+
+    规则：
+    · 不要在用户没批准时反复重试，也不要自己编 action_id。
+    · 用户说「不用审批直接建」时，仍然只能走提议 —— 你没有绕过审批的能力。
+    · 默认参数与现有 jk001r 口径一致：200 万、佣金万1、滑点 0.15%、hfq。
+    """
+    return _wrap(_create_paper_task, strategy_key, name, kind, symbols, index_code,
+                 initial_cash, commission, slippage, adj, params_json, action_id)
+
+
+@mcp.tool()
+def propose_card_transition(card_id: int, to_state: str, reason: str) -> str:
+    """提议修改研究卡状态（enabled / candidate / watch / downgraded / retired）。
+
+    ⚠️ 只提议，不执行：卡片状态不会变。人要在审批中心点通过，平台才动作。
+    reason 写清依据（哪一个数字、哪一段区间），它会进决策历史。
+    """
+    return _wrap(_propose_card_transition, card_id, to_state, reason)
+
+
 # ─────────────────────────── 自检 ───────────────────────────
 # 第 1 步验收：9 个工具逐个调通 + 路径与 /openapi.json 一致。
 # 不用人眼看，跑这两条命令即可。
@@ -438,9 +546,57 @@ def check_urls() -> int:
     return 1 if bad else 0
 
 
+def selftest_actions() -> int:
+    """审批状态机自检：不碰平台、不建盘，只验 propose/approve/consume/reject/过期。"""
+    import tempfile
+    from pathlib import Path
+
+    actions.DB_PATH = Path(tempfile.mkdtemp()) / "actions.db"
+    print(f"临时库 {actions.DB_PATH}")
+    checks: list[tuple[str, bool]] = []
+
+    r = actions.propose("create_paper_task", {"strategy_key": "t", "name": "测试"},
+                        reason="自检", proposed_by="selftest")
+    aid = r["action_id"]
+    checks.append(("提议落 pending", r["status"] == "pending"))
+
+    r2 = actions.propose("create_paper_task", {"strategy_key": "t", "name": "测试"})
+    checks.append(("同提案幂等复用", r2["action_id"] == aid and r2["reused"]))
+
+    got = actions.consume(aid)
+    checks.append(("未批准不能执行", got["ok"] is False))
+
+    a = actions.approve(aid)
+    checks.append(("通过签令牌", a["ok"] and a["token_issued"]))
+
+    got = actions.consume(aid)
+    checks.append(("批准后可执行", got["ok"] and got["payload"]["name"] == "测试"))
+
+    got2 = actions.consume(aid)
+    checks.append(("令牌一次性", got2["ok"] is False))
+
+    r3 = actions.propose("card_transition", {"card_id": 1, "to_state": "watch"})
+    rj = actions.reject(r3["action_id"], "太短")
+    checks.append(("否决要理由", rj["ok"] is False))
+    rj = actions.reject(r3["action_id"], "证据不足，等下一轮回测再说")
+    checks.append(("否决成功", rj["ok"] and actions.get(r3["action_id"])["status"] == "rejected"))
+
+    r4 = actions.propose("card_transition", {"card_id": 2, "to_state": "retired"}, ttl_min=-1)
+    actions.expire_stale()
+    checks.append(("超时自动过期", actions.get(r4["action_id"])["status"] == "expired"))
+
+    for name, passed in checks:
+        print(f"  {'✓' if passed else '✗'} {name}")
+    bad = [n for n, p in checks if not p]
+    print(f"\n{len(checks) - len(bad)}/{len(checks)} 通过")
+    return 1 if bad else 0
+
+
 def main(argv: list[str]) -> int:
     if "--selftest" in argv:
         return selftest()
+    if "--selftest-actions" in argv:
+        return selftest_actions()
     if "--check-urls" in argv:
         return check_urls()
     mcp.run("stdio")
