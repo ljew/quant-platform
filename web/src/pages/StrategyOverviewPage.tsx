@@ -82,7 +82,8 @@ export default function StrategyOverviewPage() {
   /** 待办：只出「能立刻动手」的，最多 3 条 —— 多了说明该批量处理，不是该翻页。 */
   const todos = useMemo(() => {
     const list = cards ?? [];
-    const out: { tone: string; title: string; detail: string; action: string; tab: string; id?: number }[] = [];
+    const out: { tone: string; title: string; detail: string; action: string;
+                 tab: string; id?: number; inner?: string }[] = [];
     const paperKeys = new Set(tasks.map((t) => t.strategy_key));
 
     for (const c of list) {
@@ -121,7 +122,7 @@ export default function StrategyOverviewPage() {
           detail: poolMode
             ? "signal_union 池要加载全市场面板，模拟盘已改子进程隔离，但内存仍吃紧。"
             : "回测达标但没在跟，等于只有结论没有跟踪。",
-          action: "看卡片", tab: "cards", id: c.id,
+          action: "去建盘", tab: "cards", id: c.id, inner: "paper",
         });
       }
     }
@@ -223,7 +224,9 @@ export default function StrategyOverviewPage() {
             </div>
             <Btn small kind="ghost"
                 onClick={() => {
-                  if (t.tab === "cards" && t.id) window.location.hash = `cards/${t.id}`;
+                  if (t.tab === "cards" && t.id) {
+                    window.location.hash = t.inner ? `cards/${t.id}/${t.inner}` : `cards/${t.id}`;
+                  }
                 }}>
               {t.action} →
             </Btn>

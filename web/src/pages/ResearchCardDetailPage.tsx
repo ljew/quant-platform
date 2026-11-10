@@ -27,6 +27,12 @@ function pctColor(v: number | null | undefined, colors: ThemeColors): string {
   return v >= 0 ? colors.up : colors.down;
 }
 
+type LitePaperTask = {
+  id: number; name: string; strategy_key: string;
+  equity: number | null; pnl_pct: number | null; positions_count: number | null;
+  last_bar_date: string | null; last_run_at: string | null; enabled: boolean;
+};
+
 const TABS = [
   { key: "overview", label: "概览" },
   { key: "backtests", label: "回测" },
@@ -135,6 +141,55 @@ function BacktestsTab({ list, detail, sel, onSelect, colors }: {
 function PaperTab({ strategyKey, colors }: { strategyKey: string; colors: ThemeColors }) {
   const [tasks, setTasks] = useState<{ id: number; name: string; equity: number | null; pnl_pct: number | null; positions_count: number | null; last_bar_date: string | null; last_run_at: string | null; enabled: boolean }[] | null>(null);
   const [points, setPoints] = useState<{ date: string; equity: number }[] | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  /** 建盘：人工确认后创建并立刻跑一次。
+   *  为什么放在这里而不是自动：自动建盘等于机器替人下单（设计文档 09 节），
+   *  但「卡里启用、却一条都没在跟踪」这个断链也得有个一键的地方补上。 */
+  const createTask = useCallback(async () => {
+    if (!window.confirm(
+      `为 ${strategyKey} 建一个模拟盘？\n\n` +
+      `初始资金 200 万 · 佣金万1 · 滑点 0.15% · 后复权\n` +
+      `建完会自动跑一次（组合约 1 分钟，单标的几秒）。`,
+    )) return;
+    setCreating(true);
+    setMsg(null);
+    try {
+      const metas = await api.strategies();
+      const meta = metas.find((m) => m.key === strategyKey);
+      const multi = !!meta?.multi_asset;
+      if (!multi) {
+        setMsg("单标的策略要指定具体股票，请到「组合跟踪 → 模拟盘」用建盘表单。");
+        return;
+      }
+      // 组合策略的池由策略自己决定，只需给基准指数代码（sh000300 → 000300）
+      const idxCode = (meta?.index_symbol || "").replace(/^(sh|sz|bj)/, "");
+      const t = await api.paperCreate({
+        name: `${meta?.name || strategyKey} 模拟`,
+        strategy_key: strategyKey,
+        kind: "portfolio",
+        symbols: "",
+        index_code: idxCode,
+        initial_cash: 2_000_000,
+        // 显式传，别靠后端默认：后端默认是佣金万2.5 / 滑点万1，
+        // 与 jk001r 口径（万1 / 0.15%）不一致，也会和确认框文案对不上。
+        commission: 0.0001,
+        slippage: 0.0015,
+        adj: "hfq",
+        params_json: "{}",
+      });
+      setMsg(`已建盘 #${t.id}，正在跑第一次…`);
+      await api.paperRun(t.id);
+      setMsg(`已建盘 #${t.id} 并触发运行。组合约 1 分钟出净值，稍后刷新。`);
+      const all = await api.paperTasks();
+      setTasks((all as unknown as LitePaperTask[]).filter((x) => x.strategy_key === strategyKey) as never);
+    } catch (e) {
+      setMsg(`建盘失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setCreating(false);
+    }
+  }, [strategyKey]);
 
   useEffect(() => {
     let alive = true;
@@ -160,10 +215,22 @@ function PaperTab({ strategyKey, colors }: { strategyKey: string; colors: ThemeC
 
   if (tasks === null) return <div style={{ fontSize: 12, color: colors.muted }}>加载中…</div>;
   if (tasks.length === 0) {
-    return <div style={{ fontSize: 12.5, color: colors.muted, lineHeight: 1.8 }}>
-      这个策略还没有模拟盘任务。可以在「回测寻优」页跑一次回测后建盘，
-      或让智能体用 <code>create_paper_task</code> 发起（走审批）。
-    </div>;
+    return (
+      <div>
+        <div style={{ fontSize: 12.5, color: colors.muted, lineHeight: 1.9, marginBottom: 12 }}>
+          这个策略还没有模拟盘任务。<b style={{ color: colors.text }}>卡片写着「启用」，
+          却没有一条在真实跟踪</b> —— 结论就只是结论。
+        </div>
+        <Btn kind="primary" small onClick={createTask} disabled={creating}>
+          {creating ? "正在建盘…" : "建模拟盘"}
+        </Btn>
+        <div style={{ fontSize: 11, color: colors.muted, marginTop: 8, lineHeight: 1.8 }}>
+          人工确认后才会建（不自动），参数与现有任务同口径。建完会立刻跑一次。<br />
+          组合策略可一键建；单标的策略需要指定股票，会引导你去模拟盘页的表单。
+        </div>
+        {msg && <div style={{ fontSize: 11.5, color: colors.accent, marginTop: 8 }}>{msg}</div>}
+      </div>
+    );
   }
   const t = tasks[0];
   const cnt = points?.length ?? 0;
@@ -191,7 +258,9 @@ function PaperTab({ strategyKey, colors }: { strategyKey: string; colors: ThemeC
         ))}
       </div>
       <Card title={`${t.name} · 净值走势（${cnt} 个交易日）`} colors={colors}
-            extra={<span style={{ fontSize: 11, color: colors.muted }}>最后运行 {(t.last_run_at ?? "").replace("T", " ").slice(0, 16)}</span>}>
+            extra={<span style={{ fontSize: 11, color: colors.muted }}>
+              {(t.last_run_at ?? "").replace("T", " ").slice(0, 16)}
+            </span>}>
         {option ? <EChart option={option} height={280} />
           : <div style={{ fontSize: 12, color: colors.muted, lineHeight: 1.8 }}>
               还没有足够的净值快照。任务每天收盘后跑一次，攒够两天就能画。
