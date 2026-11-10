@@ -11,8 +11,9 @@ const StrategyOverviewPage = lazy(() => import("./pages/StrategyOverviewPage"));
 const ResearchCardsPage = lazy(() => import("./pages/ResearchCardsPage"));
 const SignalPage = lazy(() => import("./pages/SignalPage"));
 const AttributionPage = lazy(() => import("./pages/AttributionPage"));
+const DataPipelinePage = lazy(() => import("./pages/DataPipelinePage"));
+const MonitorPage = lazy(() => import("./pages/MonitorPage"));
 const AutoResearchHubPage = lazy(() => import("./pages/AutoResearchHubPage"));
-const DataSystemPage = lazy(() => import("./pages/DataSystemPage"));
 const DataHealthPage = lazy(() => import("./pages/DataHealthPage"));
 const FundResearchPage = lazy(() => import("./pages/FundResearchPage"));
 const NewsHubPage = lazy(() => import("./pages/NewsHubPage"));
@@ -53,10 +54,17 @@ const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; lab
     { key: "signal", label: "信号组合" },
   ] },
   { key: "data", label: "数据中心", icon: "⇉", tabs: [
-    { key: "auto", label: "自动研究" },
-    // 数据健康：87 张表逐张新鲜度 + 五层体检（2026-11-10 新增）
+    // 健康当门面（设计文档 11 节：第⑦块提到第一位）
     { key: "datahealth", label: "数据健康" },
-    { key: "datasys", label: "数据与系统" },
+    // 血缘 / 步骤 / 运行（原「自动研究 → 流水线实况」并进来了）
+    { key: "pipeline", label: "数据管道" },
+    // 容器 / 调度 / 告警（原来和管道各存一份运行记录，已去重）
+    { key: "monitor", label: "系统服务" },
+    // ⚠️ 与设计偏差：「自动研究」保留。设计说它的 8 步已搬到策略研究总览，
+    // 但那只是**状态横条**；这里还有编排的运行记录、闸门审批、自动化开关、研究纪律 ——
+    // 而且它是「8 步 DAG（data→…→publish）」，跟数据管道那条 ETL 是两套东西。
+    // 删掉会真丢功能，所以留着，位置降到最后一个。
+    { key: "auto", label: "自动研究" },
   ] },
 ];
 
@@ -66,8 +74,7 @@ const LEGACY_TAB_MAP: Record<string, string> = {
   optimize: "btopt",
   factor: "factorlab",    // 因子检验 → 因子实验室
   cockpit: "auto",        // 研究驾驶舱 → 自动研究 · 流水线实况
-  pipeline: "datasys",
-  monitor: "datasys",
+  datasys: "pipeline",    // 数据与系统 → 数据管道（拆成三个平级 tab）
   etf_flow: "etfflow",
   etf: "etfflow",
   report: "reports",      // 市场资讯报告
@@ -125,9 +132,10 @@ function HubContent({ sub, id, inner }: { sub: string; id?: number; inner?: stri
     case "paper": return <PaperPage />;
     case "signal": return <SignalPage />;
     case "attribution": return <AttributionPage />;
-    case "auto": return <AutoResearchHubPage />;
     case "datahealth": return <DataHealthPage />;
-    case "datasys": return <DataSystemPage />;
+    case "pipeline": return <DataPipelinePage />;
+    case "monitor": return <MonitorPage />;
+    case "auto": return <AutoResearchHubPage />;
     default: return null;
   }
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, DataflowReport, FrameworkHealth, HealthReport, MonitorStatus } from "../api/client";
+import { api, AlertLogItem, DataflowReport, FrameworkHealth, HealthReport, MonitorStatus } from "../api/client";
 import { Badge, Card } from "../components/ui";
 import { Arrow, FlowCol, LayerRow } from "../components/flow";
 import type { ThemeColors } from "../theme";
@@ -218,85 +218,25 @@ export default function MonitorPage() {
 
       {fw && <FrameworkCard fw={fw} colors={colors} style={{ marginBottom: 14 }} />}
 
-      {/* —— 第二层：两栏 = 最近运行 + 系统服务 —— */}
-      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 14 }}>
-        {/* 管道运行记录 */}
-        {st.pipeline && st.pipeline.runs.length > 0 && (
-          <Card title={`最近管道执行（${st.pipeline.runs.length} 次）`} colors={colors} pad={0}>
-            {st.pipeline.runs.map((r) => (
-              <div key={r.run_id} style={{ padding: "9px 14px", borderBottom: `1px solid ${colors.border}` }}>
-                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <Badge text={r.status === "SUCCESS" ? "成功" : r.status === "FAILED" ? "失败" : r.status}
-                    color={r.status === "SUCCESS" ? colors.down : r.status === "FAILED" ? colors.up : colors.accent} soft />
-                  <span className="num" style={{ fontSize: 13, fontWeight: 600 }}>#{r.run_id}</span>
-                  <span style={{ fontSize: 11.5, color: colors.muted }}>{r.trigger} · {r.started_at}{r.finished_at ? ` → ${r.finished_at.slice(11)}` : ""}</span>
-                  {r.error && <span style={{ fontSize: 11, color: colors.up }}>{r.error.slice(0, 60)}</span>}
-                </div>
-                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 5 }}>
-                  {(r.steps || []).map((s) => (
-                    <span key={s.name} style={{
-                      fontSize: 11, padding: "2px 8px", borderRadius: 5,
-                      background: s.status === "FAIL" ? `${colors.up}14` : colors.tableStripe,
-                      border: `1px solid ${s.status === "FAIL" ? colors.up : colors.border}`,
-                    }}>
-                      {s.name} · {s.duration_sec}s{s.rows > 0 ? ` · ${s.rows.toLocaleString()}行` : ""}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </Card>
-        )}
-        {/* 系统服务 */}
-        <Panel title="⚙ 系统服务" colors={colors}>
-          <BigNum label="回测任务" v={`${st.tasks.running}`} sub="运行中" tone={st.tasks.running > 0 ? "accent" : "neutral"} colors={colors} />
-          <BigNum label="模拟盘任务" v={`${st.paper.enabled}/${st.paper.tasks}`} sub="启用/总数" tone="neutral" colors={colors} />
-          <div style={{ marginTop: 14, fontSize: 12, color: colors.muted }}>
-            后端启动 {fmtUptime(data.server.uptime_sec)} · {data.server.db} · 30s 自动刷新
-          </div>
-        </Panel>
-      </div>
+      {/* —— 第二层：系统服务 ——
+          「最近管道执行」已删：数据管道页有完整的「运行历史」（含每步耗时条形图），
+          两处各存一份只会让「上一次跑成功没有」要查两个地方。 */}
+      <Panel title="⚙ 系统服务" colors={colors}>
+        <BigNum label="回测任务" v={`${st.tasks.running}`} sub="运行中"
+          tone={st.tasks.running > 0 ? "accent" : "neutral"} colors={colors} />
+        <BigNum label="模拟盘任务" v={`${st.paper.enabled}/${st.paper.tasks}`} sub="启用/总数"
+          tone="neutral" colors={colors} />
+        <div style={{ marginTop: 14, fontSize: 12, color: colors.muted }}>
+          后端启动 {fmtUptime(data.server.uptime_sec)} · {data.server.db} · 30s 自动刷新
+        </div>
+      </Panel>
 
-      {/* —— 第三层：数据管道全景 —— */}
-      {dataflow && (
-        <Card title="数据从哪里来 · 怎么处理 · 最新到哪" colors={colors} style={{ marginTop: 14 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 26px 1fr 26px 1fr 26px 1.1fr", alignItems: "stretch" }}>
-            <FlowCol title="① 数据源" colors={colors}>
-              {dataflow.sources.map((sc) => (
-                <div key={sc.name} style={{ fontSize: 11, marginBottom: 7 }}>
-                  <span style={{ color: sc.enabled ? colors.down : colors.up }}>●</span>{" "}
-                  <b>{sc.name}</b>
-                  <div style={{ color: colors.muted }}>{sc.description}</div>
-                </div>
-              ))}
-            </FlowCol>
-            <Arrow />
-            <FlowCol title="② Bronze 原始层" colors={colors}>
-              <LayerRow label="行情日K快照" v={`${dataflow.bronze.market_bars.files} 文件 · ${dataflow.bronze.market_bars.size_mb}MB`} colors={colors} />
-              <LayerRow label="公众号文章批次" v={`${dataflow.bronze.text_articles.files} 个 · ${dataflow.bronze.text_articles.size_mb}MB`} colors={colors} />
-              <div style={{ fontSize: 10.5, color: colors.muted, marginTop: 4 }}>
-                最新写入 {dataflow.bronze.text_articles.latest ?? "—"}
-              </div>
-            </FlowCol>
-            <Arrow />
-            <FlowCol title="③ Silver 清洗打分" colors={colors}>
-              {Object.entries(dataflow.silver.files).map(([f, st2]) => (
-                <LayerRow key={f} label={f} v={st2.mtime?.slice(5, 16) ?? "—"} colors={colors} />
-              ))}
-              <div style={{ fontSize: 10.5, color: colors.muted, marginTop: 4 }}>
-                打分器: {dataflow.scorers.filter((x) => x.active).map((x) => x.version).join(" + ")}
-                {dataflow.silver.quality ? " · 质检已出" : ""}
-              </div>
-            </FlowCol>
-            <Arrow />
-            <FlowCol title="④ Gold 因子层（最新数据）" colors={colors}>
-              <LayerRow label="个股K线" v={`${(dataflow.gold.kline_daily as number).toLocaleString()} 行 @${dataflow.gold.kline_latest}`} colors={colors} />
-              <LayerRow label="因子截面" v={`${(dataflow.gold.factor_daily as number).toLocaleString()} 行 @${dataflow.gold.factor_latest}`} colors={colors} />
-              <LayerRow label="注册因子" v={`${dataflow.gold.registry_enabled} 启用 · ${(dataflow.gold.mined_rows as number).toLocaleString()} 行`} colors={colors} />
-            </FlowCol>
-          </div>
-        </Card>
-      )}
+      {/* 「数据从哪里来 · 怎么处理」已删：数据管道页的「数据源头」就是血缘表，
+          同一份东西画两遍，改一边忘一边是迟早的事。 */}
+
+      <div style={{ marginTop: 14 }}>
+        <AlertLogCard colors={colors} />
+      </div>
 
       {/* —— 第四层：数据表详情（原数据情况面板）—— */}
       <div style={{ marginTop: 14 }}>
@@ -307,6 +247,69 @@ export default function MonitorPage() {
 }
 
 /* ================= 子组件 ================= */
+
+/** 告警历史：读 notify_log（不新建表）—— 「昨天半夜出过什么事」不用再翻 docker logs。 */
+function AlertLogCard({ colors }: { colors: ThemeColors }) {
+  const [rows, setRows] = useState<AlertLogItem[] | null>(null);
+  const [level, setLevel] = useState<string>("");
+  useEffect(() => {
+    let alive = true;
+    api.alertLog(60, level || undefined)
+      .then((r) => { if (alive) setRows(r.items); })
+      .catch(() => { if (alive) setRows([]); });
+    return () => { alive = false; };
+  }, [level]);
+
+  const tone = (lv: string) => (lv === "FAIL" ? colors.up : lv === "WARN" ? "#b9770e" : colors.muted);
+  return (
+    <Card title={`告警历史（${rows?.length ?? "…"}）`} colors={colors} pad={0}
+      extra={
+        <span style={{ display: "inline-flex", gap: 6 }}>
+          {[["", "全部"], ["FAIL", "FAIL"], ["WARN", "WARN"]].map(([k, label]) => (
+            <button key={label} onClick={() => setLevel(k)} style={{
+              border: `1px solid ${colors.border}`,
+              background: level === k ? colors.accent : "transparent",
+              color: level === k ? "#fff" : colors.muted, borderRadius: 999,
+              padding: "2px 10px", fontSize: 11, cursor: "pointer",
+            }}>{label}</button>
+          ))}
+        </span>
+      }>
+      {rows === null ? (
+        <div style={{ padding: 18, fontSize: 12, color: colors.muted }}>加载中…</div>
+      ) : rows.length === 0 ? (
+        <div style={{ padding: 18, fontSize: 12.5, color: colors.muted, lineHeight: 1.8 }}>
+          这个筛选下没有记录。告警走 notify_log（邮件 / 飞书），成功与失败都记。
+        </div>
+      ) : (
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <thead>
+            <tr style={{ color: colors.muted, textAlign: "left" }}>
+              {["级别", "标题", "渠道", "结果", "时间"].map((h) => (
+                <th key={h} style={{ padding: "8px 14px", fontWeight: 500 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id} style={{ borderTop: `1px solid ${colors.border}` }}>
+                <td style={{ padding: "7px 14px", fontWeight: 600, color: tone(r.level) }}>{r.level}</td>
+                <td style={{ padding: "7px 14px" }}>{r.title}</td>
+                <td style={{ padding: "7px 14px", color: colors.muted }}>{r.channel}</td>
+                <td style={{ padding: "7px 14px", color: r.status === "ok" ? colors.down : colors.up }}>
+                  {r.status}{r.error ? ` · ${r.error.slice(0, 40)}` : ""}
+                </td>
+                <td style={{ padding: "7px 14px", color: colors.muted, whiteSpace: "nowrap" }}>
+                  {(r.at || "").replace("T", " ").slice(5, 16)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Card>
+  );
+}
 
 function FreshGrid({ dataflow, colors }: { dataflow: DataflowReport | null; colors: { text: string; muted: string; up: string; down: string; card: string; border: string } }) {
   if (!dataflow) return null;
