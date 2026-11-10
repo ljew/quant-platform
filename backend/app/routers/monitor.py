@@ -134,6 +134,56 @@ def data_health_endpoint():
     return run_rules(SessionLocal())
 
 
+@router.get("/alert-log")
+def alert_log_endpoint(limit: int = 50, level: str | None = None):
+    """告警/通知历史。
+
+    **不新建 alert_log 表**：现有 `notify_log` 已经记了每一条（渠道 / 标题 /
+    成功失败 / 时间），标题里也带（FAIL）（WARN）。再建一张表只会让「昨天半夜
+    出过什么事」有两个地方要查。
+    level 过滤 WARN / FAIL / OK（从标题括号里解析）。
+    """
+    from app.models import NotifyLog
+
+    db = SessionLocal()
+    try:
+        rows = (db.query(NotifyLog).order_by(NotifyLog.id.desc())
+                .limit(max(1, min(limit, 200))).all())
+    finally:
+        db.close()
+
+    def _level(subject: str) -> str:
+        m = re.search(r"[（(](FAIL|WARN|OK)[)）]", subject or "")
+        return m.group(1) if m else "INFO"
+
+    out = []
+    for r in rows:
+        lv = _level(r.subject or "")
+        if level and lv != level.upper():
+            continue
+        out.append({"id": r.id, "level": lv, "channel": r.channel,
+                    "status": r.status, "title": r.subject,
+                    "error": r.error,
+                    "at": r.created_at.isoformat(timespec="seconds") if r.created_at else None})
+    counts: dict[str, int] = {}
+    for r in out:
+        counts[r["level"]] = counts.get(r["level"], 0) + 1
+    return {"total": len(out), "counts": counts, "items": out}
+
+
+@router.get("/table-freshness")
+def table_freshness_endpoint(fresh: bool = False):
+    """逐张表的新鲜度：表名 / 日期列 / 行数 / 最新日期 / 滞后天数 / 状态。
+
+    与 /health-report 的区别：那个是「规则引擎给结论」，这个是「原始事实」——
+    87 张表逐张看，按 FAIL → WARN → EMPTY → OK 排序，出问题先看这个。
+    fresh=true 跳过 60 秒缓存。
+    """
+    from app.services.table_freshness import table_freshness
+
+    return table_freshness(SessionLocal(), use_cache=not fresh)
+
+
 @router.get("/framework-health")
 def framework_health_endpoint():
     """框架四层体检（调度 / 编排 / 数据 / 研究）—— 驾驶舱状态带的数据源。

@@ -1555,3 +1555,32 @@ class BriefDigest(Base):
 
     def __repr__(self) -> str:
         return f"<BriefDigest {self.day} {len(self.summary or '')}字>"
+
+
+class OptimizeRun(Base):
+    """一次参数寻优的落库记录。
+
+    为什么要有这张表：异步寻优原来只把结果写进 job 目录，且只保留 10 个 ——
+    页面一关就找不回来，「参数寻优」页签只能是空的。落库之后可以按策略看历史、
+    比较不同参数组合的样本外表现，才谈得上「寻优记录」。
+    """
+
+    __tablename__ = "optimize_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(String(32), index=True, unique=True)
+    strategy_key: Mapped[str] = mapped_column(String(64), index=True, default="")
+    status: Mapped[str] = mapped_column(String(16), default="running")   # running/done/failed/cancelled
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    done: Mapped[int] = mapped_column(Integer, default=0)
+    best_sharpe: Mapped[float | None] = mapped_column(Float, nullable=True)
+    best_excess: Mapped[float | None] = mapped_column(Float, nullable=True)
+    best_params: Mapped[str] = mapped_column(Text, default="{}")
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    result_json: Mapped[str] = mapped_column(Text, default="{}")
+    error: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<OptimizeRun {self.job_id} {self.strategy_key} {self.status}>"

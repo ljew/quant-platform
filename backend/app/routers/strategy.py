@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import logging
 import os
 import shutil
 import signal
@@ -28,7 +29,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, select
@@ -36,6 +37,8 @@ from sqlalchemy.orm import Session
 
 from app.config import DATA_DIR, settings
 from app.database import get_db
+logger = logging.getLogger("quant.strategy")
+
 from app.models import (
     Backtest,
     FinancialsRaw,
@@ -1045,6 +1048,46 @@ def _prune_jobs() -> None:
         pass
 
 
+def _record_optimize_run(job_id: str, req, total: int, status: str,
+                        job: dict | None = None) -> None:
+    """把寻优写进 optimize_runs。失败只记日志，绝不影响寻优本身。"""
+    from app.database import SessionLocal
+    from app.models import OptimizeRun
+
+    db = SessionLocal()
+    try:
+        row = db.query(OptimizeRun).filter_by(job_id=job_id).one_or_none()
+        if row is None:
+            row = OptimizeRun(
+                job_id=job_id,
+                strategy_key=getattr(req, "strategy", "") or "",
+                total=total,
+                status=status,
+                payload_json=json.dumps(req.model_dump(), ensure_ascii=False)
+                if req is not None else "{}",
+            )
+            db.add(row)
+        if job is not None:
+            row.status = status
+            row.done = job.get("done") or 0
+            row.error = (job.get("error") or "")[:1000]
+            results = job.get("results") or []
+            if results:
+                best = max(results, key=lambda r: (r.get("sharpe") or -9e9))
+                row.best_sharpe = best.get("sharpe")
+                row.best_excess = best.get("excess_return")
+                row.best_params = json.dumps(best.get("params") or {}, ensure_ascii=False)
+            # 只留前 200 组：一张表存几千组参数没有意义，明细还在 job 目录
+            row.result_json = json.dumps(results[:200], ensure_ascii=False)
+            row.finished_at = datetime.now()
+        db.commit()
+    except Exception as e:  # noqa: BLE001
+        db.rollback()
+        logger.warning("写 optimize_runs 失败：%s", str(e)[:160])
+    finally:
+        db.close()
+
+
 def _watch_job(job_id: str, proc) -> None:
     """等子进程结束（带硬超时）；只负责收尾，不做任何计算。"""
     job = _opt_jobs.get(job_id)
@@ -1067,6 +1110,45 @@ def _watch_job(job_id: str, proc) -> None:
             # 连结果文件都没有 —— 多半是被取消或超时杀掉的
             job["ok"] = False
             job["error"] = job["error"] or ("任务已取消" if job["cancelled"] else "任务异常结束（无结果输出）")
+
+        status = ("cancelled" if job.get("cancelled")
+                  else "done" if job.get("ok") else "failed")
+        _record_optimize_run(job_id, None, job.get("total") or 0, status, job)
+
+
+@router.get("/optimize/runs")
+def list_optimize_runs(limit: int = 20, strategy_key: str | None = None):
+    """寻优历史（落库的那些）。给策略主页的「参数寻优」页签用。
+
+    为什么不在内存里查：异步任务只保留 10 个 job 目录，页面一关就没了。
+    这里返回的是 optimize_runs 表，跨重启可回看。
+    """
+    from app.database import SessionLocal
+    from app.models import OptimizeRun
+
+    db = SessionLocal()
+    try:
+        q = db.query(OptimizeRun).order_by(OptimizeRun.id.desc())
+        if strategy_key:
+            q = q.filter(OptimizeRun.strategy_key == strategy_key)
+        rows = q.limit(max(1, min(limit, 100))).all()
+        out = []
+        for r in rows:
+            try:
+                params = json.loads(r.best_params or "{}")
+            except json.JSONDecodeError:
+                params = {}
+            out.append({
+                "id": r.id, "job_id": r.job_id, "strategy_key": r.strategy_key,
+                "status": r.status, "total": r.total, "done": r.done,
+                "best_sharpe": r.best_sharpe, "best_excess": r.best_excess,
+                "best_params": params, "error": r.error,
+                "started_at": r.started_at.isoformat(timespec="seconds") if r.started_at else None,
+                "finished_at": r.finished_at.isoformat(timespec="seconds") if r.finished_at else None,
+            })
+        return {"total": len(out), "runs": out}
+    finally:
+        db.close()
 
 
 @router.post("/optimize/async")
@@ -1100,6 +1182,7 @@ def optimize_async(req: OptimizeRequest):
             "started_at": time.time(), "finished_at": None, "pid": proc.pid,
         }
         _opt_jobs[job_id] = job
+        _record_optimize_run(job_id, req, len(combos), "running")
         threading.Thread(target=_watch_job, args=(job_id, proc), daemon=True).start()
 
     return {"job_id": job_id, "total": len(combos), "max_combos": _MAX_ASYNC_COMBOS, "pid": proc.pid}
