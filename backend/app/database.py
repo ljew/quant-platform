@@ -64,13 +64,36 @@ def get_db():
         db.close()
 
 
+import time
+
+from sqlalchemy.exc import OperationalError
+
+
 def init_db() -> None:
-    """创建所有表。生产环境若使用 TimescaleDB，另见 services/timescale.py。"""
+    """创建所有表。生产环境若使用 TimescaleDB，另见 services/timescale.py。
+
+    对 `disk I/O error` 重试三次：容器刚重建的那几十秒里，Docker 卷（macOS 上是
+    gRPC-FUSE）对**新开连接**会间歇性报 I/O 错误，而宿主的 `PRAGMA quick_check`
+    是 ok 的、已有连接也照常读 —— 属于挂载层抖动，不是库坏。
+    2026-11-10 实测：重启后 9 秒触发的手动 ETL 就死在这一步，
+    子进程直接抛异常退出，看起来像「管道坏了」。
+    """
     # 导入模型以确保注册到 Base.metadata
     from app import models  # noqa: F401
 
-    Base.metadata.create_all(bind=engine)
-    _migrate_sqlite()
+    last: Exception | None = None
+    for attempt in range(3):
+        try:
+            Base.metadata.create_all(bind=engine)
+            _migrate_sqlite()
+            return
+        except OperationalError as e:      # noqa: PERF203
+            if "disk I/O error" not in str(e) and "unable to open" not in str(e):
+                raise
+            last = e
+            time.sleep(2)
+    if last is not None:
+        raise last
 
 
 def _migrate_sqlite() -> None:

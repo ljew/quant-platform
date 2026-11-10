@@ -1,17 +1,21 @@
 """模拟盘(Paper Trading) API：任务 CRUD、手动运行、详情、启用切换、重置。"""
 from __future__ import annotations
 
+import json
 import threading
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
+import logging
+
+logger = logging.getLogger("quant.paper")
+
 from app.database import SessionLocal, get_db
 from app.models import PaperTask, PaperTrade, PaperSnapshot
 from app.core.strategies.registry import get_strategy, STRATEGY_REGISTRY
-from app.core.engine.paper_engine import run_paper_task, get_paper_task_detail
+from app.core.engine.paper_engine import get_paper_task_detail
 from app.core.cost_defaults import COMMISSION, SLIPPAGE
 from app.core.eval_profile import build_eval_profile_for_paper
 
@@ -90,15 +94,20 @@ def create_task(req: PaperTaskCreate, db=Depends(get_db)):
 
 
 @router.post("/auto-ensure")
-def auto_ensure_paper(dry_run: bool = False, db=Depends(get_db)):
-    """为「启用且回测超额为正」的策略自动补建模拟盘任务。
+def auto_ensure_paper(dry_run: bool = False, mode: str = "create",
+                      db=Depends(get_db)):
+    """为「启用且回测超额为正」的策略补建模拟盘任务。
 
-    dry_run=true 只返回将要建什么，不落库（页面预览用）。
+    mode="create"（默认）：真的建盘 —— 只给页面上「确认建盘」这个动作。
+    mode="notify"：只返回 proposals，不落库 —— watchdog 自动路径用这个。
+    dry_run=true：预览，不落库（页面展示用）。
     幂等：已有任务的策略跳过，重复调用不会建重复任务。
     """
     from app.services.paper_auto import ensure_paper_for_enabled
 
-    return ensure_paper_for_enabled(db, dry_run=dry_run)
+    if mode not in ("create", "notify"):
+        raise HTTPException(400, "mode 只能是 create 或 notify")
+    return ensure_paper_for_enabled(db, dry_run=dry_run, mode=mode)
 
 
 @router.get("/tasks")
@@ -113,6 +122,10 @@ def list_tasks(db=Depends(get_db)):
             "enabled": t.enabled, "initial_cash": t.initial_cash,
             "equity": detail["equity"], "pnl": detail["pnl"], "pnl_pct": detail["pnl_pct"],
             "positions_count": len(detail["positions"]),
+            # ⚠️ 必须带 last_bar_date：智能体/前端靠它判断「净值跑到哪一天」。
+            # 曾漏返回 → 外部读成 null，误判为「模拟盘从未跑过」（2026-11-10）。
+            "last_bar_date": t.last_bar_date,
+            "account_start": t.account_start, "start_date": t.start_date,
             "last_run_at": detail["last_run_at"], "error_msg": t.error_msg,
         })
     return out
@@ -126,20 +139,108 @@ def task_detail(task_id: int, db=Depends(get_db)):
     return get_paper_task_detail(db, t)
 
 
+@router.get("/tasks/{task_id}/snapshots")
+def task_snapshots(task_id: int, limit: int = 500):
+    """净值快照序列（画曲线用）。按日期升序，方便直接喂图表。"""
+    from app.models import PaperSnapshot
+
+    db = SessionLocal()
+    try:
+        rows = (db.query(PaperSnapshot).filter(PaperSnapshot.task_id == task_id)
+                .order_by(PaperSnapshot.date.desc())
+                .limit(max(1, min(limit, 2000))).all())
+        out = [{"date": str(r.date)[:10], "equity": r.equity, "pnl_pct": r.pnl_pct}
+               for r in reversed(rows)]
+        return {"task_id": task_id, "total": len(out), "points": out}
+    finally:
+        db.close()
+
+
+@router.get("/tasks/{task_id}/deviation")
+def task_deviation(task_id: int, db=Depends(get_db)):
+    """跟踪偏离：实际净值 vs 理论净值。
+
+    两条线从哪来，为什么必须分开：
+    · 理论 = equity_curve_json —— 每次运行都用回测引擎从 start_date **全量重算**，
+      相当于「如果完全按规则走，今天该值多少钱」。
+    · 实际 = paper_snapshots —— 每天增量跑完**当场记下**的那一格，是不再重算的历史事实。
+
+    两者本该重合。不重合的地方就是执行损耗：复权因子后补导致历史被重算、
+    停牌/涨跌停买不进、整手取整的现金残留、资金精度累积。
+    这个差值本身不说明策略好坏 —— 它是「模拟盘这面镜子平不平」的度量。
+
+    ⚠️ 只对比**有快照的日子**。快照从建盘那天开始记，之前的历史只有理论值，
+    拿没有实际值的日期去比会得到一条假的 0 偏离。
+    """
+    from app.models import PaperSnapshot
+
+    t = db.get(PaperTask, task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    theory: dict[str, float] = {}
+    try:
+        for pt in json.loads(t.equity_curve_json or "[]"):
+            d = str(pt.get("date", ""))[:10]
+            if d and pt.get("equity") is not None:
+                theory[d] = float(pt["equity"])
+    except (ValueError, TypeError):
+        theory = {}
+
+    rows = (db.query(PaperSnapshot)
+            .filter(PaperSnapshot.task_id == task_id)
+            .order_by(PaperSnapshot.date).all())
+    points, devs = [], []
+    for r in rows:
+        d = str(r.date)[:10]
+        th = theory.get(d)
+        act = float(r.equity) if r.equity is not None else None
+        if act is None:
+            continue
+        dev = (act / th - 1.0) * 100 if th else None
+        if dev is not None:
+            devs.append(dev)
+        points.append({"date": d, "theory": round(th, 2) if th else None,
+                       "actual": round(act, 2), "dev_pct": round(dev, 3) if dev is not None else None})
+
+    total_days = len(theory)
+    return {
+        "task_id": task_id, "name": t.name, "strategy_key": t.strategy_key,
+        "account_start": t.account_start, "last_bar_date": t.last_bar_date,
+        "theory_days": total_days, "actual_days": len(points),
+        # 快照没覆盖全区间时，这组数字只代表有快照的那几天 —— 前端必须显示这句
+        "partial": len(points) < total_days,
+        "latest_dev_pct": round(devs[-1], 3) if devs else None,
+        "max_dev_pct": round(max(devs), 3) if devs else None,
+        "min_dev_pct": round(min(devs), 3) if devs else None,
+        "points": points,
+    }
+
+
 @router.post("/tasks/{task_id}/run")
 def run_task(task_id: int):
-    """手动触发一次运行（后台线程，避免组合回测阻塞请求）。"""
+    """手动触发一次运行。
+
+    组合走**子进程**（与调度器同一入口）：xq 系的池子要加载全市场面板，
+    在主进程跑会 OOM 拖死整个容器 —— 手动点一下就把平台点挂，是最糟的体验。
+    """
+    db = SessionLocal()
+    try:
+        t = db.get(PaperTask, task_id)
+        if not t:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        kind = t.kind or "single"
+    finally:
+        db.close()
+
     def _bg():
-        db = SessionLocal()
-        try:
-            t = db.get(PaperTask, task_id)
-            if t:
-                run_paper_task(db, t)
-        finally:
-            db.close()
+        from app.services.paper_runner import run_in_subprocess
+        ok, info = run_in_subprocess(task_id, kind)
+        logger.info("手动运行模拟盘 #%s: ok=%s %s", task_id, ok,
+                    info.get("error") or f"{info.get('secs')}s")
 
     threading.Thread(target=_bg, daemon=True).start()
-    return {"ok": True, "message": "已触发后台运行"}
+    return {"ok": True, "message": "已触发后台运行（子进程）", "kind": kind}
 
 
 @router.post("/tasks/{task_id}/toggle")

@@ -136,16 +136,18 @@ def _maybe_heal(db, health: dict) -> str | None:
         from app.core.trading_calendar import is_trading_day
         if not is_trading_day(now.date()):
             return None
-        # 顺带补模拟盘：启用但还没建任务的策略，达标就自动建（幂等）
+        # 顺带扫一遍「启用但还没建盘」的策略。⚠️ 只出建议，不建盘：
+        # 自动建盘等于机器替人下单，出事时没有一道闸（设计文档 09 节已定）。
         try:
             from app.services.paper_auto import ensure_paper_for_enabled
-            r = ensure_paper_for_enabled(db)
-            if r["created"]:
-                logger.info("自动补建模拟盘：%s",
-                            ", ".join(f"{c['strategy_key']}#{c['task_id']}"
-                                      for c in r["created"]))
+            r = ensure_paper_for_enabled(db, mode="notify")
+            props = r.get("proposals") or []
+            if props:
+                logger.info("模拟盘待确认 %d 条：%s", len(props),
+                            ", ".join(p["strategy_key"] for p in props))
+                _notify_paper_proposals(db, props)
         except Exception as e:  # noqa: BLE001
-            logger.info("自动补建模拟盘失败：%s", str(e)[:120])
+            logger.info("模拟盘候选扫描失败：%s", str(e)[:120])
 
         from app.services import orchestrator
         if orchestrator.STATE.get("running"):
@@ -250,3 +252,42 @@ def start_watchdog(interval_sec: int | None = None) -> None:
 
 def status() -> dict:
     return dict(_state)
+
+def _notify_paper_proposals(db, props: list[dict]) -> None:
+    """把「可建盘」的候选推给人。同一天只发一次，避免 30 秒轮询刷屏。
+
+    为什么是邮件而不是直接建：建盘有资金含义。风控可以建议，但按设计文档
+    09 节，落地必须有人点一下 —— 自动建盘在 V 型反转时会把「踏空」变成「满仓」。
+    """
+    from app.services import mailer
+
+    rows = "".join(
+        f"<tr><td style='padding:6px 10px'><b>{p['strategy_key']}</b></td>"
+        f"<td style='padding:6px 10px'>{p['name']}</td>"
+        f"<td style='padding:6px 10px; color:#cf1322; text-align:right'>"
+        f"{p['excess'] * 100:+.2f}%</td>"
+        f"<td style='padding:6px 10px; text-align:right'>{p['trades']}</td>"
+        f"<td style='padding:6px 10px'>{p['start']}</td>"
+        f"<td style='padding:6px 10px; font-size:12px; color:#6b7280'>{p['reason']}</td></tr>"
+        for p in props
+    )
+    html = (
+        "<div style='font:14px/1.7 -apple-system,PingFang SC,sans-serif; color:#1f2430'>"
+        f"<p>有 <b>{len(props)}</b> 个启用策略已达标、但还没有模拟盘：</p>"
+        "<table style='border-collapse:collapse; font-size:13px'>"
+        "<thead><tr style='background:#f8f9fb'>"
+        "<th style='padding:6px 10px; text-align:left'>策略</th>"
+        "<th style='padding:6px 10px; text-align:left'>名称</th>"
+        "<th style='padding:6px 10px; text-align:right'>回测超额</th>"
+        "<th style='padding:6px 10px; text-align:right'>成交</th>"
+        "<th style='padding:6px 10px; text-align:left'>起点</th>"
+        "<th style='padding:6px 10px; text-align:left'>依据</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+        "<p style='color:#6b7280; font-size:12px; margin-top:12px'>"
+        "这一封只是建议，没有建任何任务。要建请在平台「组合跟踪 → 模拟盘」"
+        "点确认，或在智能体对话里让它发起（会走审批）。</p></div>"
+    )
+    mailer.send_email_html(
+        db, f"【待确认】{len(props)} 个策略可建模拟盘", html,
+        dedup_key=f"paper_proposal:{datetime.now():%Y-%m-%d}",
+    )

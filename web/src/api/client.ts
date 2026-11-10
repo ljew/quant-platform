@@ -25,6 +25,152 @@ export const del = <T>(path: string) => request<T>(path, { method: "DELETE" });
 
 // —— 类型 ——
 /** 策略参数元数据（后端 registry 提供，含分组）。 */
+/** 回测列表项（/strategy/backtests）。 */
+export interface BacktestListItem {
+  id: number;
+  strategy_key: string;
+  strategy_name: string;
+  start_date: string;
+  end_date: string;
+  total_return: number | null;
+  benchmark_total_return: number | null;
+  excess_return: number | null;
+  sharpe: number | null;
+  max_drawdown: number | null;
+  win_rate: number | null;
+  trade_count: number | null;
+  created_at: string | null;
+}
+
+/** 回测详情（/strategy/backtests/{id} 的实际返回，含双线曲线与归因字段）。
+ *  注意与 BacktestResult 的区别：后端这个接口给的是 start/end（不是 start_date），
+ *  equity_curve 带 benchmark/hedged。 */
+export interface BacktestFull {
+  id: number;
+  symbol: string;
+  start: string;
+  end: string;
+  strategy_key: string;
+  total_return: number | null;
+  benchmark_total_return: number | null;
+  excess_return: number | null;
+  sharpe: number | null;
+  max_drawdown: number | null;
+  trade_count: number | null;
+  final_equity: number | null;
+  equity_curve: { date: string; equity: number; benchmark?: number | null; hedged?: number | null }[];
+  industry_distribution: Record<string, number> | null;
+  holdings: unknown[];
+  round_trips: unknown;
+  hedged_total_return: number | null;
+  hedged_sharpe: number | null;
+  hedged_max_drawdown: number | null;
+  params: Record<string, unknown> | null;
+}
+
+/** 一次寻优（/strategy/optimize/runs，已落库）。 */
+export interface OptimizeRunRow {
+  id: number;
+  job_id: string;
+  strategy_key: string;
+  status: string;
+  total: number;
+  done: number;
+  best_sharpe: number | null;
+  best_excess: number | null;
+  /** 最优组的样本外夏普（读时从 result_json 算，单标的是唯一能看的防过拟合指标） */
+  best_oos_sharpe?: number | null;
+  best_params: Record<string, unknown>;
+  /** 这次跑的标的与区间（来自 payload_json）—— 同一策略两次寻优要靠它区分 */
+  symbol?: string;
+  start?: string;
+  end?: string;
+  rank_by?: string;
+  oos_ratio?: number | null;
+  error: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+/** 表级新鲜度（/monitor/table-freshness）。 */
+export interface TableFreshnessRow {
+  table: string;
+  date_col: string | null;
+  rows: number;
+  latest: string | null;
+  days_ago: number | null;
+  status: "OK" | "WARN" | "FAIL" | "EMPTY" | "n/a";
+  note?: string;
+}
+
+export interface TableFreshness {
+  as_of: string;
+  grace_days: number;
+  total: number;
+  counts: Record<string, number>;
+  worst: string;
+  tables: TableFreshnessRow[];
+}
+
+export interface AlertLogItem {
+  id: number; level: string; channel: string; status: string;
+  title: string; error: string | null; at: string | null;
+}
+
+/** 凭证集中（系统服务页）：一把钥匙一行，只给尾号不给明文。 */
+/** 研究卡决策时间线：一张卡从建卡到上模拟盘的全部事件（人工决策 + 机器事实）。 */
+export interface TimelineEvent {
+  at: string;
+  kind: string;   // created / state / backtest / optimize / paper
+  title: string;
+  detail: string;
+  metric: { label: string; value: string; good: boolean } | null;
+}
+
+/** 跟踪偏离：实际快照 vs 理论净值（回测重算）。partial=true 表示只覆盖有快照的日子。 */
+export interface PaperDeviation {
+  task_id: number;
+  name: string;
+  strategy_key: string;
+  account_start: string | null;
+  last_bar_date: string | null;
+  theory_days: number;
+  actual_days: number;
+  partial: boolean;
+  latest_dev_pct: number | null;
+  max_dev_pct: number | null;
+  min_dev_pct: number | null;
+  points: { date: string; theory: number | null; actual: number; dev_pct: number | null }[];
+}
+
+export interface CardTimeline {
+  card_id: number;
+  key: string;
+  name: string;
+  strategy_key: string;
+  count: number;
+  counts: Record<string, number>;
+  events: TimelineEvent[];
+}
+
+export interface CredentialItem {
+  key: string;
+  label: string;
+  kind: string;          // 数据源 / 能力 / 出口 / 凭证 / 退路
+  status: string;        // ok / warn / missing
+  detail: string;
+  where: string;
+  updated_at: string | null;
+  hint: string;
+  action: { label: string; href: string } | null;
+}
+
+export interface CredentialsReport {
+  checked_at: string;
+  counts: { ok: number; warn: number; missing: number };
+  items: CredentialItem[];
+}
+
 export interface ParamField {
   key: string;
   label: string;
@@ -300,6 +446,17 @@ export const api = {
   walkForward: (payload: WalkForwardRequest) =>
     post<WalkForwardResult>("/strategy/backtest/walk-forward", payload),
   // 参数寻优
+  strategyBacktests: (limit = 20) =>
+    get<BacktestListItem[]>(`/strategy/backtests?limit=${limit}`),
+  paperSnapshots: (taskId: number, limit = 500) =>
+    get<{ task_id: number; total: number; points: { date: string; equity: number; pnl_pct: number }[] }>(
+      `/paper/tasks/${taskId}/snapshots?limit=${limit}`),
+  backtestFull: (btId: number) =>
+    get<BacktestFull>(`/strategy/backtests/${btId}`),
+  optimizeRuns: (strategyKey?: string, limit = 10) =>
+    get<{ total: number; runs: OptimizeRunRow[] }>(
+      `/strategy/optimize/runs?limit=${limit}` +
+      (strategyKey ? `&strategy_key=${encodeURIComponent(strategyKey)}` : "")),
   optimize: (payload: Record<string, unknown>) =>
     post<OptimizeTrial[]>("/strategy/optimize", payload),
   // 大网格：提交后台任务（子进程执行），轮询进度
@@ -323,6 +480,8 @@ export const api = {
     return r.json();
   },
   paperDetail: (id: number) => get<PaperDetail>(`/paper/tasks/${id}`),
+  /** 跟踪偏离：实际 vs 理论。只对比有快照的日子，partial 标记覆盖不全。 */
+  paperDeviation: (id: number) => get<PaperDeviation>(`/paper/tasks/${id}/deviation`),
   // 监控
   monitor: () => get<MonitorStatus>("/monitor/status"),
   // 因子挖掘
@@ -394,7 +553,13 @@ export const api = {
   llmTestDraft: (p: { id?: number; base_url: string; model: string; api_key?: string }) =>
     post<LlmTestResult>("/llm/test", p),
   // 数据健康度 + 数据流全景
+  tableFreshness: (force = false) =>
+    get<TableFreshness>(`/monitor/table-freshness?fresh=${force}`),
+  alertLog: (limit = 50, level?: string) =>
+    get<{ total: number; counts: Record<string, number>; items: AlertLogItem[] }>(
+      `/monitor/alert-log?limit=${limit}${level ? `&level=${level}` : ""}`),
   monitorHealth: () => get<HealthReport>(`/monitor/health-report`),
+  monitorCredentials: () => get<CredentialsReport>(`/monitor/credentials`),
   frameworkHealth: () => get<FrameworkHealth>(`/monitor/framework-health`),
   holidayMode: () => get<HolidayMode>(`/monitor/holiday-mode`),
   setHolidayMode: (mode: "auto" | "on" | "off") =>
@@ -1002,6 +1167,11 @@ export interface PaperTask {
   pnl_pct: number;
   positions_count: number;
   last_run_at?: string;
+  /** 净值算到哪天（数据日期），与 last_run_at（最后运行时刻）不是一回事 */
+  last_bar_date?: string | null;
+  /** 建仓日：vs 基准要按「同一段时间」比，所以基准区间用这个而不是今天减一年 */
+  account_start?: string | null;
+  start_date?: string | null;
   error_msg?: string | null;
 }
 
@@ -1463,6 +1633,22 @@ export const researchApi = {
   transition: (id: number, to_state: string, reason: string) =>
     post<{ ok: boolean; changed: boolean; state: string }>(`/research/cards/${id}/transition`, { to_state, reason }),
   card: (id: number) => get<ResearchCardItem>(`/research/cards/${id}`),
+  /** 决策时间线：人工决策（状态流转）+ 机器事实（回测/寻优/模拟盘）按时间合并。 */
+  timeline: (id: number) => get<CardTimeline>(`/research/cards/${id}/timeline`),
+  /** 建卡（因子入册用）。evidence 里带 source_mine_id，卡片就能回答「来自哪次挖掘」。 */
+  create: (payload: {
+    card_type: "strategy" | "factor";
+    key: string;
+    name: string;
+    hypothesis?: string;
+    data_spec?: string;
+    evidence?: Record<string, unknown>;
+    cost_note?: string;
+    fail_condition?: string;
+    state?: string;
+    history_note?: string;
+    actor?: string;
+  }) => post<ResearchCardItem>("/research/cards", payload),
   cardSignals: (id: number, date?: string) =>
     get<CardSignalsResp>(`/research/cards/${id}/signals${date ? `?date=${date}` : ""}`),
 };
@@ -1983,4 +2169,18 @@ export const etfFlowApi = {
   sample: () => post<{ ok: boolean; points: number }>("/etf-flow/sample", {}),
   /** 强制拉当日官方 1min 线；ok=false 表示源站还没发布，不是出错 */
   minutes: () => post<{ ok: boolean; symbols: number; message: string }>("/etf-flow/minutes", {}),
+};
+
+/** 智能体门户：dsh 是否在线，以及同域入口。 */
+export interface AgentPortalStatus {
+  alive: boolean;
+  detail: string;
+  has_token: boolean;
+  entry: string;
+  upstream: string;
+  hint: string;
+}
+
+export const agentPortalApi = {
+  status: () => get<AgentPortalStatus>("/portal/status"),
 };

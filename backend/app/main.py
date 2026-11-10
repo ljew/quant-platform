@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings, BASE_DIR
 from app.database import init_db
-from app.routers import data, market, strategy, paper, hedge, monitor, factor, llm, signal, agent, news, auto, research, live_ops, wechat, etf_flow, reports, fund
+from app.routers import data, market, strategy, paper, hedge, monitor, factor, llm, signal, agent, news, auto, research, live_ops, wechat, etf_flow, reports, fund, agent_portal
 from app.schemas import HealthResponse
 
 import logging
@@ -66,6 +66,10 @@ app.include_router(etf_flow.router, prefix=settings.api_prefix)
 app.include_router(reports.router, prefix=settings.api_prefix)
 # 基金持续性（只读）：统计由 build_stats.py 预计算进 fund_stat_cache
 app.include_router(fund.router, prefix=settings.api_prefix)
+# 智能体门户：/api/v1/portal/*（状态/引导） + 根级 /agent/*（dsh 反代）
+# 反代必须挂在根级，且要在最后那个 "/" 的 StaticFiles mount 之前注册。
+app.include_router(agent_portal.api_router, prefix=settings.api_prefix)
+app.include_router(agent_portal.proxy_router)
 
 
 @app.on_event("startup")

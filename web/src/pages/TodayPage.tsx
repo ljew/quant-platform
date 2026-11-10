@@ -8,7 +8,6 @@ import { Badge, Card, PageHeader } from "../components/ui";
 import EChart from "../components/EChart";
 import DigestCard from "../components/DigestCard";
 import HotBriefCard from "../components/HotBriefCard";
-import TodayRobustnessCard from "../components/TodayRobustnessCard";
 import { agentApi, api, get, newsApi, AgentState, KlineBar, NewsFeed } from "../api/client";
 import { localDate } from "../utils/date";
 import { formatPrice2, klineTooltip } from "../utils/klineTooltip";
@@ -295,7 +294,14 @@ export default function TodayPage() {
                 {drawerLoading && <span style={{ color: colors.muted, fontWeight: 400, marginLeft: 8 }}>加载中…</span>}
                 <span style={{ float: "right", display: "flex", gap: 8 }}>
                   <button
-                    onClick={() => window.dispatchEvent(new CustomEvent("quant-nav", { detail: { tab: "market" } }))}
+                    onClick={() => {
+                      // 带上标的：只跳「行情」不带代码，到了那边看到的还是默认那只。
+                      // 用 sessionStorage 兜底 —— 行情页是懒加载，事件可能先于挂载。
+                      try { sessionStorage.setItem("market_focus_symbol", drawer.symbol); } catch { /* 隐私模式 */ }
+                      window.dispatchEvent(new CustomEvent("quant-nav", {
+                        detail: { tab: "market", symbol: drawer.symbol },
+                      }));
+                    }}
                     style={{ border: 0, background: "transparent", color: colors.accent, cursor: "pointer", fontSize: 12 }}>
                     完整行情看板 →
                   </button>
@@ -335,12 +341,9 @@ export default function TodayPage() {
         </div>
       </div>
 
-      {/* —— 策略体检（原「稳健摘要」）：数据新鲜度 + 最近评估徽章 + OOS/成本入口 ——
-          放最下方：这是研发期的周期性检查（一周看一次），不是每日决策信息。
-          之前排在全景和简报之前，把「今天做什么」挤下去了。 */}
-      <div style={{ marginTop: 14 }}>
-        <TodayRobustnessCard colors={colors} />
-      </div>
+      {/* 策略体检（数据新鲜度 / OOS 门禁 / 成本口径）已搬到「策略研究 → 总览」。
+          它是研发期一周看一次的检查，压在首页最底部只会把「今天做什么」挤下去。
+          设计文档 08 节：这一页不负责自检，只负责今天该干什么。 */}
     </div>
   );
 }

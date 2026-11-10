@@ -54,7 +54,20 @@ def sync_all(only: Optional[list[str]] = None, verbose: bool = True) -> dict[str
 
     con = duckdb.connect(DUCKDB_DB)
     try:
-        con.execute("INSTALL sqlite; LOAD sqlite;")
+        # 🔴 必须先关掉自动安装：容器访问 extensions.duckdb.org 是整站 403，
+        # DuckDB 会为 INSTALL sqlite 反复重试，**整条管道就挂在这一步**（实测挂 30 分钟、
+        # 线程杀不掉，DuckDB 写锁还留在进程里，之后所有读 DuckDB 的接口一起降级）。
+        # 关掉后 LOAD 立刻报「扩展不存在」，同步步骤快速失败，管道能跑完。
+        con.execute("SET autoinstall_known_extensions=false; SET autoload_known_extensions=false;")
+        try:
+            con.execute("LOAD sqlite;")
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(
+                "DuckDB sqlite 扩展不可用，分析库本次跳过同步。"
+                f"根因：{str(e)[:120]}。"
+                "修法：在有网的环境 `duckdb -c \"INSTALL sqlite\"` 后把 "
+                "~/.duckdb/extensions 打进镜像，或改用 pyarrow 直读 SQLite。"
+            ) from e
         con.execute(f"ATTACH '{SQLITE_DB}' AS old (TYPE sqlite);")
         result: dict[str, tuple[int, int]] = {}
         for tbl in tables:

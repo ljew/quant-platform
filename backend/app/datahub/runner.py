@@ -585,10 +585,18 @@ def step_score_sentiment(db) -> int:
 
 
 def step_sync_duckdb(db) -> int:
-    """分析库同步（Gold 层写入后）。"""
-    from app.services.duckdb_sync import sync_after_seed
+    """分析库同步（Gold 层写入后）。
 
-    sync_after_seed()
+    ⚠️ 用 sync_all 而不是 sync_after_seed：后者把异常吞成一行 print，
+    结果是「步骤绿着、分析库压根没动」。这里捕获后上报 note，
+    步骤会显示「完成 0 行（跳过：xxx）」，看得出发生了什么。
+    """
+    from app.services.duckdb_sync import sync_all
+
+    try:
+        sync_all()
+    except Exception as e:  # noqa: BLE001
+        _STEP_STATS.setdefault("sync_duckdb", {})["note"] = f"跳过：{str(e)[:90]}"
     return 0
 
 
@@ -860,6 +868,10 @@ def run_pipeline(trigger: str = "manual", only: list[str] | None = None,
                         extra = "（数据已最新，无需补）"
                     elif st and st.get("need_dates"):
                         extra = f"（补 {len(st['need_dates'])} 个交易日）"
+                    elif st and st.get("note"):
+                        # 备注型：这步没干成活，但不是数据的问题（如分析库扩展缺），
+                        # 既不该绿着糊弄人，也不该把整条管道标成失败
+                        extra = f"（{st['note']}）"
                     log.message = f"{name} 完成 {rows} 行{extra}"
                     steps_ok += 1
             except Exception as e:  # noqa: BLE001

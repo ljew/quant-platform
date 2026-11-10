@@ -1,5 +1,5 @@
 /**
- * 研究卡（策略研究 · 首个 Tab）：一个策略/因子 = 一张标准卡片。
+ * 策略库（策略研究 · 首个 Tab，原「研究卡」）：一个策略/因子 = 一张标准卡片。
  * 平时不用看；有建议时顶部横幅提醒你，点「同意」即执行（下一次跑批生效）。
  * 点击卡片进入整页详情：完整档案 + 信号日历 + 绩效细分 + 决策历史。
  * 数据源：GET /research/cards + /research/suggestions（证据由每周复盘自动刷新）。
@@ -112,7 +112,12 @@ function CardSummary({ card, onOpen }: { card: ResearchCardItem; onOpen: () => v
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <span style={{ fontWeight: 700, fontSize: 15 }}>
           {card.name}
-          <span style={{ color: colors.muted, fontSize: 10.5, marginLeft: 6, border: `1px solid ${colors.border}`, borderRadius: 4, padding: "0 5px" }}>
+          <span style={{
+            color: isFactor ? "#6c5ce7" : colors.accent,
+            border: `1px solid ${isFactor ? "#6c5ce744" : `${colors.accent}44`}`,
+            background: isFactor ? "#6c5ce710" : `${colors.accent}10`,
+            fontSize: 10.5, marginLeft: 6, borderRadius: 4, padding: "0 5px",
+          }}>
             {isFactor ? "因子" : "策略"}
           </span>
         </span>
@@ -165,13 +170,19 @@ function CardSummary({ card, onOpen }: { card: ResearchCardItem; onOpen: () => v
   );
 }
 
-export default function ResearchCardsPage() {
+export default function ResearchCardsPage({ initialDetailId, initialTab }: { initialDetailId?: number; initialTab?: string }) {
   const { colors } = useTheme();
   const [data, setData] = useState<{ total: number; state_count: Record<string, number>; cards: ResearchCardItem[] } | null>(null);
   const [suggestions, setSuggestions] = useState<CardSuggestion[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [showRetired, setShowRetired] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [detailId, setDetailId] = useState<number | null>(null);
+  // 深链：#cards/384 直接进详情（智能体产物「跳回核对」用）。
+  const [detailId, setDetailId] = useState<number | null>(initialDetailId ?? null);
+
+  useEffect(() => {
+    setDetailId(initialDetailId ?? null);
+  }, [initialDetailId]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -194,21 +205,33 @@ export default function ResearchCardsPage() {
     return (
       <ResearchCardDetailPage
         cardId={detailId}
-        onBack={() => { setDetailId(null); load(); }}
+        initialTab={initialTab}
+        onBack={() => {
+          setDetailId(null);
+          // 同步把地址栏的 /384 去掉，否则刷新又跳回详情
+          window.history.replaceState(null, "", "#cards");
+          load();
+        }}
       />
     );
   }
 
-  const cards = [...(data?.cards ?? [])].sort((a, b) => {
-    const d = STATE_ORDER.indexOf(a.state) - STATE_ORDER.indexOf(b.state);
-    if (d !== 0) return d;
-    return (b.evidence?.exc_10 ?? b.evidence?.ic_mean ?? -99) - (a.evidence?.exc_10 ?? a.evidence?.ic_mean ?? -99);
-  });
+  // 默认隐藏已退役的（2026-11-10 老刘：「策略研究这里面垃圾还比较多」——
+  // 26 张里有 20 张 retired，全铺在页面上，能用的 6 张被淹了）。
+  // 数据不删，退役记录留着可追溯；要看时点漏斗里的「退役」格切换。
+  const retiredCount = data?.state_count?.retired ?? 0;
+  const cards = [...(data?.cards ?? [])]
+    .filter((c) => showRetired || c.state !== "retired")
+    .sort((a, b) => {
+      const d = STATE_ORDER.indexOf(a.state) - STATE_ORDER.indexOf(b.state);
+      if (d !== 0) return d;
+      return (b.evidence?.exc_10 ?? b.evidence?.ic_mean ?? -99) - (a.evidence?.exc_10 ?? a.evidence?.ic_mean ?? -99);
+    });
 
   return (
     <div>
       <PageHeader
-        title="研究卡"
+        title="策略库"
         desc="一个策略/因子 = 一张标准卡片 · 平时不用看，有建议时顶部会提醒你 · 点卡片进详情页看完整分析"
         actions={<Btn onClick={load} kind="ghost" small>{loading ? "刷新中…" : "刷新"}</Btn>}
       />
@@ -237,9 +260,23 @@ export default function ResearchCardsPage() {
           );
         })}
       </div>
-      <div style={{ fontSize: 11.5, color: colors.muted, textAlign: "center", marginBottom: 20 }}>
+      <div style={{ fontSize: 11.5, color: colors.muted, textAlign: "center", marginBottom: 8 }}>
         这行数字是系统的「资产负债表」：启用几个 = 有几个策略在动钱 · 升级自动执行 · 降级/退役需你确认
       </div>
+      {retiredCount > 0 && (
+        <div style={{ textAlign: "center", marginBottom: 18 }}>
+          <button
+            onClick={() => setShowRetired((v) => !v)}
+            style={{
+              border: `1px solid ${colors.border}`, background: showRetired ? colors.card : "transparent",
+              color: colors.muted, borderRadius: 999, padding: "3px 14px",
+              fontSize: 11.5, cursor: "pointer",
+            }}
+          >
+            {showRetired ? `▾ 已显示 ${retiredCount} 张退役卡（点击收起）` : `▸ 展开 ${retiredCount} 张已退役（默认隐藏）`}
+          </button>
+        </div>
+      )}
 
       {/* —— 卡片墙 —— */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(330px, 1fr))", gap: 14 }}>
@@ -248,7 +285,7 @@ export default function ResearchCardsPage() {
         ))}
       </div>
       {!loading && cards.length === 0 && !err && (
-        <div style={{ color: colors.muted, fontSize: 13, padding: 30, textAlign: "center" }}>暂无研究卡</div>
+        <div style={{ color: colors.muted, fontSize: 13, padding: 30, textAlign: "center" }}>暂无策略</div>
       )}
 
       {/* —— 名词解释 —— */}

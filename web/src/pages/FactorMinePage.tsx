@@ -7,6 +7,7 @@ import EvalBadges from "../components/EvalBadges";
 import {
   api, AiExplainResult, AiGenerateResult, AiStatus,
   FactorHorizonRow, FactorMineReport, FactorMineSummary, GpMineResult, NewsEventReport,
+  researchApi,
 } from "../api/client";
 import { useTheme, ThemeColors } from "../theme";
 
@@ -31,6 +32,9 @@ export default function FactorMinePage() {
   const [valid, setValid] = useState<{ ok: boolean; error?: string; sample_value?: number | null } | null>(null);
   const [running, setRunning] = useState(false);
   const [report, setReport] = useState<FactorMineReport | null>(null);
+  // 两屏：列表（造因子 + 看历史）｜详情（一份完整检验报告）。
+  // 原来是一页到底，历史压在最下面，看报告要滚过 5 个挖掘区块。
+  const [view, setView] = useState<"list" | "detail">("list");
   const [history, setHistory] = useState<FactorMineSummary[]>([]);
   const [error, setError] = useState("");
   // 新闻情绪择时（市场级 · 非结构化数据）。个股 news_senti 仍因覆盖不足不参与截面挖掘。
@@ -134,7 +138,7 @@ export default function FactorMinePage() {
       });
       setGpResult(r);
       loadHistory();
-      if (r.elites.length > 0) setReport(r.elites[0]);
+      if (r.elites.length > 0) { setReport(r.elites[0]); setView("detail"); }
     } catch (e) {
       setError(`GP 挖掘失败: ${(e as Error).message}`);
     } finally {
@@ -159,6 +163,7 @@ export default function FactorMinePage() {
     try {
       const r = await api.factorMine({ expr, name, start, end, groups, forward, force, orthogonalize });
       setReport(r);
+      setView("detail");
       loadHistory();
     } catch (e) {
       setError((e as Error).message);
@@ -190,8 +195,21 @@ export default function FactorMinePage() {
     <div style={{ maxWidth: 1240, margin: "0 auto" }}>
       <PageHeader
         title="因子实验室"
-        desc="在这里造新因子（表达式 / GP 挖掘 / AI 生成）· 造好了去「研究卡」上岗：登记 → 候选 → 启用"
-        actions={<Btn onClick={() => setShowFns(!showFns)} kind="ghost" small>函数参考</Btn>}
+        desc="在这里造新因子（表达式 / GP 挖掘 / AI 生成）· 造好了去「策略库」上岗：入册为研究卡 → 登记 → 候选 → 启用"
+        actions={
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn kind="ghost" small
+              onClick={() => {
+                setView("list");
+                // 等下一帧再滚：详情切回列表时节点刚挂载，立即 scroll 会落空
+                setTimeout(() => document.getElementById("mine-history")
+                  ?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+              }}>
+              挖掘历史（{history.length}）
+            </Btn>
+            <Btn onClick={() => setShowFns(!showFns)} kind="ghost" small>函数参考</Btn>
+          </div>
+        }
       />
 
       {/* —— 舆情策略（情绪择时 + 重点行业 + 重点个股）——
@@ -200,6 +218,7 @@ export default function FactorMinePage() {
         <SentimentStrategyCard />
       </div>
 
+      {view === "list" && (<>
       {/* —— 新闻情绪择时（市场级 · 非结构化数据）—— */}
       <div style={{ marginBottom: 16 }}>
         <Card
@@ -642,7 +661,8 @@ lsof -ti:8000 -sTCP:LISTEN | xargs kill
                         <td><RatingBadge rating={el.rating} colors={colors} /></td>
                         <td className="num">{cx}</td>
                         <td className="num">{ci ? `${ci.crisis_ic}`.slice(0, 6) + ` (${ci.crisis_used})` : "—"}</td>
-                        <td><a style={{ color: colors.accent, cursor: "pointer", fontSize: 12 }} onClick={() => setReport(el)}>报告</a></td>
+                        <td><a style={{ color: colors.accent, cursor: "pointer", fontSize: 12 }}
+                          onClick={() => { setReport(el); setView("detail"); }}>报告</a></td>
                       </tr>
                     );
                   })}
@@ -656,19 +676,12 @@ lsof -ti:8000 -sTCP:LISTEN | xargs kill
         </Card>
       </div>
 
-      {/* —— 报告 —— */}
-      {report ? <MineReport report={report} colors={colors} start={start} end={end} onForce={() => runMine(true)} /> : (
-        <Card colors={colors} pad={40}>
-          <div style={{ textAlign: "center", color: colors.muted, fontSize: 13.5, lineHeight: 2 }}>
-            输入表达式并点击「开始挖掘」<br />
-            将对核心池（约 1800 只）逐月截面计算，输出完整有效性检验报告
-          </div>
-        </Card>
-      )}
-
       {/* —— 历史 —— */}
-      <div style={{ marginTop: 16 }}>
-        <Card title={`挖掘历史（${history.length}）`} colors={colors} pad={0}>
+      <div style={{ marginTop: 16 }} id="mine-history">
+        <Card title={`挖掘历史（${history.length}）`} colors={colors} pad={0}
+          extra={<span style={{ fontSize: 11.5, color: colors.muted }}>
+            点因子名进详情 · 详情里可以「入册为研究卡」
+          </span>}>
           {history.length > 0 ? (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
               <thead>
@@ -682,7 +695,7 @@ lsof -ti:8000 -sTCP:LISTEN | xargs kill
                   <tr key={h.id} style={{ borderTop: `1px solid ${colors.border}` }}>
                     <td style={{ padding: "9px 16px" }}>{h.id}</td>
                     <td>
-                      <a onClick={() => api.factorMineDetail(h.id).then(setReport)} style={{ color: colors.accent, cursor: "pointer", fontWeight: 500 }}>{h.name}</a>
+                      <a onClick={() => api.factorMineDetail(h.id).then((r) => { setReport(r); setView("detail"); })} style={{ color: colors.accent, cursor: "pointer", fontWeight: 500 }}>{h.name}</a>
                     </td>
                     <td style={{ fontFamily: "monospace", fontSize: 11.5, maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{h.expr}</td>
                     <td className="num">{h.ic_mean?.toFixed(4) ?? "—"}</td>
@@ -702,6 +715,30 @@ lsof -ti:8000 -sTCP:LISTEN | xargs kill
           )}
         </Card>
       </div>
+      </>)}
+
+      {view === "detail" && (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "4px 0 12px" }}>
+            <Btn small kind="ghost" onClick={() => setView("list")}>← 回列表</Btn>
+            <span style={{ fontSize: 12.5, color: colors.muted }}>
+              {report ? `${report.name} · 挖掘记录 #${report.duplicate_of ?? report.id ?? "—"}` : "没有选中的因子"}
+            </span>
+          </div>
+          {report ? (
+            <MineReport report={report} colors={colors} start={start} end={end}
+              onForce={() => runMine(true)} />
+          ) : (
+            <Card colors={colors} pad={40}>
+              <div style={{ textAlign: "center", color: colors.muted, fontSize: 13.5, lineHeight: 2 }}>
+                {running
+                  ? <>正在重算这一份报告…（全区间截面计算，通常 20~60 秒）</>
+                  : <>还没有选中的因子。<br />回列表点一条挖掘记录，或新挖一个。</>}
+              </div>
+            </Card>
+          )}
+        </>
+      )}
 
       <style>{`.num{fontVariantNumeric:tabular-nums}`}</style>
 
@@ -741,6 +778,15 @@ function MineReport({ report, colors, start, end, onForce }: { report: FactorMin
   const [lifeMsg, setLifeMsg] = useState("");
   const [regId, setRegId] = useState<number | null>(null);
   const [regStatus, setRegStatus] = useState<string | null>(null);
+  // 入册为研究卡：把「跑过一次」变成「进决策流程的一张卡」
+  const [cardName, setCardName] = useState(report.name);
+  const [hypothesis, setHypothesis] = useState("");
+  const [failCond, setFailCond] = useState("");
+  const [cardState, setCardState] = useState("watch");
+  const [drafting, setDrafting] = useState(false);
+  const [savingCard, setSavingCard] = useState(false);
+  const [cardMsg, setCardMsg] = useState("");
+  const [createdId, setCreatedId] = useState<number | null>(null);
 
   const loadHorizons = useCallback(async () => {
     setHorizonsBusy(true);
@@ -807,6 +853,74 @@ function MineReport({ report, colors, start, end, onForce }: { report: FactorMin
       setLifeMsg(r.existed ? `已在注册表 (#${r.id}, ${r.status})` : `已登记 (#${r.id}, ${r.status})`);
     } catch (e) {
       setLifeMsg(`登记失败: ${(e as Error).message}`);
+    }
+  };
+
+  /** AI 生成假设草稿。只是「怎么读这个表达式」的解读，不是证据 —— 文案里要说清。 */
+  const draftHypothesis = async () => {
+    setDrafting(true);
+    setCardMsg("");
+    try {
+      const r = await api.factorAiExplain(report.expr);
+      if (!r.ok) throw new Error(r.error || "AI 未返回内容");
+      const parts = [
+        r.name ? `${r.name}` : "",
+        r.logic || "",
+        r.direction ? `方向：${r.direction}` : "",
+        r.caveats ? `注意：${r.caveats}` : "",
+      ].filter(Boolean);
+      setHypothesis(parts.join("\n\n"));
+      setCardMsg("已生成草稿 —— 这是模型对表达式的解读，不是证据。请按你自己的理解改写后再入册。");
+    } catch (e) {
+      setCardMsg(`生成失败：${(e as Error).message}。可以直接手写假设。`);
+    } finally {
+      setDrafting(false);
+    }
+  };
+
+  /** 入册：建一张 factor 卡，evidence 里带 source_mine_id —— 卡片能回答「来自哪次挖掘」。 */
+  const registerAsCard = async () => {
+    if (!cardName.trim()) { setCardMsg("名称不能为空"); return; }
+    setSavingCard(true);
+    setCardMsg("");
+    try {
+      const mineId = report.duplicate_of ?? report.id ?? null;
+      const card = await researchApi.create({
+        card_type: "factor",
+        // key 用挖掘 id：中文名没法做 slug，而「可追溯到哪次挖掘」比可读更重要
+        key: `f_mine_${mineId ?? Date.now()}`,
+        name: cardName.trim(),
+        hypothesis: hypothesis.trim(),
+        data_spec: `${start} ~ ${end} · forward ${report.forward_days}d · ${report.groups} 组 · 核心池`,
+        evidence: {
+          source_mine_id: mineId,
+          source_expr: report.expr,
+          rating: report.rating,
+          ic_mean: report.ic_mean,
+          icir: report.icir,
+          t_stat: report.t_stat,
+          ic_win_rate: report.ic_win_rate,
+          n_periods: report.n_periods,
+          n_stocks: report.n_stocks,
+          mono_score: report.mono_score,
+          monotonic_spread: report.monotonic_spread,
+          max_abs_corr: report.max_abs_corr,
+          // 多重检验一起带上：离开这份上下文，t=3 会被当成 t=3 那么简单
+          n_tested_cum: report.n_tested_cum ?? report.multiple_testing?.n_tested_cum ?? null,
+          luck_bar: report.luck_bar ?? report.multiple_testing?.luck_bar ?? null,
+          bonferroni_alpha: report.bonferroni_alpha ?? report.multiple_testing?.bonferroni_alpha ?? null,
+        },
+        fail_condition: failCond.trim(),
+        state: cardState,
+        history_note: `由因子实验室入册 · 挖掘记录 #${mineId ?? "?"}`,
+        actor: "human",
+      });
+      setCreatedId(card.id);
+      setCardMsg(`已建卡 #${card.id} —— 在「策略研究 → 策略库」里能看到。`);
+    } catch (e) {
+      setCardMsg(`建卡失败：${(e as Error).message}`);
+    } finally {
+      setSavingCard(false);
     }
   };
 
@@ -1097,6 +1211,78 @@ function MineReport({ report, colors, start, end, onForce }: { report: FactorMin
             {lifeMsg}
           </div>
         )}
+      </Card>
+
+      {/* ⑥ 入册为研究卡。没有这一步，实验室里的因子永远是「跑过一次」，
+          进不了决策流程 —— 而设计文档 09 节要求「能回答这张卡来自哪次挖掘」。 */}
+      <Card title="⑥ 入册为研究卡（进策略库、参与决策）" colors={colors}>
+        <div style={{ fontSize: 12.5, color: colors.muted, lineHeight: 1.9, marginBottom: 12 }}>
+          来源：挖掘记录 <b style={{ color: colors.text }}>#{report.duplicate_of ?? report.id ?? "—"}</b>
+          {" · "}评级 <b style={{ color: colors.text }}>{report.rating}</b>
+          {" · "}t=<b style={{ color: colors.text }}>{report.t_stat?.toFixed(2)}</b>
+          {" · "}IC 均值 <b style={{ color: colors.text }}>{(report.ic_mean * 100).toFixed(2)}%</b>
+          {" · "}累计已检验 <b style={{ color: colors.text }}>{report.n_tested_cum ?? report.multiple_testing?.n_tested_cum ?? "—"}</b> 次
+          <br />
+          表达式 <code style={{ fontSize: 11.5 }}>{report.expr}</code>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 160px", gap: 12 }}>
+          <label style={{ fontSize: 11.5, color: colors.muted }}>
+            卡片名称
+            <input value={cardName} onChange={(e) => setCardName(e.target.value)}
+              style={{ ...inputStyle(colors), marginTop: 4 }} />
+          </label>
+          <label style={{ fontSize: 11.5, color: colors.muted }}>
+            初始状态
+            <select value={cardState} onChange={(e) => setCardState(e.target.value)}
+              style={{ ...inputStyle(colors), marginTop: 4 }}>
+              <option value="watch">观察（watch）</option>
+              <option value="candidate">候选（candidate）</option>
+              <option value="enabled">启用（enabled）</option>
+            </select>
+          </label>
+        </div>
+
+        <label style={{ display: "block", fontSize: 11.5, color: colors.muted, marginTop: 10 }}>
+          假设（为什么它能预测）
+          <textarea value={hypothesis} onChange={(e) => setHypothesis(e.target.value)}
+            rows={4} placeholder="例如：放量突破前的缩量代表筹码锁定，突破后资金接力的概率更高……"
+            style={{ ...inputStyle(colors), marginTop: 4, resize: "vertical", lineHeight: 1.7 }} />
+        </label>
+
+        <label style={{ display: "block", fontSize: 11.5, color: colors.muted, marginTop: 10 }}>
+          失效条件（什么情况下这张卡作废）
+          <textarea value={failCond} onChange={(e) => setFailCond(e.target.value)}
+            rows={2} placeholder="例如：连续 2 个季度 IC 为负，或与动量因子相关性升到 0.7 以上"
+            style={{ ...inputStyle(colors), marginTop: 4, resize: "vertical", lineHeight: 1.7 }} />
+        </label>
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 12, flexWrap: "wrap" }}>
+          <Btn small kind="ghost" onClick={draftHypothesis} disabled={drafting}>
+            {drafting ? "生成中…" : "AI 生成假设草稿"}
+          </Btn>
+          <Btn small kind="primary" onClick={registerAsCard} disabled={savingCard || createdId != null}>
+            {createdId != null ? `已建卡 #${createdId}` : savingCard ? "保存中…" : "入册为研究卡"}
+          </Btn>
+          {createdId != null && (
+            <a href={`#cards/${createdId}`}
+              style={{ fontSize: 12, color: colors.accent }}>
+              去看这张卡 →
+            </a>
+          )}
+        </div>
+
+        {cardMsg && (
+          <div style={{ marginTop: 10, fontSize: 12.5, lineHeight: 1.8,
+            color: cardMsg.includes("失败") || cardMsg.includes("不能为空") ? colors.up : colors.muted }}>
+            {cardMsg}
+          </div>
+        )}
+
+        <div style={{ marginTop: 10, fontSize: 11.5, color: colors.muted, lineHeight: 1.8 }}>
+          入册会把这次的 IC / t / 单调性 / 相关性 / 多重检验门槛一起写进卡片的证据里 ——
+          卡片离开这份上下文，t=3 会被当成 t=3 那么简单。
+        </div>
       </Card>
     </div>
   );

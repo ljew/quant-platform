@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import EChart from "../components/EChart";
-import { api, CostProfile, PaperDetail, PaperTask, StrategyInfo } from "../api/client";
+import { api, CostProfile, PaperDeviation, PaperDetail, PaperTask, PortfolioSnapshot, signalApi, StrategyInfo } from "../api/client";
 import { useTheme } from "../theme";
 import { PageHeader } from "../components/ui";
 import EvalBadges from "../components/EvalBadges";
@@ -20,6 +20,18 @@ const DEFAULT_COST_PROFILE: CostProfile = {
 /** 产品定稿口径句（勿改字） */
 const COST_DISCLAIMER = "与回测默认成本同契约，非券商实盘";
 
+/** 指数代码 → 行情代码：库里存的是 000300 / 399317，行情接口要 sh/sz 前缀。 */
+function toIndexSymbol(code: string): string {
+  const c = (code || "").trim();
+  if (!c) return "sh000300";
+  if (/^(sh|sz|bj)/i.test(c)) return c.toLowerCase();
+  if (c.startsWith("399")) return `sz${c}`;
+  return `sh${c}`;
+}
+
+/** 镜像 / 实验组合的默认基准：国证A指（平台统一基准）。 */
+const DEFAULT_BENCH = "sz399317";
+
 
 /** 模拟盘（任务列表 + 创建 + 详情：净值曲线/成交）。 */
 export default function PaperPage() {
@@ -32,6 +44,15 @@ export default function PaperPage() {
     pead_pit?: import("../api/client").PeadPit | null;
   } | null>(null);
   const [error, setError] = useState("");
+  // 设计文档 10 节：模拟盘与镜像组合合成一张表，用「类型」区分。
+  // 镜像 / 实验是只读快照（每日信号驱动，无配置），策略任务是可操作的任务。
+  const [snaps, setSnaps] = useState<{ key: string; label: string;
+    sub: string; snap: PortfolioSnapshot | null }[]>([]);
+  // 基准同期收益缓存，键 = 指数|起始日
+  const [bench, setBench] = useState<Record<string, number | null>>({});
+  // 跟踪偏离：实际快照 vs 理论净值。键 = 任务 id。
+  // 只对比有快照的日子（快照从建盘那天才开始记），partial 时列头带 *。
+  const [devs, setDevs] = useState<Record<number, PaperDeviation>>({});
   const { colors } = useTheme();
 
   // 创建表单
@@ -42,7 +63,26 @@ export default function PaperPage() {
   const [cash, setCash] = useState(1000000);
 
   const refresh = useCallback(() => {
-    api.paperTasks().then(setTasks).catch((e) => setError((e as Error).message));
+    api.paperTasks().then((ts) => {
+      setTasks(ts);
+      // 偏离按任务逐个拉：任务数是个位数，一次性并发没问题；
+      // 将来上到几十个再改成批量接口（后端加 /paper/deviations?ids=）
+      Promise.all(ts.map((t) =>
+        api.paperDeviation(t.id).then((d) => [t.id, d] as const).catch(() => null),
+      )).then((pairs) => {
+        const m: Record<number, PaperDeviation> = {};
+        for (const p of pairs) if (p) m[p[0]] = p[1];
+        setDevs(m);
+      });
+    }).catch((e) => setError((e as Error).message));
+    // 镜像 / 实验组合：与策略任务同一张表。任一失败不影响另一半（各自 catch）
+    const load = (key: string, label: string, sub: string, fn: () => Promise<PortfolioSnapshot>) =>
+      fn().then((snap) => ({ key, label, sub, snap: snap.ok ? snap : null }))
+        .catch(() => ({ key, label, sub, snap: null }));
+    Promise.all([
+      load("mirror", "镜像组合", "全信号自动 · 零配置", signalApi.portfolio),
+      load("exp", "实验组合", "fresh_ma + regime 门控", signalApi.portfolioExp),
+    ]).then(setSnaps);
   }, []);
 
   useEffect(() => {
@@ -148,14 +188,52 @@ export default function PaperPage() {
     }
   };
 
+  // 基准同期收益：vs 基准列的口径是「同一段时间，基准涨了多少」。
+  // 每行起始日不同，所以按 (指数, 起始日) 去重拉 K 线，只取首尾两根算涨跌幅。
+  useEffect(() => {
+    const need = new Map<string, { sym: string; start: string }>();
+    for (const t of tasks) {
+      const start = (t.account_start || t.start_date || "").slice(0, 10);
+      if (!start) continue;
+      const sym = toIndexSymbol(t.index_code || "000300");
+      need.set(`${sym}|${start}`, { sym, start });
+    }
+    for (const m of snaps) {
+      const start = (m.snap?.equity?.[0]?.date || "").slice(0, 10);
+      if (!start) continue;
+      need.set(`${DEFAULT_BENCH}|${start}`, { sym: DEFAULT_BENCH, start });
+    }
+    const todo = [...need.entries()].filter(([k]) => !(k in bench));
+    if (!todo.length) return;
+    let alive = true;
+    const today = new Date().toISOString().slice(0, 10);
+    Promise.all(todo.map(async ([key, v]) => {
+      try {
+        const ks = await api.kline(v.sym, v.start, today, 2000);
+        const r = ks.length > 1 ? ks[ks.length - 1].close / ks[0].close - 1 : null;
+        return [key, r] as const;
+      } catch {
+        return [key, null] as const;
+      }
+    })).then((rows) => {
+      if (!alive) return;
+      setBench((prev) => {
+        const next = { ...prev };
+        for (const [k, v] of rows) next[k] = v;
+        return next;
+      });
+    });
+    return () => { alive = false; };
+  }, [tasks, snaps, bench]);
+
   const meta = strategies.find((s) => s.key === skey);
   const isPortfolio = Boolean(meta?.multi_asset || meta?.default_params?.multi_asset);
 
   return (
     <div style={{ maxWidth: 1280, margin: "0 auto" }}>
       <PageHeader
-        title="模拟盘"
-        desc="手动建任务：自选策略与标的，实时价撮合 · 日频调仓 · 风险截断。与「信号中心 → 镜像组合」的区别：那边完全跟随每日选股信号自动进出，无需任何配置"
+        title="组合"
+        desc="一张表看全部钱：策略任务（手建、可启停）+ 镜像 / 实验（跟每日信号自动走、只读）。「vs 基准」是同期对比 —— 赚 28% 而基准涨 40% 其实是跑输"
       />
       {/* 创建表单 */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 12 }}>
@@ -211,15 +289,67 @@ export default function PaperPage() {
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
           <thead>
             <tr style={{ background: colors.bg, color: colors.muted, fontSize: 11.5 }}>
-              {["#", "任务", "策略", "标的", "净值", "收益", "持仓", "状态", "最近运行", "操作"].map((h, i) => (
-                <th key={h} style={{
-                  textAlign: i >= 4 && i <= 6 ? "right" : "left",
+              {["#", "组合", "类型", "净值", "收益", "vs 基准", "vs 理论", "持仓", "状态", "最近运行", "操作"].map((h, i) => (
+                <th key={h} title={h === "vs 理论" ? "实际快照 ÷ 同一天的理论净值 − 1。两条线本该重合，差值就是增量执行的损耗" : undefined} style={{
+                  textAlign: i >= 3 && i <= 7 ? "right" : "left",
                   padding: "8px 10px", fontWeight: 600, whiteSpace: "nowrap",
                 }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
+            {/* 镜像 / 实验：只读快照，不占「任务」—— 它们没有配置，跟着每日信号自动走 */}
+            {snaps.map((m) => {
+              const sp = m.snap;
+              const start = (sp?.equity?.[0]?.date || "").slice(0, 10);
+              const ret = sp ? sp.summary.return_pct / 100 : null;
+              const bm = start ? bench[`${DEFAULT_BENCH}|${start}`] : undefined;
+              const vs = ret != null && bm != null ? ret - bm : null;
+              return (
+                <tr key={m.key} style={{ borderTop: `1px solid ${colors.border}` }}>
+                  <td style={{ padding: "8px 10px", color: colors.muted }}>{m.key === "mirror" ? "M" : "E"}</td>
+                  <td style={{ padding: "8px 10px", fontWeight: 600 }}>
+                    {m.label}
+                    <div style={{ fontWeight: 400, fontSize: 11, color: colors.muted, marginTop: 2 }}>
+                      {m.sub} · 基准 国证A指
+                    </div>
+                  </td>
+                  <td style={{ padding: "8px 10px" }}>
+                    <span style={{ fontSize: 11, color: "#6c5ce7", border: "1px solid #6c5ce744",
+                      background: "#6c5ce710", borderRadius: 4, padding: "1px 6px" }}>
+                      {m.key === "mirror" ? "镜像" : "实验"}
+                    </span>
+                  </td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                    {sp ? `¥${sp.summary.total.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}
+                  </td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 600,
+                    fontVariantNumeric: "tabular-nums",
+                    color: ret == null ? colors.muted : ret >= 0 ? colors.up : colors.down }}>
+                    {ret == null ? "—" : `${ret >= 0 ? "+" : ""}${(ret * 100).toFixed(2)}%`}
+                  </td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontVariantNumeric: "tabular-nums",
+                    color: vs == null ? colors.muted : vs >= 0 ? colors.up : colors.down }}>
+                    {vs == null ? "—" : `${vs >= 0 ? "+" : ""}${(vs * 100).toFixed(2)}pp`}
+                  </td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", color: colors.muted }}>—</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                    {sp?.summary.n_holdings ?? "—"}
+                  </td>
+                  <td style={{ padding: "8px 10px" }}>
+                    <span style={{ color: colors.muted }}>● 自动（只读）</span>
+                  </td>
+                  <td style={{ padding: "8px 10px", color: colors.muted, whiteSpace: "nowrap" }}>
+                    {sp?.as_of || "未运行"}
+                  </td>
+                  <td style={{ padding: "8px 10px", whiteSpace: "nowrap" }}>
+                    <button
+                      onClick={() => window.dispatchEvent(new CustomEvent("quant-nav", { detail: { tab: "signal" } }))}
+                      style={smallBtn(colors)}>看明细 →</button>
+                  </td>
+                </tr>
+              );
+            })}
             {tasks.map((t) => (
               <tr key={t.id}
                 onClick={() => openDetail(t.id)}
@@ -230,15 +360,20 @@ export default function PaperPage() {
                 <td style={{ padding: "8px 10px", color: colors.muted }}>{t.id}</td>
                 <td style={{ padding: "8px 10px", fontWeight: 600 }}>
                   {t.name}
+                  <div style={{ fontWeight: 400, fontSize: 11, color: colors.muted, marginTop: 2 }}>
+                    {t.strategy_key} · {t.kind === "portfolio" ? `指数 ${t.index_code}` : t.symbols}
+                  </div>
                   {t.error_msg && (
                     <div style={{ fontWeight: 400, fontSize: 11, color: colors.up, marginTop: 2 }}>
                       {t.error_msg}
                     </div>
                   )}
                 </td>
-                <td style={{ padding: "8px 10px", color: colors.muted }}>{t.strategy_key}</td>
-                <td style={{ padding: "8px 10px", color: colors.muted }}>
-                  {t.kind === "portfolio" ? `指数 ${t.index_code}` : t.symbols}
+                <td style={{ padding: "8px 10px" }}>
+                  <span style={{ fontSize: 11, color: colors.accent, border: `1px solid ${colors.accent}44`,
+                    background: `${colors.accent}10`, borderRadius: 4, padding: "1px 6px" }}>
+                    策略任务
+                  </span>
                 </td>
                 <td style={{ padding: "8px 10px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
                   ¥{t.equity.toLocaleString(undefined, { maximumFractionDigits: 0 })}
@@ -249,6 +384,43 @@ export default function PaperPage() {
                   color: t.pnl_pct >= 0 ? colors.up : colors.down,
                 }}>
                   {t.pnl_pct >= 0 ? "+" : ""}{(t.pnl_pct * 100).toFixed(2)}%
+                </td>
+                <td style={{ padding: "8px 10px", textAlign: "right", fontVariantNumeric: "tabular-nums",
+                  color: (() => {
+                    const st = (t.account_start || t.start_date || "").slice(0, 10);
+                    const bm = st ? bench[`${toIndexSymbol(t.index_code || "000300")}|${st}`] : undefined;
+                    if (bm == null) return colors.muted;
+                    return t.pnl_pct - bm >= 0 ? colors.up : colors.down;
+                  })() }}>
+                  {(() => {
+                    const st = (t.account_start || t.start_date || "").slice(0, 10);
+                    const bm = st ? bench[`${toIndexSymbol(t.index_code || "000300")}|${st}`] : undefined;
+                    if (bm == null) return "—";
+                    const vs = t.pnl_pct - bm;
+                    return `${vs >= 0 ? "+" : ""}${(vs * 100).toFixed(2)}pp`;
+                  })()}
+                </td>
+                <td style={{
+                  padding: "8px 10px", textAlign: "right", fontVariantNumeric: "tabular-nums",
+                  color: (() => {
+                    const d = devs[t.id];
+                    if (!d || d.latest_dev_pct == null) return colors.muted;
+                    // 偏离是「差多少」，不分好坏方向：接近 0 才是这两条线对上了。
+                    // 用黄色提示，避免和涨跌的红绿撞语义。
+                    return Math.abs(d.latest_dev_pct) >= 0.5 ? "#b9770e" : colors.text;
+                  })(),
+                }}>
+                  {(() => {
+                    const d = devs[t.id];
+                    if (!d) return "—";
+                    if (d.latest_dev_pct == null) return <span title="还没有可对比的净值快照">—</span>;
+                    return (
+                      <span title={`理论 ${d.theory_days} 天 · 实际快照 ${d.actual_days} 天${d.partial ? "（只对比有快照的日子）" : ""} · 区间 ${d.min_dev_pct}% ~ ${d.max_dev_pct}%`}>
+                        {d.latest_dev_pct >= 0 ? "+" : ""}{d.latest_dev_pct.toFixed(2)}%
+                        {d.partial && <span style={{ color: colors.muted }}>*</span>}
+                      </span>
+                    );
+                  })()}
                 </td>
                 <td style={{ padding: "8px 10px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
                   {t.positions_count}
@@ -276,11 +448,24 @@ export default function PaperPage() {
             ))}
           </tbody>
         </table>
-        {tasks.length === 0 && (
+        {tasks.length === 0 && snaps.length === 0 && (
           <div style={{ padding: 24, textAlign: "center", color: colors.muted, fontSize: 13 }}>
-            还没有模拟盘任务 ——「启用」状态的策略会自动建（见下方说明）
+            还没有组合 —— 策略任务可在下方表单建；镜像 / 实验组合随每日信号自动生成
           </div>
         )}
+      </div>
+
+      <div style={{ marginTop: 8, fontSize: 11.5, color: colors.muted, lineHeight: 1.9 }}>
+        <b>怎么读这张表：</b>「vs 基准」用<b>同一段时间</b>的指数涨跌来比 ——
+        策略任务用它自己的基准（指数增强类看沪深300），镜像 / 实验统一看国证A指。
+        跑输就是跑输，赚了也一样。
+        <br />
+        <b>「vs 理论」</b>是<b>实际快照 ÷ 同一天的理论净值 − 1</b>。
+        理论 = 每次运行用回测引擎从建仓日<b>全量重算</b>的曲线（「完全按规则走，今天该值多少钱」），
+        实际 = 每天跑完<b>当场记下</b>、之后不再重算的快照。
+        两条线本该重合，差出来的就是增量执行的损耗（复权因子后补、停牌买不进、整手取整的现金残留）。
+        它衡量的是<b>这面镜子平不平</b>，不是策略好坏 —— 所以偏离大用黄标，不套涨跌的红绿。
+        带 <b>*</b> 表示快照还没覆盖全区间，这组数只代表有快照的那几天。
       </div>
 
       {/* 详情 */}

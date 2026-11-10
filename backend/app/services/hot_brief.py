@@ -81,17 +81,14 @@ USER_TEMPLATE = """下面是多个来源的资讯（顺序：快讯 → 境外�
 另外给两个整体判断：
 
 - mainline：一句话主线，**60 字以内**，说清「现在市场在交易什么」。
-- summary：**今日综述**，**350~600 字**，分 3~5 个自然段，依次覆盖：
-  ① 政策与宏观（货币 / 财政 / 监管，有数字就写数字）
-  ② 产业与板块（哪些方向在动、驱动是什么、持续性如何）
-  ③ 海外与外部（只写能传导到 A 股的；若【境外日爬】为空须写明「境外源本轮无新增或未配置」，**禁止编造外盘新闻**）
-  ④ 资金面与风险（成交、两融、北向等可见口径，以及最该盯的变量）
-  要求：写判断，不写复述；不要罗列条目清单（上面 items 已有）；
-  不要写「综上所述」「值得关注」这类空话；
-  **不要因为本轮没有新条目就写「无新增」—— 综述覆盖的是今日整体，不是本小时增量**。
+
+⚠️ 不再生成 summary（今日综述）。原因：它和「当日全景」（brief_digest）
+是同一件事的两份稿子 —— 这份每轮重写 937 字，全景每天 21:45 写 1680 字，
+用户看到的是重复内容。2026-11-10 合并成一份：简报只管「本轮新增 + 一句话主线」，
+整体判断交给每轮刷新的全景。
 
 只输出 JSON，不要任何解释、不要 markdown 代码块：
-{{"items": [...], "mainline": "...", "summary": "..."}}
+{{"items": [...], "mainline": "..."}}
 """
 
 SEARCH_BLOCK = """
@@ -609,6 +606,45 @@ def _llm_merge(cfg: dict, items: list[dict]) -> list[dict]:
     return [items[k - 1] for k in idx]
 
 
+def _digest_refresh_async() -> None:
+    """每轮简报后异步刷新「当日全景」（flash，约 30~60 秒）。
+
+    老刘 2026-11-10：「今日综述（4 段 · 937 字，每轮重写）和当日全景有重复，
+    能不能和一下，每一轮重写更新当日全景就好了」。
+
+    原来两份稿子做同一件事：
+      - hot_brief.summary  每轮 937 字（8 轮/天）
+      - brief_digest       每天 21:45 一次 1680 字
+    现在只留后者，并让它随每轮简报更新；21:45 仍由 v4-pro 出最终版
+    （flash 版会被 `run(fast=False)` 覆盖，反过来不会）。
+
+    ⚠️ 异步 + 吞异常：全景刷新失败绝不能影响简报本身的成功判定。
+    """
+    import threading
+
+    def _run() -> None:
+        try:
+            from app.database import SessionLocal
+            from app.services.brief_digest import run as run_digest
+
+            db = SessionLocal()
+            try:
+                r = run_digest(db, fast=True)
+                if r.get("ok"):
+                    logger.info("当日全景已刷新（%s）：%d 字 / %d 条要点",
+                                r.get("model"), r.get("chars"), r.get("n_items"))
+                elif r.get("skipped"):
+                    logger.info("当日全景跳过：%s", r.get("skipped"))
+                else:
+                    logger.info("当日全景刷新失败：%s", str(r.get("error"))[:120])
+            finally:
+                db.close()
+        except Exception as e:  # noqa: BLE001
+            logger.info("当日全景刷新异常：%s", str(e)[:140])
+
+    threading.Thread(target=_run, daemon=True, name="digest-refresh").start()
+
+
 def _parse(text: str, ref_map: dict[str, dict] | None = None,
            ) -> tuple[list[dict], str, str]:
     raw = _strip_fence(text)
@@ -642,7 +678,9 @@ def _parse(text: str, ref_map: dict[str, dict] | None = None,
         row.update(_resolve_src(it.get("src"), ref_map or {}))
         clean.append(row)
     # 综述给足长度：350~600 字是目标，上限放到 1600 字符防截断
-    return clean, str(d.get("mainline") or "")[:200], str(d.get("summary") or "")[:1600]
+    # summary 恒为空串：字段保留是为了兼容旧数据与前端结构（2026-11-10 合并
+    # 到 brief_digest 后不再生成，见 prompt 里的说明）
+    return clean, str(d.get("mainline") or "")[:200], ""
 
 
 def _today_rows(db: Session, day: str | None = None) -> list[HotBrief]:
@@ -858,11 +896,13 @@ def run_brief(db: Session, minutes: int = 60,
     rec.mainline = mainline
     rec.summary = summary
     rec.n_items = len(items)
-    if not items and not summary:
-        # 两种可能：模型没吐 JSON（真失败）；或本轮确实无新增但综述也空（异常）。
+    if not items:
+        # 模型没吐 JSON（真失败），或者本轮确实无新增（mainline 有值 = 正常）
         rec.error = "" if mainline else "模型未返回可解析内容"
     db.add(rec)
     db.commit()
+    # 每轮简报后刷新「当日全景」（异步、flash、不覆盖 21:45 的 v4-pro 版）
+    _digest_refresh_async()
     # 只保留最新一轮的 today_items_json：旧轮次的合并结果没人读（_latest_today_items
     # 只取最后一个非空），留着白占空间 —— 25 条 × 24 轮/天 ≈ 340KB/天。
     try:

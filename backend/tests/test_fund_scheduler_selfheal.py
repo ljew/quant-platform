@@ -182,10 +182,24 @@ def test_retry_gives_up_after_max_attempts(db, monkeypatch):
 
 
 # ------------------------------------------------------------------ 节律 / 依赖
-def test_penetration_runs_every_day_including_weekend(monkeypatch):
+def test_nowcast_runs_every_day_including_weekend(monkeypatch):
+    """当日截面是「估值」不是「行情」，周末节假日也要出。
+
+    这才是用户要的「每天都能看到最新持仓补齐」；历史期次穿透本身不随时间变
+    （gap 是锚点→本期的常数），每天重算 141 秒得到的是同一个数。
+    """
     monkeypatch.setattr(fs, "_is_trading_day", lambda d=None: False)
+    for key in ("nowcast", "style_nowcast"):
+        st = fs.STAGE_MAP[key]
+        assert st.get("every_day") is True, key
+        assert fs._should_run_today(st, {}) is True, key
+
+
+def test_penetration_not_daily_anymore():
+    """历史穿透改回「上游变了才跑」，每日更新交给 nowcast。"""
     st = fs.STAGE_MAP["penetration"]
-    assert fs._should_run_today(st, {}) is True
+    assert not st.get("every_day")
+    assert st.get("on") != "daily"
 
 
 def test_nav_still_skips_non_trading_day(monkeypatch):
@@ -204,3 +218,79 @@ def test_upstream_busy_blocks(db, monkeypatch):
 
     assert fs.tick() == []
     assert called == []
+
+
+# ------------------------------------------------- 跨生命周期残留（2026-11-10）
+def _put_run_at(stage: str, run_date: str, status="running", beat=None):
+    beat = beat or datetime.now().isoformat(timespec="seconds")
+    con = sqlite3.connect(str(fs.DB_PATH))
+    con.execute(
+        "INSERT INTO fund_pipeline_runs(stage,run_date,status,trigger,started_at,"
+        "heartbeat_at) VALUES (?,?,?,'schedule',?,?) "
+        "ON CONFLICT(stage,run_date) DO UPDATE SET status=excluded.status,"
+        "started_at=excluded.started_at,heartbeat_at=excluded.heartbeat_at",
+        (stage, run_date, status, beat, beat),
+    )
+    con.commit()
+    con.close()
+
+
+def test_startup_sweep_clears_yesterday_running(db):
+    """跨天残留的 running 必须在启动时作废。
+
+    2026-11-09 净值脚本 00:03 已跑完 6668 行，容器 00:25 重启把 _finish 吃掉，
+    记录永远 running，nav_import 于是整天不跑。
+    """
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    _put_run_at("nav", yesterday, status="running", beat=f"{yesterday}T23:30:38")
+
+    assert fs._sweep_orphan_runs() == 1
+    con = sqlite3.connect(str(fs.DB_PATH))
+    row = con.execute(
+        "SELECT status,error FROM fund_pipeline_runs WHERE stage='nav' AND run_date=?",
+        (yesterday,)).fetchone()
+    con.close()
+    assert row[0] == "fail"
+    assert "跨天残留" in row[1]
+
+
+def test_startup_sweep_leaves_today_running_alone(db):
+    """今天的 running 不能盲清：可能真有本进程的线程在跑，交给心跳判定。"""
+    _put_run(status="running")
+    assert fs._sweep_orphan_runs() == 0
+    con = sqlite3.connect(str(fs.DB_PATH))
+    st = con.execute("SELECT status FROM fund_pipeline_runs WHERE stage='penetration'").fetchone()[0]
+    con.close()
+    assert st == "running"
+
+
+def test_derived_due_uses_last_run_not_last_ok(db):
+    """上游被打断（只有 fail、没有 ok）也要让下游跑。
+
+    只看 last_ok_at 的话，上游被中断等于下游永远等不到 —— 这正是
+    净值入库被卡一整天的直接原因。
+    """
+    con = sqlite3.connect(str(fs.DB_PATH))
+    con.execute("INSERT INTO fund_pipeline_state(stage,last_ok_at,last_fail_at) "
+                "VALUES ('nav','2026-11-08T23:00:00','2026-11-09T23:30:38')")
+    con.execute("INSERT INTO fund_pipeline_state(stage,last_ok_at) "
+                "VALUES ('nav_import','2026-11-08T23:14:45')")
+    con.execute("INSERT INTO fund_pipeline_runs(stage,run_date,status,started_at) "
+                "VALUES ('nav','2026-11-09','fail','2026-11-09T23:30:38')")
+    con.commit()
+    con.close()
+
+    states = fs._load_states()
+    assert states["nav"]["last_ok_at"] == "2026-11-08T23:00:00"   # ok 没更新
+    assert states["nav"]["last_run_at"] == "2026-11-09T23:30:38"  # 但跑过
+    assert fs._derived_due({"key": "nav_import", "depends": ["nav"]}, states) is True
+
+
+def test_derived_not_due_when_downstream_newer(db):
+    """下游已经比上游新时不要白跑（保持幂等，不乱刷）。"""
+    con = sqlite3.connect(str(fs.DB_PATH))
+    con.execute("INSERT INTO fund_pipeline_state(stage,last_ok_at) VALUES ('nav','2026-11-09T23:00:00')")
+    con.execute("INSERT INTO fund_pipeline_state(stage,last_ok_at) VALUES ('nav_import','2026-11-09T23:20:00')")
+    con.commit()
+    con.close()
+    assert fs._derived_due({"key": "nav_import", "depends": ["nav"]}, fs._load_states()) is False

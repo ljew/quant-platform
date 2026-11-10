@@ -134,6 +134,56 @@ def data_health_endpoint():
     return run_rules(SessionLocal())
 
 
+@router.get("/alert-log")
+def alert_log_endpoint(limit: int = 50, level: str | None = None):
+    """告警/通知历史。
+
+    **不新建 alert_log 表**：现有 `notify_log` 已经记了每一条（渠道 / 标题 /
+    成功失败 / 时间），标题里也带（FAIL）（WARN）。再建一张表只会让「昨天半夜
+    出过什么事」有两个地方要查。
+    level 过滤 WARN / FAIL / OK（从标题括号里解析）。
+    """
+    from app.models import NotifyLog
+
+    db = SessionLocal()
+    try:
+        rows = (db.query(NotifyLog).order_by(NotifyLog.id.desc())
+                .limit(max(1, min(limit, 200))).all())
+    finally:
+        db.close()
+
+    def _level(subject: str) -> str:
+        m = re.search(r"[（(](FAIL|WARN|OK)[)）]", subject or "")
+        return m.group(1) if m else "INFO"
+
+    out = []
+    for r in rows:
+        lv = _level(r.subject or "")
+        if level and lv != level.upper():
+            continue
+        out.append({"id": r.id, "level": lv, "channel": r.channel,
+                    "status": r.status, "title": r.subject,
+                    "error": r.error,
+                    "at": r.created_at.isoformat(timespec="seconds") if r.created_at else None})
+    counts: dict[str, int] = {}
+    for r in out:
+        counts[r["level"]] = counts.get(r["level"], 0) + 1
+    return {"total": len(out), "counts": counts, "items": out}
+
+
+@router.get("/table-freshness")
+def table_freshness_endpoint(fresh: bool = False):
+    """逐张表的新鲜度：表名 / 日期列 / 行数 / 最新日期 / 滞后天数 / 状态。
+
+    与 /health-report 的区别：那个是「规则引擎给结论」，这个是「原始事实」——
+    87 张表逐张看，按 FAIL → WARN → EMPTY → OK 排序，出问题先看这个。
+    fresh=true 跳过 60 秒缓存。
+    """
+    from app.services.table_freshness import table_freshness
+
+    return table_freshness(SessionLocal(), use_cache=not fresh)
+
+
 @router.get("/framework-health")
 def framework_health_endpoint():
     """框架四层体检（调度 / 编排 / 数据 / 研究）—— 驾驶舱状态带的数据源。
@@ -259,21 +309,48 @@ _running_pipeline = {"locked": False}
 
 @router.post("/pipeline/run")
 def pipeline_run_now():
-    """手动立即运行数据管道（后台线程）。"""
+    """手动立即运行数据管道（**子进程**执行，带硬超时）。
+
+    🔴 原来是在 uvicorn 里起个线程直接跑 run_pipeline，踩了两个坑：
+    ① 违反「长任务必须子进程隔离」这条铁律 —— 卡住就杀不掉，只能重启容器；
+    ② 最后一步 sync_duckdb 会开 DuckDB 的**写连接**。2026-11-10 实测它卡在
+       Docker 卷 I/O 上不返回，写锁留在主进程里，之后所有读 DuckDB 的接口都
+       降级到 SQLite，而且再也 sync 不进去。
+    改成子进程后：超时能 kill，锁随进程一起释放。
+    """
     if _running_pipeline["locked"]:
         return {"ok": False, "error": "已有管道在运行中"}
-    from app.datahub.runner import run_pipeline
+
+    code = (
+        "from app.datahub.runner import run_pipeline;"
+        "rid = run_pipeline('manual');"
+        "print('PIPELINE_RID', rid, flush=True)"
+    )
+    backend = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    env = dict(os.environ)
+    env["PYTHONPATH"] = backend
 
     def _bg():
+        from app.core.subproc import run_with_timeout
+
         _running_pipeline["locked"] = True
         try:
-            rid = run_pipeline(trigger="manual")
-            logger.info("手动管道完成 run_id=%s", rid)
+            proc = run_with_timeout(
+                [sys.executable, "-c", code], timeout=3600, cwd=backend, env=env,
+            )
+            rid = (re.search(r"PIPELINE_RID\s+(\d+)", proc.stdout or "") or [None, None])[1]
+            logger.info("手动管道完成 run_id=%s rc=%s", rid, proc.returncode)
+        except subprocess.TimeoutExpired:
+            logger.error("手动管道超过 3600s，已终止子进程")
+            from app.core.data_scheduler import _mark_zombie_runs_failed
+            _mark_zombie_runs_failed()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("手动管道失败：%s", str(e)[:160])
         finally:
             _running_pipeline["locked"] = False
 
     threading.Thread(target=_bg, daemon=True).start()
-    return {"ok": True}
+    return {"ok": True, "mode": "subprocess"}
 
 
 # ——— 一键修复：把「资产清单里的异常项」翻译成可执行的修复动作 ———
@@ -593,3 +670,168 @@ def _pipeline_stats(db) -> dict:
             ],
         })
     return {"runs": out}
+
+
+# ───────────────────────── 凭证集中 ─────────────────────────
+# 设计文档 11 节：数据健康页「凭证集中」未做，并入系统服务页。
+# 五把钥匙散在五个地方，出事时排查要翻五遍，这里收一屏。
+
+def _age_days(path) -> float | None:
+    try:
+        return (time.time() - path.stat().st_mtime) / 86400.0
+    except OSError:
+        return None
+
+
+def _fmt_age(days: float | None) -> str:
+    if days is None:
+        return "—"
+    if days < 1:
+        return f"{days * 24:.0f} 小时前"
+    return f"{days:.1f} 天前"
+
+
+@router.get("/credentials")
+def credentials_endpoint():
+    """凭证一张表：还在不在、多久没动、坏了会伤到哪。
+
+    为什么集中：简报没发出去时，要分清是 SMTP 掉线、公众号 Cookie 过期，
+    还是大模型配额用完 —— 这三样原来分散在三个地方（公众号在「资讯库」、
+    大模型在配置弹窗、邮件根本没有界面），排查一次要翻三遍。
+
+    只读 + 脱敏：任何一把钥匙都不回明文，最多给尾号。
+    """
+    import json
+
+    from app.config import BASE_DIR
+    from app.models import LlmProvider, NotifyLog
+
+    data_dir = BASE_DIR / "data"
+    db = SessionLocal()
+    try:
+        llm_rows = db.query(LlmProvider).order_by(LlmProvider.id).all()
+        last_mail = (db.query(NotifyLog)
+                     .filter(NotifyLog.channel == "email")
+                     .order_by(NotifyLog.id.desc()).first())
+        mail_ok_cnt = (db.query(func.count(NotifyLog.id))
+                       .filter(NotifyLog.channel == "email", NotifyLog.status == "ok")
+                       .scalar() or 0)
+    finally:
+        db.close()
+
+    items: list[dict] = []
+
+    # ① Tushare —— K 线与复权的唯一上游
+    tok = (settings.tushare_token or "").strip()
+    items.append({
+        "key": "tushare", "label": "Tushare", "kind": "数据源",
+        "status": "ok" if tok else "missing",
+        "detail": f"已配置 · 尾号 {tok[-4:]}" if tok else "未配置",
+        "where": "backend/.env · TUSHARE_TOKEN",
+        "updated_at": None,
+        "hint": "" if tok else "K 线、复权因子、指数日线会全线拿不到",
+        "action": None,
+    })
+
+    # ② 大模型 —— 日报/简报/AI 因子全走它
+    dk = next((r for r in llm_rows if r.is_default), llm_rows[0] if llm_rows else None)
+    if not dk:
+        st, dt, hd = "missing", "没有配置任何通道", "日报与简报会退化成模板文本"
+    elif not (dk.api_key or "").strip():
+        st, dt, hd = "warn", f"{dk.name} · 未填 Key", "调用会 401"
+    elif dk.last_test_ok is False:
+        st, dt, hd = "warn", f"{dk.name} · 上次测试失败：{(dk.last_test_msg or '')[:40]}", "通道配置可能过期"
+    else:
+        st = "ok"
+        dt = f"{dk.name} · {dk.model} · 共 {len(llm_rows)} 个通道"
+        hd = ""
+    items.append({
+        "key": "llm", "label": "大模型", "kind": "能力",
+        "status": st, "detail": dt, "where": "配置弹窗 · llm_providers 表",
+        "updated_at": dk.updated_at.isoformat(timespec="seconds") if dk and dk.updated_at else None,
+        "hint": hd, "action": {"label": "去配置", "href": "#factorlab"},
+    })
+
+    # ③ 邮件 —— 简报、日报、看门狗告警的唯一出口
+    em: dict = {}
+    ch_file = data_dir / "notify_channels.json"
+    try:
+        em = (json.loads(ch_file.read_text(encoding="utf-8")).get("email") or {})
+    except (OSError, ValueError):
+        em = {}
+    if not em:
+        st, dt, hd = "missing", "未配置邮件通道", "所有主动推送都发不出去"
+    elif not em.get("enabled", True):
+        st, dt, hd = "warn", "已配置但被停用", "简报与告警不会推送"
+    elif last_mail and last_mail.status != "ok":
+        st = "warn"
+        dt = f"{em.get('user', '')} · 上次失败：{(last_mail.error or '')[:40]}"
+        hd = "SMTP 授权码可能过期"
+    else:
+        st = "ok"
+        dt = (f"{em.get('user', '')} → {len(em.get('to') or [])} 个收件人"
+              f" · 累计成功 {mail_ok_cnt} 次")
+        hd = ""
+    items.append({
+        "key": "email", "label": "邮件通知", "kind": "出口",
+        "status": st, "detail": dt, "where": "data/notify_channels.json",
+        "updated_at": last_mail.created_at.isoformat(timespec="seconds") if last_mail and last_mail.created_at else None,
+        "hint": hd, "action": None,
+    })
+
+    # ④ 公众号 Cookie —— 只在「资讯库 → 公众号」里换
+    ck = data_dir / "wechat" / "weread_cookie.json"
+    age = _age_days(ck)
+    if age is None:
+        st, dt, hd = "missing", "未配置 Cookie", "公众号采集不会跑"
+    elif age > 14:
+        st = "warn"
+        dt = f"已 {_fmt_age(age)}没有更换，大概率过期"
+        hd = "去「资讯库 → 公众号」重新扫码"
+    else:
+        st = "ok"
+        dt = f"{_fmt_age(age)}更新"
+        hd = ""
+    items.append({
+        "key": "weread", "label": "公众号 Cookie", "kind": "凭证",
+        "status": st, "detail": dt, "where": "data/wechat/weread_cookie.json",
+        "updated_at": None, "hint": hd,
+        "action": {"label": "去换", "href": "#news"},
+    })
+
+    # ⑤ 数据库备份 —— 出事时的唯一退路
+    bk_dir = data_dir / "backups"
+    latest_bk, bk_age = None, None
+    try:
+        files = [p for p in bk_dir.glob("quant_dev_*.db") if p.stat().st_size > 1_000_000]
+        if files:
+            latest_bk = max(files, key=lambda p: p.stat().st_mtime)
+            bk_age = _age_days(latest_bk)
+    except OSError:
+        pass
+    if latest_bk is None:
+        st, dt, hd = "warn", "还没有可用备份", "ETL 成功后会自动做一份，先手动跑一次 ETL"
+    elif bk_age is not None and bk_age > 3:
+        st, dt, hd = "warn", f"最近一份是 {_fmt_age(bk_age)}", "备份没在跑，查 ETL 是否连续失败"
+    else:
+        st = "ok"
+        dt = f"{latest_bk.name} · {latest_bk.stat().st_size / 1e6:.0f} MB · {_fmt_age(bk_age)}"
+        hd = ""
+    items.append({
+        "key": "backup", "label": "数据库备份", "kind": "退路",
+        "status": st, "detail": dt, "where": "data/backups/",
+        "updated_at": latest_bk.stat().st_mtime if latest_bk else None,
+        "hint": hd, "action": None,
+    })
+
+    order = {"FAIL": 0, "warn": 1, "ok": 2, "missing": 3}
+    items.sort(key=lambda x: order.get(x["status"], 9))
+    return {
+        "checked_at": datetime.now().isoformat(timespec="seconds"),
+        "counts": {
+            "ok": sum(1 for i in items if i["status"] == "ok"),
+            "warn": sum(1 for i in items if i["status"] in ("warn", "FAIL")),
+            "missing": sum(1 for i in items if i["status"] == "missing"),
+        },
+        "items": items,
+    }

@@ -110,17 +110,18 @@ STAGES: list[dict] = [
         "key": "nav", "label": "基金净值", "kind": "collect",
         "script": "fetch_fund_nav_daily.py",
         # 日更模式：起点自动取「库内最新净值次日」，不用人工维护窗口参数。
+        # 按日拉全市场（1.6s/天），4 天窗口约 10 秒；--by-code 是回填历史的逐只路径。
         "args": ["--incremental"],
-        "hour": 19, "minute": 40, "timeout": 7200,
-        "desc": "逐基金日净值增量 → nav_raw.csv（起点=库内最新净值次日）",
+        "hour": 19, "minute": 40, "timeout": 900,
+        "desc": "日净值增量 → nav_raw.csv（按日拉全市场，起点=库内最新净值次日起）",
         "on": "daily",
     },
     {
         "key": "nav_import", "label": "净值入库", "kind": "derived",
         "script": "import_fund_nav.py", "args": [],
-        "hour": 20, "minute": 15, "timeout": 2400,
+        "hour": 20, "minute": 15, "timeout": 900,
         "depends": ["nav"],
-        "desc": "nav_raw.csv → fund_nav_daily（INSERT OR REPLACE，幂等可重跑）",
+        "desc": "nav_raw.csv → fund_nav_daily（按字节偏移增量 upsert，幂等可重跑）",
     },
     {
         "key": "holdings", "label": "基金持仓", "kind": "collect",
@@ -148,15 +149,21 @@ STAGES: list[dict] = [
         "key": "penetration", "label": "持仓穿透", "kind": "derived",
         "script": "build_fund_penetration.py", "args": [],
         "hour": 22, "minute": 0, "timeout": 5400,
-        # 显式日更：结构可信度随锚点年龄逐日衰减（structure_decay），
-        # 所以即使披露数据没变，隔天重算的行业结构也应该略有不同。
-        # 只在「上游变了」才跑会让估计停在披露日、越放越旧。
-        # every_day：周末/节假日也照跑 —— 补齐与行业穿透是「估值」，不是行情，
-        # 用户要的是每天打开页面都能看到最新的持仓补齐和行业暴露。
-        "on": "daily",
-        "every_day": True,
+        # 只在新披露落地后重算历史期次。原来这里挂了 every_day，是因为
+        # 误以为「隔天重算结果会不同」—— 实际 gap 是「锚点→本期」，是个常数，
+        # 每天重算 141 秒得到的数一模一样。真正的每日更新在下面的 nowcast。
         "depends": ["holdings", "csrc"],
         "desc": "双轨补齐 + 行业穿透 + 监管仓位约束 → fund_hold_coverage / fund_industry_exposure",
+    },
+    {
+        "key": "nowcast", "label": "当日持仓截面", "kind": "derived",
+        "script": "build_fund_penetration.py", "args": ["--nowcast"],
+        "hour": 22, "minute": 10, "timeout": 1800,
+        "depends": ["holdings", "csrc"],
+        # 每天都要出：as_of = 当天，gap = 锚点→今天，锚点越旧推算越不可信。
+        # 只算每只基金最新一期，实测 17 秒（全量历史期次要 141 秒）。
+        "every_day": True,
+        "desc": "以最新披露为锚点按衰减推算「截至今天」的行业结构 → fund_industry_nowcast",
     },
     {
         "key": "style", "label": "风格穿透", "kind": "derived",
@@ -164,6 +171,15 @@ STAGES: list[dict] = [
         "hour": 22, "minute": 25, "timeout": 2400,
         "depends": ["penetration"],
         "desc": "持仓 → 个股 → 五因子风格坐标（size/value/momentum/volatility/quality）",
+    },
+    {
+        "key": "style_nowcast", "label": "当日风格截面", "kind": "derived",
+        "script": "build_fund_style.py", "args": ["--nowcast"],
+        "hour": 22, "minute": 35, "timeout": 2400,
+        "depends": ["holdings"],
+        # 标准化基准固定在最新标准报告期，否则每天各标准一次、z 的日间差全是基准位移。
+        "every_day": True,
+        "desc": "最新持仓的五因子加权，截面日=今天 → fund_style_nowcast",
     },
     {
         "key": "regression", "label": "净值回归校验", "kind": "derived",
@@ -266,15 +282,22 @@ def _load_states() -> dict[str, dict]:
     con = _conn()
     try:
         rows = con.execute(
-            "SELECT stage,last_ok_at,last_fail_at,last_error,runs_total,fails_total "
-            "FROM fund_pipeline_state"
+            "SELECT s.stage, s.last_ok_at, s.last_fail_at, s.last_error,"
+            "       s.runs_total, s.fails_total,"
+            # last_run_at 含失败/中断的运行：派生环节靠它判断「上游动过没有」。
+            # 只看 last_ok_at 的话，上游被打断（没有 ok 记录）会让下游永远等不到，
+            # 2026-11-09 净值入库被卡一整天就是这么来的。
+            "       (SELECT MAX(r.started_at) FROM fund_pipeline_runs r"
+            "         WHERE r.stage = s.stage) AS last_run_at "
+            "FROM fund_pipeline_state s"
         ).fetchall()
     except Exception:  # noqa: BLE001
         return {}
     finally:
         con.close()
     return {r[0]: {"last_ok_at": r[1], "last_fail_at": r[2], "last_error": r[3],
-                   "runs_total": r[4] or 0, "fails_total": r[5] or 0} for r in rows}
+                   "runs_total": r[4] or 0, "fails_total": r[5] or 0,
+                   "last_run_at": r[6]} for r in rows}
 
 
 def _today_run(stage: str) -> dict | None:
@@ -412,6 +435,46 @@ def _mark_interrupted(stage: str, reason: str) -> bool:
     return bool(n)
 
 
+def _sweep_orphan_runs() -> int:
+    """启动时作废上一个容器生命周期留下的跨天 running 记录。
+
+    病根：_finish 要等子进程退出后才写库，容器恰好在这两步之间重启，
+    这条记录就永远停在 running。而 _derived_due 原先只比 last_ok_at，
+    下游于是认定「上游从未更新」，nav_import 一天都不跑 ——
+    2026-11-09 的净值入库就是这样被卡住的（脚本 00:03 已跑完 6668 行，
+    容器 00:25 重启，记录永远 running）。
+
+    今天的记录不在这里动：可能真有本进程的线程在跑，交给 tick 按心跳判定。
+    """
+    con = _conn(timeout=15)
+    try:
+        rows = con.execute(
+            "SELECT stage, run_date, COALESCE(heartbeat_at, started_at) "
+            "FROM fund_pipeline_runs WHERE status='running' AND run_date < ?",
+            (_today(),),
+        ).fetchall()
+        if not rows:
+            return 0
+        for stage, rd, beat in rows:
+            con.execute(
+                "UPDATE fund_pipeline_runs SET status='fail',finished_at=?,error=?,"
+                "detail=COALESCE(detail,'')||char(10)||? "
+                "WHERE stage=? AND run_date=? AND status='running'",
+                (_now(), "进程中断：容器重启/被杀，记录跨天残留，已作废",
+                 f"[启动清理] {rd} 的 {stage} 最后一次心跳 {beat}，未见正常收尾",
+                 stage, rd),
+            )
+        con.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("启动清理跨天残留失败：%s", e)
+        return 0
+    finally:
+        con.close()
+    logger.warning("基金管道启动清理：作废 %d 条跨天残留 running（%s）",
+                   len(rows), ", ".join(f"{s}@{r}" for s, r, _ in rows))
+    return len(rows)
+
+
 def _release(stage: str) -> None:
     with _lock:
         _running.discard(stage)
@@ -530,9 +593,12 @@ def _parse_rows(out: str) -> int | None:
     """从脚本输出里捞「本次 N 行 / 明细 N 行 / 落库 N 行」这类自报数。"""
     import re
     pats = (
+        # 顺序即优先级：先认「落库/新增」这类产出数，再退到「明细」这种输入数。
+        # 否则穿透会报出 641 万（那是读进来的明细行），而真正落库的是 4.4 万。
+        r"落库\s*(\d[\d,]*)\s*行",
+        r"新增\s*(\d[\d,]*)\s*行",
         r"明细\s*(\d[\d,]*)\s*行",
         r"本次\s*\d+\s*只\s*/\s*(\d[\d,]*)\s*行",
-        r"落库\s*(\d[\d,]*)\s*行",
         (r"(\d[\d,]*)\s*行行业明细"),
     )
     for p in pats:
@@ -747,16 +813,20 @@ def _passed_today(hour: int, minute: int) -> bool:
 
 
 def _derived_due(st: dict, states: dict[str, dict]) -> bool:
-    """派生环节：上游有比本环节更新的成功记录才跑。
+    """派生环节：上游有新动静就重算。
 
-    这样净值日更后回归会重算，但周末没有新数据时不会白跑一遍全量回归。
+    判定用「上游最近一次运行时间」（含失败/中断），而不是 last_ok_at：
+    上游被打断时根本没写 ok 记录，用 last_ok_at 会让下游永远等不到。
+    而派生环节本身幂等（CSV→库是 INSERT OR REPLACE、穿透是全量重写），
+    多跑一次几秒，漏跑却是一整天的数据滞后 —— 这笔账很划算。
     """
     me = states.get(st["key"], {}).get("last_ok_at")
     for up in st.get("depends") or []:
-        up_ok = states.get(up, {}).get("last_ok_at")
-        if not up_ok:
+        u = states.get(up, {})
+        up_at = u.get("last_run_at") or u.get("last_ok_at")
+        if not up_at:
             continue
-        if not me or up_ok > me:
+        if not me or up_at > me:
             return True
     return False
 
@@ -1017,6 +1087,9 @@ def start_fund_scheduler(enabled: bool = True) -> None:
     init_db()
     _boot_at = time.time()
     atexit.register(_mark_running_interrupted_on_exit)
+    # 先把上一辈子遗留的跨天 running 清掉，再开始巡检：
+    # 否则下游环节会因为「上游没有 ok 记录」而一整天不跑。
+    _sweep_orphan_runs()
     with _lock:
         _status["enabled"] = enabled
         _status["started_at"] = _now()
