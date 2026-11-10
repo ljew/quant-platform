@@ -137,7 +137,7 @@ export default function DataPipelinePage() {
     <div style={{ maxWidth: 1320, margin: "0 auto" }}>
       <PageHeader
         title="数据管道"
-        desc="数据资产 · 源头 · 血缘 · 处理步骤 · 任务执行 · 健康度（30s 自动刷新）"
+        desc="今日流水线 · 资产与血缘 · 数据源头 · 基金管道 · 运行历史（健康度已独立成页，见「数据健康」）"
         actions={
           <>
             <button
@@ -253,10 +253,38 @@ export default function DataPipelinePage() {
         </div>
       )}
 
+      {/* —— ④ 处理步骤流水线 —— */}
+      <Card title="① 今日流水线（8 步 · ●成功 ○未跑 ✕失败）" colors={colors} style={{ marginTop: 14 }} pad={0}>
+        {lin.steps.map((s) => (
+          <div
+            key={s.name}
+            style={{
+              display: "flex", alignItems: "center", gap: 12, padding: "7px 16px",
+              borderBottom: `1px solid ${colors.border}`,
+            }}
+          >
+            <span className="num" style={{ width: 24, color: colors.muted, fontSize: 12 }}>{s.order}</span>
+            <span style={{ width: 14, color: statusColor(s.status, colors), fontSize: 12 }}>
+              {s.status === "OK" ? "●" : s.status === "FAIL" ? "✕" : "○"}
+            </span>
+            <span style={{ width: 190, fontSize: 12.5, fontFamily: "ui-monospace,Menlo,monospace" }}>{s.name}</span>
+            <span style={{ flex: 1, fontSize: 11.5, color: colors.muted }}>
+              {STEP_DESC[s.name] || "—"}
+            </span>
+            <span className="num" style={{ fontSize: 11.5, color: colors.muted, width: 78, textAlign: "right" }}>
+              {s.rows > 0 ? `+${s.rows.toLocaleString()} 行` : "无新增"}
+            </span>
+            <span className="num" style={{ fontSize: 11.5, color: colors.muted, width: 42, textAlign: "right" }}>
+              {s.duration_sec}s
+            </span>
+          </div>
+        ))}
+      </Card>
+
       {/* —— ① 数据资产清单 —— */}
       {assets && (
         <Card
-          title="① 数据资产清单"
+          title="② 数据资产与血缘"
           colors={colors}
           extra={<span style={{ fontSize: 11.5, color: colors.muted }}>
             共 {sum?.n_total} 个数据集 · 统计于 {assets.generated_at?.slice(11, 19)}
@@ -305,12 +333,18 @@ export default function DataPipelinePage() {
               </div>
             );
           })}
+          <div style={{ marginTop: 14, borderTop: `1px solid ${colors.border}`, paddingTop: 12 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>
+              血缘：这些表从哪来、到哪去
+            </div>
+            <LineageGraph lin={lin} assets={assets} colors={colors} />
+          </div>
         </Card>
       )}
 
       {/* —— ② 数据源头 —— */}
       <Card
-        title="② 数据源头"
+        title="③ 数据源头"
         colors={colors}
         style={{ marginTop: 14 }}
         extra={<span style={{ fontSize: 11.5, color: colors.muted }}>配置文件 {lin.config_path}</span>}
@@ -376,44 +410,11 @@ export default function DataPipelinePage() {
         </div>
       </Card>
 
-      {/* —— ③ 血缘流向图 —— */}
-      <Card title="③ 数据血缘流向" colors={colors} style={{ marginTop: 14 }}>
-        <LineageGraph lin={lin} assets={assets} colors={colors} />
-      </Card>
-
-      {/* —— ④ 处理步骤流水线 —— */}
-      <Card title="④ 当前处理的内容（步骤流水线）" colors={colors} style={{ marginTop: 14 }} pad={0}>
-        {lin.steps.map((s) => (
-          <div
-            key={s.name}
-            style={{
-              display: "flex", alignItems: "center", gap: 12, padding: "7px 16px",
-              borderBottom: `1px solid ${colors.border}`,
-            }}
-          >
-            <span className="num" style={{ width: 24, color: colors.muted, fontSize: 12 }}>{s.order}</span>
-            <span style={{ width: 14, color: statusColor(s.status, colors), fontSize: 12 }}>
-              {s.status === "OK" ? "●" : s.status === "FAIL" ? "✕" : "○"}
-            </span>
-            <span style={{ width: 190, fontSize: 12.5, fontFamily: "ui-monospace,Menlo,monospace" }}>{s.name}</span>
-            <span style={{ flex: 1, fontSize: 11.5, color: colors.muted }}>
-              {STEP_DESC[s.name] || "—"}
-            </span>
-            <span className="num" style={{ fontSize: 11.5, color: colors.muted, width: 78, textAlign: "right" }}>
-              {s.rows > 0 ? `+${s.rows.toLocaleString()} 行` : "无新增"}
-            </span>
-            <span className="num" style={{ fontSize: 11.5, color: colors.muted, width: 42, textAlign: "right" }}>
-              {s.duration_sec}s
-            </span>
-          </div>
-        ))}
-      </Card>
-
       {/* —— ⑤ 基金数据管道（独立库，另有自己的调度器）—— */}
       <FundPipelineCard colors={colors} />
 
       {/* —— ⑥ 任务执行时间线 —— */}
-      <Card title="⑥ 任务执行（最近 6 次运行）" colors={colors} style={{ marginTop: 14 }}>
+      <Card title="⑤ 运行历史（最近 6 次）" colors={colors} style={{ marginTop: 14 }}>
         {lin.timeline.length === 0 && <div style={{ fontSize: 12, color: colors.muted }}>暂无运行记录</div>}
         {lin.timeline.map((r) => {
           const maxSec = Math.max(...r.steps.map((s) => s.duration_sec), 0.1);
@@ -446,51 +447,9 @@ export default function DataPipelinePage() {
         })}
       </Card>
 
-      {/* —— ⑦ 数据健康度 —— */}
-      {health && (
-        <Card title="⑦ 数据健康度（规则化检查）" colors={colors} style={{ marginTop: 14 }}>
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
-            <ScoreRing score={health.overall_score} status={health.overall_status} colors={colors} />
-            <div style={{ flex: 1, minWidth: 260 }}>
-              {Object.entries(health.layers).map(([k, ly]) => (
-                <div key={k} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7 }}>
-                  <span style={{ width: 62, fontSize: 12, color: colors.muted }}>{ly.label}</span>
-                  <div style={{ flex: 1, height: 8, background: colors.tableStripe, borderRadius: 4, overflow: "hidden" }}>
-                    <div style={{
-                      width: `${Math.min(100, ly.score)}%`, height: "100%",
-                      background: ly.status === "healthy" ? colors.down : ly.status === "warn" ? colors.accent : colors.up,
-                    }} />
-                  </div>
-                  <span className="num" style={{ width: 34, fontSize: 12, textAlign: "right" }}>{ly.score}</span>
-                  <span style={{ fontSize: 11, color: colors.muted, width: 52 }}>
-                    {ly.checks.filter((c) => c.status === "ok").length}/{ly.checks.length} 通过
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-          {health.alerts.length > 0 && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {health.alerts.map((a, i) => (
-                <span
-                  key={i}
-                  style={{
-                    fontSize: 11.5, padding: "3px 10px", borderRadius: 6,
-                    background: a.level === "error" ? `${colors.up}12` : `${colors.accent}12`,
-                    border: `1px solid ${a.level === "error" ? colors.up : colors.accent}`,
-                  }}
-                >
-                  {a.layer} · {a.check}：{a.detail}
-                </span>
-              ))}
-            </div>
-          )}
-        </Card>
-      )}
-
       {/* —— ⑦ 健康度规则管理 —— */}
       <Card
-        title="⑦ 健康度检查规则（可配置）"
+        title="健康检查规则（可配置）"
         colors={colors}
         style={{ marginTop: 14 }}
         extra={
