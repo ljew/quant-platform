@@ -7,10 +7,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
+import logging
+
+logger = logging.getLogger("quant.paper")
+
 from app.database import SessionLocal, get_db
 from app.models import PaperTask, PaperTrade, PaperSnapshot
 from app.core.strategies.registry import get_strategy, STRATEGY_REGISTRY
-from app.core.engine.paper_engine import run_paper_task, get_paper_task_detail
+from app.core.engine.paper_engine import get_paper_task_detail
 from app.core.cost_defaults import COMMISSION, SLIPPAGE
 from app.core.eval_profile import build_eval_profile_for_paper
 
@@ -136,18 +140,28 @@ def task_detail(task_id: int, db=Depends(get_db)):
 
 @router.post("/tasks/{task_id}/run")
 def run_task(task_id: int):
-    """手动触发一次运行（后台线程，避免组合回测阻塞请求）。"""
+    """手动触发一次运行。
+
+    组合走**子进程**（与调度器同一入口）：xq 系的池子要加载全市场面板，
+    在主进程跑会 OOM 拖死整个容器 —— 手动点一下就把平台点挂，是最糟的体验。
+    """
+    db = SessionLocal()
+    try:
+        t = db.get(PaperTask, task_id)
+        if not t:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        kind = t.kind or "single"
+    finally:
+        db.close()
+
     def _bg():
-        db = SessionLocal()
-        try:
-            t = db.get(PaperTask, task_id)
-            if t:
-                run_paper_task(db, t)
-        finally:
-            db.close()
+        from app.services.paper_runner import run_in_subprocess
+        ok, info = run_in_subprocess(task_id, kind)
+        logger.info("手动运行模拟盘 #%s: ok=%s %s", task_id, ok,
+                    info.get("error") or f"{info.get('secs')}s")
 
     threading.Thread(target=_bg, daemon=True).start()
-    return {"ok": True, "message": "已触发后台运行"}
+    return {"ok": True, "message": "已触发后台运行（子进程）", "kind": kind}
 
 
 @router.post("/tasks/{task_id}/toggle")

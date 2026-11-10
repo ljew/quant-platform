@@ -15,6 +15,7 @@ from sqlalchemy import select
 from app.database import SessionLocal
 from app.models import PaperTask
 from app.core.engine.paper_engine import run_paper_task
+from app.services.paper_runner import run_in_subprocess
 
 logger = logging.getLogger("quant.paper")
 
@@ -81,11 +82,20 @@ def _loop() -> None:
                                     "paper portfolio run: task=%s last_bar=%s today=%s",
                                     t.id, t.last_bar_date, today,
                                 )
-                                r = run_paper_task(db, t)
-                                if not r.get("ok"):
+                                # 组合必须走子进程：xq 系的 signal_union 池要加载
+                                # 全市场面板，主进程跑会 OOM 拖死整个容器
+                                # （实测 exit 137，所有页面 502）。
+                                ok, info = run_in_subprocess(t.id, "portfolio")
+                                if ok:
+                                    logger.info(
+                                        "paper portfolio done: task=%s bar=%s %ss",
+                                        t.id, info.get("last_bar_date"),
+                                        info.get("secs"),
+                                    )
+                                else:
                                     logger.warning(
                                         "paper portfolio failed: task=%s %s",
-                                        t.id, r.get("error"),
+                                        t.id, info.get("error"),
                                     )
             finally:
                 db.close()
