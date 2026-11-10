@@ -2111,3 +2111,17 @@ export const etfFlowApi = {
   /** 强制拉当日官方 1min 线；ok=false 表示源站还没发布，不是出错 */
   minutes: () => post<{ ok: boolean; symbols: number; message: string }>("/etf-flow/minutes", {}),
 };
+
+/** 智能体门户：dsh 是否在线，以及同域入口。 */
+export interface AgentPortalStatus {
+  alive: boolean;
+  detail: string;
+  has_token: boolean;
+  entry: string;
+  upstream: string;
+  hint: string;
+}
+
+export const agentPortalApi = {
+  status: () => get<AgentPortalStatus>("/portal/status"),
+};

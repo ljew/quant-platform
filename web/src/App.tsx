@@ -18,6 +18,7 @@ const DataHealthPage = lazy(() => import("./pages/DataHealthPage"));
 const FundResearchPage = lazy(() => import("./pages/FundResearchPage"));
 const NewsHubPage = lazy(() => import("./pages/NewsHubPage"));
 const MarketHubPage = lazy(() => import("./pages/MarketHubPage"));
+const AgentPortalPage = lazy(() => import("./pages/AgentPortalPage"));
 
 /**
  * 重构 v2.1：13 个二级 Tab → 9 个（2026-10-08 精简）。
@@ -26,7 +27,7 @@ const MarketHubPage = lazy(() => import("./pages/MarketHubPage"));
  * 研究卡管上岗）。旧 quant-nav tab 名自动映射到新位置。
  */
 
-type HubKey = "today" | "research" | "track" | "data";
+type HubKey = "today" | "research" | "track" | "data" | "agent";
 
 const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; label: string }[] }[] = [
   { key: "today", label: "今日观点", icon: "☀", tabs: [
@@ -65,6 +66,11 @@ const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; lab
     // 而且它是「8 步 DAG（data→…→publish）」，跟数据管道那条 ETL 是两套东西。
     // 删掉会真丢功能，所以留着，位置降到最后一个。
     { key: "auto", label: "自动研究" },
+  ] },
+  // 智能体：不是第 5 个工作台，是「谁干活」那一层（设计文档 05 节）。
+  // 单 tab，用同域反代把 dsh 嵌进来 —— 补上「两个平台一个入口」的最后一块。
+  { key: "agent", label: "智能体", icon: "◎", tabs: [
+    { key: "agent", label: "智能体" },
   ] },
 ];
 
@@ -136,6 +142,7 @@ function HubContent({ sub, id, inner }: { sub: string; id?: number; inner?: stri
     case "pipeline": return <DataPipelinePage />;
     case "monitor": return <MonitorPage />;
     case "auto": return <AutoResearchHubPage />;
+    case "agent": return <AgentPortalPage />;
     default: return null;
   }
 }
