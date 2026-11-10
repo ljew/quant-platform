@@ -9,8 +9,22 @@ import EChart from "../components/EChart";
 import {
   ACTION_LABEL, actionBadge, EvidenceBars, MiniTable, Signed, STATE_META, TransitionBox,
 } from "../components/cardShared";
-import { CardSignalsResp, researchApi, ResearchCardItem, StatRow } from "../api/client";
+import {
+  api, BacktestListItem, CardSignalsResp, OptimizeRunRow, researchApi,
+  ResearchCardItem, StatRow,
+} from "../api/client";
 import { useTheme, ThemeColors } from "../theme";
+
+/** 百分比：正数带 +，空值给 —。回测表里「超额」是核心列，不该被格式化吃掉符号。 */
+function pct(v: number | null | undefined): string {
+  if (v == null) return "—";
+  return `${v >= 0 ? "+" : ""}${(v * 100).toFixed(2)}%`;
+}
+
+function pctColor(v: number | null | undefined, colors: ThemeColors): string {
+  if (v == null) return colors.text;
+  return v >= 0 ? colors.up : colors.down;
+}
 
 function Field({ label, children, colors }: { label: string; children: React.ReactNode; colors: ThemeColors }) {
   return (
@@ -310,6 +324,9 @@ export default function ResearchCardDetailPage({ cardId, onBack }: { cardId: num
   const { colors } = useTheme();
   const [card, setCard] = useState<ResearchCardItem | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // 回测全部历史 + 寻优落库记录：设计文档 09 节要求「回测列全部而不是最近一条」
+  const [backtests, setBacktests] = useState<BacktestListItem[] | null>(null);
+  const [runs, setRuns] = useState<OptimizeRunRow[] | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -321,6 +338,26 @@ export default function ResearchCardDetailPage({ cardId, onBack }: { cardId: num
   }, [cardId]);
 
   useEffect(() => { load(); }, [load]);
+
+  const strategyKey = card?.strategy_key ?? "";
+  useEffect(() => {
+    if (!strategyKey) return;
+    let alive = true;
+    (async () => {
+      try {
+        const [bs, rs] = await Promise.all([
+          api.strategyBacktests(20),
+          api.optimizeRuns(strategyKey, 10),
+        ]);
+        if (!alive) return;
+        setBacktests(bs.filter((b) => b.strategy_key === strategyKey));
+        setRuns(rs.runs);
+      } catch {
+        if (alive) { setBacktests([]); setRuns([]); }
+      }
+    })();
+    return () => { alive = false; };
+  }, [strategyKey]);
 
   if (err) return <div style={{ color: colors.up }}>加载失败：{err} <Btn small kind="ghost" onClick={onBack}>返回</Btn></div>;
   if (!card) return <div style={{ color: colors.muted }}>加载中…</div>;
@@ -462,6 +499,113 @@ export default function ResearchCardDetailPage({ cardId, onBack }: { cardId: num
               但没有持仓规则/成本模型，所以跑不了组合回测。
               要做成可跟踪的策略，需要在 registry 里加一条 <code>{card.key}</code> 的注册项。
             </div>
+          )}
+        </Card>
+      )}
+
+      {/* —— 回测全部历史 ——
+          原来只显示最近一条，看不出「2019~2023 赚了 41.8% 但跑输基准 6.22pp」这种事。
+          超额单列出来，跑输的那行会自己变绿，不用人算。 */}
+      {!isFactor && card.strategy_key && (
+        <Card
+          title={`回测历史（${backtests?.length ?? "…"}）`}
+          colors={colors}
+          style={{ marginTop: 18 }}
+          extra={<span style={{ fontSize: 11, color: colors.muted }}>
+            全部区间 · 带基准才看得出跑输
+          </span>}
+        >
+          {backtests === null ? (
+            <div style={{ fontSize: 12, color: colors.muted }}>加载中…</div>
+          ) : backtests.length === 0 ? (
+            <div style={{ fontSize: 12.5, color: colors.muted, lineHeight: 1.8 }}>
+              这个策略还没有回测记录。
+            </div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ color: colors.muted }}>
+                  {["#", "区间", "收益", "基准", "超额", "回撤", "成交"].map((h) => (
+                    <th key={h} style={{ textAlign: "left", padding: "6px 8px", fontWeight: 500 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {backtests.map((b) => (
+                  <tr key={b.id} style={{ borderTop: `1px solid ${colors.border}` }}>
+                    <td style={{ padding: "7px 8px", color: colors.muted }}>{b.id}</td>
+                    <td style={{ padding: "7px 8px" }}>{b.start_date} ~ {b.end_date}</td>
+                    <td style={{ padding: "7px 8px", color: pctColor(b.total_return, colors) }}>{pct(b.total_return)}</td>
+                    <td style={{ padding: "7px 8px", color: colors.muted }}>{pct(b.benchmark_total_return)}</td>
+                    <td style={{ padding: "7px 8px", fontWeight: 700, color: pctColor(b.excess_return, colors) }}>
+                      {pct(b.excess_return)}
+                    </td>
+                    <td style={{ padding: "7px 8px", color: colors.muted }}>{pct(b.max_drawdown)}</td>
+                    <td style={{ padding: "7px 8px", color: colors.muted }}>{b.trade_count ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+      )}
+
+      {/* —— 参数寻优（落库的那几次） —— */}
+      {!isFactor && card.strategy_key && (
+        <Card
+          title={`参数寻优（${runs?.length ?? "…"}）`}
+          colors={colors}
+          style={{ marginTop: 14 }}
+          extra={<span style={{ fontSize: 11, color: colors.muted }}>
+            已落库 · 跨重启可回看
+          </span>}
+        >
+          {runs === null ? (
+            <div style={{ fontSize: 12, color: colors.muted }}>加载中…</div>
+          ) : runs.length === 0 ? (
+            <div style={{ fontSize: 12.5, color: colors.muted, lineHeight: 1.8 }}>
+              还没有寻优记录。去「回测寻优」跑一次，结果会自动落库并出现在这里。
+            </div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ color: colors.muted }}>
+                  {["时间", "状态", "组数", "最优夏普", "最优参数", "耗时"].map((h) => (
+                    <th key={h} style={{ textAlign: "left", padding: "6px 8px", fontWeight: 500 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map((r) => {
+                  const tone = r.status === "done" ? colors.down
+                    : r.status === "failed" ? colors.up
+                    : r.status === "running" ? colors.accent : colors.muted;
+                  const secs = r.started_at && r.finished_at
+                    ? Math.round((new Date(r.finished_at).getTime() - new Date(r.started_at).getTime()) / 1000)
+                    : null;
+                  return (
+                    <tr key={r.id} style={{ borderTop: `1px solid ${colors.border}` }}>
+                      <td style={{ padding: "7px 8px", color: colors.muted }}>
+                        {(r.finished_at ?? r.started_at ?? "").replace("T", " ").slice(5, 16)}
+                      </td>
+                      <td style={{ padding: "7px 8px", color: tone, fontWeight: 600 }}>{r.status}</td>
+                      <td style={{ padding: "7px 8px" }}>{r.total}</td>
+                      <td style={{ padding: "7px 8px", fontWeight: 600 }}>
+                        {r.best_sharpe == null ? "—" : r.best_sharpe.toFixed(2)}
+                      </td>
+                      <td style={{ padding: "7px 8px", color: colors.muted, fontSize: 11.5 }}>
+                        {Object.keys(r.best_params ?? {}).length === 0
+                          ? "—"
+                          : Object.entries(r.best_params).map(([k, v]) => `${k}=${v}`).join(" / ")}
+                      </td>
+                      <td style={{ padding: "7px 8px", color: colors.muted }}>
+                        {secs == null ? "—" : `${secs}s`}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           )}
         </Card>
       )}

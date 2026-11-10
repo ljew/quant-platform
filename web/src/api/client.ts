@@ -25,6 +25,39 @@ export const del = <T>(path: string) => request<T>(path, { method: "DELETE" });
 
 // —— 类型 ——
 /** 策略参数元数据（后端 registry 提供，含分组）。 */
+/** 回测列表项（/strategy/backtests）。 */
+export interface BacktestListItem {
+  id: number;
+  strategy_key: string;
+  strategy_name: string;
+  start_date: string;
+  end_date: string;
+  total_return: number | null;
+  benchmark_total_return: number | null;
+  excess_return: number | null;
+  sharpe: number | null;
+  max_drawdown: number | null;
+  win_rate: number | null;
+  trade_count: number | null;
+  created_at: string | null;
+}
+
+/** 一次寻优（/strategy/optimize/runs，已落库）。 */
+export interface OptimizeRunRow {
+  id: number;
+  job_id: string;
+  strategy_key: string;
+  status: string;
+  total: number;
+  done: number;
+  best_sharpe: number | null;
+  best_excess: number | null;
+  best_params: Record<string, unknown>;
+  error: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
 /** 表级新鲜度（/monitor/table-freshness）。 */
 export interface TableFreshnessRow {
   table: string;
@@ -325,6 +358,12 @@ export const api = {
   walkForward: (payload: WalkForwardRequest) =>
     post<WalkForwardResult>("/strategy/backtest/walk-forward", payload),
   // 参数寻优
+  strategyBacktests: (limit = 20) =>
+    get<BacktestListItem[]>(`/strategy/backtests?limit=${limit}`),
+  optimizeRuns: (strategyKey?: string, limit = 10) =>
+    get<{ total: number; runs: OptimizeRunRow[] }>(
+      `/strategy/optimize/runs?limit=${limit}` +
+      (strategyKey ? `&strategy_key=${encodeURIComponent(strategyKey)}` : "")),
   optimize: (payload: Record<string, unknown>) =>
     post<OptimizeTrial[]>("/strategy/optimize", payload),
   // 大网格：提交后台任务（子进程执行），轮询进度
