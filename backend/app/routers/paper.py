@@ -89,15 +89,20 @@ def create_task(req: PaperTaskCreate, db=Depends(get_db)):
 
 
 @router.post("/auto-ensure")
-def auto_ensure_paper(dry_run: bool = False, db=Depends(get_db)):
-    """为「启用且回测超额为正」的策略自动补建模拟盘任务。
+def auto_ensure_paper(dry_run: bool = False, mode: str = "create",
+                      db=Depends(get_db)):
+    """为「启用且回测超额为正」的策略补建模拟盘任务。
 
-    dry_run=true 只返回将要建什么，不落库（页面预览用）。
+    mode="create"（默认）：真的建盘 —— 只给页面上「确认建盘」这个动作。
+    mode="notify"：只返回 proposals，不落库 —— watchdog 自动路径用这个。
+    dry_run=true：预览，不落库（页面展示用）。
     幂等：已有任务的策略跳过，重复调用不会建重复任务。
     """
     from app.services.paper_auto import ensure_paper_for_enabled
 
-    return ensure_paper_for_enabled(db, dry_run=dry_run)
+    if mode not in ("create", "notify"):
+        raise HTTPException(400, "mode 只能是 create 或 notify")
+    return ensure_paper_for_enabled(db, dry_run=dry_run, mode=mode)
 
 
 @router.get("/tasks")

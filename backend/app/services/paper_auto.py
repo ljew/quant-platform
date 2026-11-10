@@ -12,6 +12,11 @@
 并在返回里说明原因，不能静默跳过。
 
 为什么不自动删/停任务：反向操作风险大（可能正处于建仓期），只新增不删除。
+
+⚠️ 2026-11-10 起：**自动路径不再直接建盘**。watchdog 用 mode="notify"，
+只把候选交出来（并推送邮件），人确认后由页面按钮（mode="create"）或
+智能体的 create_paper_task 两段式落地。原因见《智能体架构设计》09 节：
+自动建盘等于「机器替人下单」，出事时没有一道闸。
 """
 from __future__ import annotations
 
@@ -28,7 +33,8 @@ AUTO_CASH = 1_000_000.0
 AUTO_MIN_TRADES = 5          # 成交太少说明策略几乎不建仓，跟踪没意义
 
 
-def ensure_paper_for_enabled(db: Session, dry_run: bool = False) -> dict:
+def ensure_paper_for_enabled(db: Session, dry_run: bool = False,
+                             mode: str = "create") -> dict:
     """扫一遍「启用的策略卡」，缺任务的按证据决定建不建。
 
     返回 {"created": [...], "skipped": [...], "existing": [...]}，
@@ -38,7 +44,7 @@ def ensure_paper_for_enabled(db: Session, dry_run: bool = False) -> dict:
     from app.routers.research import _recent_backtest, match_strategy_key
     from app.core.strategies.registry import STRATEGY_REGISTRY
 
-    created, skipped, existing = [], [], []
+    created, proposals, skipped, existing = [], [], [], []
 
     cards = db.execute(
         select(ResearchCard).where(
@@ -90,6 +96,16 @@ def ensure_paper_for_enabled(db: Session, dry_run: bool = False) -> dict:
 
         # 起点取回测起点：这样模拟盘曲线接着回测往下走，不会从零开始
         start = bt.get("start") or (date.today() - timedelta(days=365)).isoformat()
+        if mode == "notify":
+            proposals.append({
+                "strategy_key": skey,
+                "name": f"{meta.get('name') or skey} · 自动跟踪",
+                "excess": excess, "trades": trades, "start": start,
+                "suggest": {"initial_cash": AUTO_CASH, "commission": 0.0001,
+                            "slippage": 0.0015, "adj": "qfq"},
+                "reason": f"启用卡 + 回测超额 {excess:+.2%} + {trades} 笔成交",
+            })
+            continue
         task = PaperTask(
             name=f"{meta.get('name') or skey} · 自动跟踪",
             strategy_key=skey,
@@ -114,4 +130,5 @@ def ensure_paper_for_enabled(db: Session, dry_run: bool = False) -> dict:
         created.append({"strategy_key": skey, "task_id": None if dry_run else task.id,
                         "excess": excess, "start": start})
 
-    return {"created": created, "skipped": skipped, "existing": existing}
+    return {"mode": mode, "created": created, "proposals": proposals,
+            "skipped": skipped, "existing": existing}
