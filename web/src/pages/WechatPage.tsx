@@ -9,6 +9,7 @@ import {
   WechatUpstream,
   wechatApi,
 } from "../api/client";
+import WechatCookieModal from "../components/WechatCookieModal";
 import { useTheme } from "../theme";
 
 /**
@@ -34,6 +35,13 @@ export default function WechatPage() {
   const { colors } = useTheme();
 
   const [stats, setStats] = useState<WechatStats | null>(null);
+  // 凭证状态：走 /wechat/cookie?check=true（同时测列表 + 正文两个接口）。
+  // 旧 upstream.cookie 只测列表接口，Cookie 半失效时它会误报「有效」。
+  const [cookieStatus, setCookieStatus] = useState<{
+    exists: boolean; valid: boolean | null; reason: string;
+    updated_at: string | null; n_cookies: number;
+  } | null>(null);
+  const [showCookie, setShowCookie] = useState(false);
   const [mps, setMps] = useState<WechatMp[]>([]);
   const [items, setItems] = useState<WechatArticle[]>([]);
   const [total, setTotal] = useState(0);
@@ -154,6 +162,15 @@ export default function WechatPage() {
         (stale > 3 ? `（已 ${Math.round(stale)} 天未更新）` : "")
       : "加载中…";
 
+  const loadCookie = useCallback(async () => {
+    try {
+      const r = await fetch("/api/v1/wechat/cookie?check=true");
+      if (r.ok) setCookieStatus(await r.json());
+    } catch { /* 静默：凭证状态查不到不影响其它内容 */ }
+  }, []);
+
+  useEffect(() => { loadCookie(); }, [loadCookie]);
+
   const tabStyle = (on: boolean) => ({
     padding: "5px 12px", borderRadius: 8, fontSize: 12.5, cursor: "pointer",
     border: `1px solid ${on ? colors.accent : colors.border}`,
@@ -218,8 +235,11 @@ export default function WechatPage() {
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
               {[
-                { k: "微信读书凭证", v: upstream?.cookie.ok ? "有效" : "失效",
-                  h: upstream?.cookie.ok ? `vid ${upstream?.cookie.vid}` : (upstream?.cookie.error || "") },
+                { k: "微信读书凭证",
+                  v: cookieStatus ? (cookieStatus.valid ? "有效" : "已失效") : "检查中…",
+                  h: cookieStatus
+                    ? (cookieStatus.valid ? (cookieStatus.reason || "") : (cookieStatus.reason || ""))
+                    : "" },
                 { k: "订阅号", v: `${upstream?.feeds ?? 0} 个`, h: "data/wechat/feeds.json" },
                 { k: "上次采集", v: lr.at ? String(lr.at).slice(5, 16).replace("T", " ") : "从未",
                   h: lr.at ? `新增 ${lr.new ?? 0} · 已最新 ${lr.skip ?? 0} · 失败 ${lr.fail ?? 0}` : "" },
@@ -238,6 +258,9 @@ export default function WechatPage() {
               <Btn onClick={runCollect} disabled={collectBusy}>
                 {collectBusy ? "已提交…" : "立即采集"}
               </Btn>
+              <Btn kind="ghost" onClick={() => setShowCookie(true)}>
+                更新凭证
+              </Btn>
               <Btn kind="ghost" small onClick={refresh}>刷新状态</Btn>
               <span style={{ color: colors.muted, fontSize: 12 }}>
                 每天 08:20 / 20:40 自动跑；只取每个号<b>最新一篇</b>（官方接口限制，无法回补历史）
@@ -246,6 +269,17 @@ export default function WechatPage() {
             {collectMsg && <div style={{ color: colors.accent, fontSize: 12 }}>{collectMsg}</div>}
           </div>
         </Card>
+
+        {showCookie && (
+          <WechatCookieModal
+            onClose={() => setShowCookie(false)}
+            onSaved={() => {
+              setShowCookie(false);
+              loadCookie();     // 立即刷新凭证状态（含正文接口验证）
+              refresh();        // 顺带刷新 upstream 汇总
+            }}
+          />
+        )}
       </div>
     );
   }

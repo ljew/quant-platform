@@ -14,11 +14,50 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.services import wechat_svc
 
 router = APIRouter(prefix="/wechat", tags=["wechat"])
+
+
+@router.get("/cookie")
+def get_cookie_status(check: bool = Query(False, description="是否联网实测一次")):
+    """微信读书 Cookie 状态。过期后采集会静默失败，这里随时可查。
+
+    `check=true` 会真的调一次 cover 接口（约 1 秒），返回是否有效。
+    """
+    from app.services import wechat_auth
+    return wechat_auth.status(check=check)
+
+
+class CookieIn(BaseModel):
+    text: str = Field(min_length=4, description="粘贴的 Cookie 内容")
+
+
+@router.post("/cookie")
+def save_cookie(body: CookieIn):
+    """保存新 Cookie 并立即验证。
+
+    接受三种粘贴格式：
+      1. F12 Console 里 `document.cookie` 的输出：`a=1; b=2`
+      2. 请求头里复制的 `Cookie: ...`
+      3. 已经是 JSON 数组
+    """
+    from app.services import wechat_auth
+    try:
+        return wechat_auth.save(body.text)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"保存失败：{type(e).__name__}: {str(e)[:160]}")
+
+
+@router.post("/cookie/test")
+def test_cookie():
+    """用现有 Cookie 立刻探一次（不发新 Cookie 也能验）。"""
+    from app.services import wechat_auth
+    return wechat_auth.probe()
 
 
 @router.get("/stats")
