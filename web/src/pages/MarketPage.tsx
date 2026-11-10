@@ -61,7 +61,15 @@ function macd(vals: number[], fast = 12, slow = 26, signal = 9) {
 
 /** 行情看板：K线+MA 主图 / 成交量 / MACD 副图（dataZoom 联动），A股红涨绿跌。 */
 export default function MarketPage() {
-  const [symbol, setSymbol] = useState("sh600519");
+  const [symbol, setSymbol] = useState(() => {
+    // 从别处（首页信号、策略详情）跳过来时带过来的标的。
+    // sessionStorage 而不是事件：本页是懒加载，事件常常早于挂载。
+    try {
+      const pending = sessionStorage.getItem("market_focus_symbol");
+      if (pending) { sessionStorage.removeItem("market_focus_symbol"); return pending; }
+    } catch { /* 隐私模式 */ }
+    return "sh600519";
+  });
   const [bars, setBars] = useState<KlineBar[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");

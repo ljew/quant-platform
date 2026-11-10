@@ -4,23 +4,19 @@ import { Hub } from "./components/Hub";
 import { sidebarTheme, useTheme } from "./theme";
 
 // 首页保持直出，其余页面按导航拆分，避免一次性下载全部研究与管理模块。
-const NewsFeedPage = lazy(() => import("./pages/NewsFeedPage"));
-const ForeignNewsPage = lazy(() => import("./pages/ForeignNewsPage"));
-const ReportsPage = lazy(() => import("./pages/ReportsPage"));
-const MarketPage = lazy(() => import("./pages/MarketPage"));
 const BacktestOptimizePage = lazy(() => import("./pages/BacktestOptimizePage"));
 const PaperPage = lazy(() => import("./pages/PaperPage"));
 const FactorMinePage = lazy(() => import("./pages/FactorMinePage"));
 const StrategyOverviewPage = lazy(() => import("./pages/StrategyOverviewPage"));
 const ResearchCardsPage = lazy(() => import("./pages/ResearchCardsPage"));
 const SignalPage = lazy(() => import("./pages/SignalPage"));
-const EtfFlowPage = lazy(() => import("./pages/EtfFlowPage"));
 const AttributionPage = lazy(() => import("./pages/AttributionPage"));
 const AutoResearchHubPage = lazy(() => import("./pages/AutoResearchHubPage"));
 const DataSystemPage = lazy(() => import("./pages/DataSystemPage"));
 const DataHealthPage = lazy(() => import("./pages/DataHealthPage"));
-const WechatPage = lazy(() => import("./pages/WechatPage"));
 const FundResearchPage = lazy(() => import("./pages/FundResearchPage"));
+const NewsHubPage = lazy(() => import("./pages/NewsHubPage"));
+const MarketHubPage = lazy(() => import("./pages/MarketHubPage"));
 
 /**
  * 重构 v2.1：13 个二级 Tab → 9 个（2026-10-08 精简）。
@@ -34,16 +30,10 @@ type HubKey = "today" | "research" | "track" | "data";
 const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; label: string }[] }[] = [
   { key: "today", label: "今日观点", icon: "☀", tabs: [
     { key: "today", label: "今日观点" },
-    // 全部资讯：各来源原文归一（原始信息）。首页只放简报（判断），原文来这看。
-    { key: "news", label: "全部资讯" },
-    // 境外资讯：RSS + 可选 X 日爬（OPS-FN-1a）
-    { key: "foreign-news", label: "境外资讯" },
-    // 报告：四时段跨市场资讯简报，生成即入库（market_reports），可检索可读全文
-    { key: "reports", label: "报告" },
-    { key: "market", label: "行情看板" },
-    // 资金流：20 只宽基 ETF 的日度/分钟资金观察（观察口径，非信号；信号见 NSI）
-    { key: "etfflow", label: "资金流" },
-    { key: "wechat", label: "公众号" },
+    // 资讯库：全部 / 境外 / 四时段报告 / 公众号 合一（设计文档 08 节：3 个 tab）
+    { key: "news", label: "资讯库" },
+    // 行情：看板 + 资金流合一
+    { key: "market", label: "行情" },
   ] },
   { key: "research", label: "策略研究", icon: "⚗", tabs: [
     // 总览当门面：几条线、各自走到哪、今天该处理什么（设计文档 09 节）
@@ -84,6 +74,10 @@ const LEGACY_TAB_MAP: Record<string, string> = {
   overseas_news: "foreign-news",
   fund: "fund-research",          // 2026-11-10 合并
   "fund-holding": "fund-research",
+  "foreign-news": "news",         // 2026-11-10 资讯 4 合 1
+  reports: "news",
+  wechat: "news",
+  etfflow: "market",              // 2026-11-10 行情 2 合 1
 };
 
 function findHub(sub: string): { hub: HubKey; sub: string } | null {
@@ -119,12 +113,8 @@ function initialNav(): Nav {
 function HubContent({ sub, id, inner }: { sub: string; id?: number; inner?: string }) {
   switch (sub) {
     case "today": return <TodayPage />;
-    case "news": return <NewsFeedPage />;
-    case "foreign-news": return <ForeignNewsPage />;
-    case "reports": return <ReportsPage />;
-    case "market": return <MarketPage />;
-    case "etfflow": return <EtfFlowPage />;
-    case "wechat": return <WechatPage />;
+    case "news": return <NewsHubPage />;
+    case "market": return <MarketHubPage />;
     case "strategy-overview": return <StrategyOverviewPage />;
     case "cards": return <ResearchCardsPage initialDetailId={id} initialTab={inner} />;
     case "fund-research": return <FundResearchPage />;
@@ -178,7 +168,17 @@ export default function App() {
     const onHash = () => {
       const raw = window.location.hash.replace(/^#/, "");
       const hit = parseHash(raw);
-      if (hit) setNav(hit);
+      if (!hit) return;
+      setNav(hit);
+      // 把旧 tab 名就地归一（#foreign-news → #news）。
+      // 不能只靠「写 hash」那条副作用：它依赖 [sub,id,inner]，
+      // 跳到的目标正好是当前页时状态没变、副作用不跑，地址栏就停在旧名上。
+      const canonical = hit.id
+        ? `${hit.sub}/${hit.id}${hit.inner ? `/${hit.inner}` : ""}`
+        : hit.sub;
+      if (raw !== canonical) {
+        window.history.replaceState(null, "", `#${canonical}`);
+      }
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);

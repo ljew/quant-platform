@@ -13,6 +13,7 @@ import {
   api, agentApi, AgentState, BacktestListItem, FrameworkHealth, OptimizeRunRow,
   researchApi, ResearchCardItem,
 } from "../api/client";
+import TodayRobustnessCard from "../components/TodayRobustnessCard";
 import { useTheme } from "../theme";
 
 type LiteTask = { id: number; strategy_key: string; name: string; kind: string; last_bar_date: string | null };
@@ -251,6 +252,12 @@ export default function StrategyOverviewPage() {
           ))}
         </div>
       </Card>
+
+      {/* 策略体检（从今日观点搬来）：五层健康 / OOS 门禁 / 成本口径，带深链。
+          这一页是研发台，自检放这里才找得到；首页只回答「今天该做什么」。 */}
+      <div style={{ marginTop: 14 }}>
+        <TodayRobustnessCard colors={colors} />
+      </div>
 
       {/* 研究管线 */}
       <Card title="研究管线" colors={colors} style={{ marginTop: 14 }}
