@@ -73,9 +73,14 @@ def run_in_subprocess(task_id: int, kind: str = "portfolio") -> tuple[bool, dict
     except subprocess.TimeoutExpired:
         proc.kill()
         out, err = proc.communicate()
-        _clear_lock()
         logger.warning("模拟盘 #%s 子进程超时 %ss，已终止", task_id, timeout)
         return False, {"error": f"超过 {timeout}s 未完成，已终止"}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("模拟盘 #%s communicate 异常：%s", task_id, e)
+        return False, {"error": f"等待子进程失败：{e}"}
+    finally:
+        # 放在 finally：任何退出路径都要清锁，否则下次重启被自己拦住
+        _clear_lock()
 
     line = (out or "").strip().splitlines()[-1] if (out or "").strip() else ""
     info: dict = {}
@@ -85,7 +90,6 @@ def run_in_subprocess(task_id: int, kind: str = "portfolio") -> tuple[bool, dict
         except json.JSONDecodeError:
             info = {"raw": line[:300]}
 
-    _clear_lock()
     if proc.returncode != 0:
         info.setdefault("error", (err or "")[-400:] or f"exit {proc.returncode}")
         return False, info
