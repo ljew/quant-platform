@@ -115,7 +115,10 @@ def run(job: str, dry_run: bool = False) -> int:
     out_file.write_text(
         f"# {spec['title']} · {stamp}\n\n"
         f"preset: `{spec['preset']}`　耗时 {cost:.0f}s　exit {proc.returncode}\n\n"
-        f"{body}\n\n" + (f"---\nstderr:\n```\n{err[-2000:]}\n```\n" if err else ""),
+        # stderr 只在真失败时留档：headless 会把 reasoning 也打到 stderr，
+        # 成功时把它写进产物等于把草稿当结论。
+        f"{body}\n" + (f"\n---\n**执行异常**（exit {proc.returncode}）\n```\n{err[-1500:]}\n```\n"
+                        if proc.returncode != 0 else ""),
         encoding="utf-8")
     print(f"{spec['title']} 完成，{cost:.0f}s → {out_file}")
     if proc.returncode != 0:
