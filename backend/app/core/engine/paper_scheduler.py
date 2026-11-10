@@ -1,7 +1,7 @@
 """模拟盘后台调度器。
 
 - 单标的任务：交易时段（工作日 9:30-11:30 / 13:00-15:00）每轮用实时价跑一次；
-- 组合任务：日频，每个交易日收盘后（>=15:00）跑一次 rebalance；
+- 组合任务：日频，**当日 K 线入库后**（>=19:00）跑一次 rebalance；
 - 常驻 daemon 线程，每 30s 检查一次；由 app.main 启动。
 """
 from __future__ import annotations
@@ -20,6 +20,16 @@ logger = logging.getLogger("quant.paper")
 
 _stop = False
 _thread: threading.Thread | None = None
+
+# 组合任务的失败重试节流（进程内即可，重启清零无所谓）。
+# 键 task_id → 上次尝试的本地时间。
+_attempt_at: dict[int, dt.datetime] = {}
+
+# 组合任务最早触发时刻：ETL 19:00 把当日 K 线写进来之前跑，看到的是昨天的数据，
+# 跑完 last_bar_date 还是昨天 → 当日净值永远缺一天。
+PORTFOLIO_AFTER_HOUR = 19
+# 数据还没到位时的重试间隔（秒）
+RETRY_SECONDS = 1800
 
 
 def _trading_now(now: dt.datetime) -> bool:
@@ -49,14 +59,34 @@ def _loop() -> None:
                     if t.kind == "single":
                         if _trading_now(now):
                             run_paper_task(db, t)
-                    else:  # portfolio：日频，交易日收盘后跑一次
+                    else:  # portfolio：日频，当日 K 线入库后跑一次
                         from app.core.trading_calendar import is_trading_day
 
-                        if now.hour >= 15 and is_trading_day(now) and (
-                            t.last_run_at is None
-                            or t.last_run_at.date() != now.date()
-                        ):
-                            run_paper_task(db, t)
+                        if now.hour >= PORTFOLIO_AFTER_HOUR and is_trading_day(now):
+                            # ⚠️ 判「今天是否已跑过」不能用 last_run_at.date()：
+                            # 盘前/盘中手动跑一次会把 last_run_at 打到今天，
+                            # 旧逻辑因此跳过了收盘后那次（2026-11-09 实锤：
+                            # 快照只到 11-06，11-09 净值整天缺失）。
+                            # 正确口径是 **数据跑到哪一天** —— last_bar_date。
+                            today = now.date().isoformat()
+                            stale = (not t.last_bar_date) or (t.last_bar_date < today)
+                            last_try = _attempt_at.get(t.id)
+                            cooled = (
+                                last_try is None
+                                or (now - last_try).total_seconds() >= RETRY_SECONDS
+                            )
+                            if stale and cooled:
+                                _attempt_at[t.id] = now
+                                logger.info(
+                                    "paper portfolio run: task=%s last_bar=%s today=%s",
+                                    t.id, t.last_bar_date, today,
+                                )
+                                r = run_paper_task(db, t)
+                                if not r.get("ok"):
+                                    logger.warning(
+                                        "paper portfolio failed: task=%s %s",
+                                        t.id, r.get("error"),
+                                    )
             finally:
                 db.close()
         except Exception as e:  # noqa: BLE001

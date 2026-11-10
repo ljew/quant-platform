@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -113,6 +112,10 @@ def list_tasks(db=Depends(get_db)):
             "enabled": t.enabled, "initial_cash": t.initial_cash,
             "equity": detail["equity"], "pnl": detail["pnl"], "pnl_pct": detail["pnl_pct"],
             "positions_count": len(detail["positions"]),
+            # ⚠️ 必须带 last_bar_date：智能体/前端靠它判断「净值跑到哪一天」。
+            # 曾漏返回 → 外部读成 null，误判为「模拟盘从未跑过」（2026-11-10）。
+            "last_bar_date": t.last_bar_date,
+            "account_start": t.account_start, "start_date": t.start_date,
             "last_run_at": detail["last_run_at"], "error_msg": t.error_msg,
         })
     return out
