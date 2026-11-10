@@ -18,6 +18,18 @@ if [ -f data/.paper_running ]; then
     [ "$1" = "--force" ] || exit 1
 fi
 
+echo "→ 停前先把 WAL 落盘"
+# 2026-11-10 22:26 事故：12 分钟内连续 6 次 rebuild，最后 quick_check 报出
+# 「2nd reference to page」—— 两张表的 b-tree 指向同一个页（页交叉引用），
+# 用 .recover 重建才修好（丢 2 条 news + 101 条 etf_share）。
+# 主动 checkpoint 把 WAL 合并进主库，容器就没什么可「半写」的了。
+docker exec quant-backend python3 -c "
+import sqlite3
+c = sqlite3.connect('/data/quant_dev.db', timeout=20)
+print('  wal_checkpoint:', c.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone())
+c.close()
+" 2>/dev/null || echo "  （容器内 checkpoint 跳过：进程可能已退出）"
+
 echo "→ 优雅停止（等 SQLite 写完）"
 docker compose stop backend
 
