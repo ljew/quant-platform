@@ -102,7 +102,20 @@ def _run(run_id: int) -> None:
     except _QualityBlocked as exc:
         _finish(db, run_id, "FAILED", f"质量闸门阻断：{exc}")
     except Exception as exc:  # noqa: BLE001
-        _finish(db, run_id, "FAILED", str(exc)[:500])
+        # error 只存一行文本，没有堆栈就查不出是哪一步、哪个字段出的问题。
+        # 2026-11-09 的 `Invalid isoformat string: '杨逸君'` 连崩 3 次、
+        # 复盘时只能靠猜，就是因为缺这一段。这里补「最深一帧」的文件:行号 + 函数名，
+        # 500 字上限够放（完整栈只进 stdout 日志）。
+        import traceback
+
+        frames = traceback.extract_tb(exc.__traceback__)
+        where = ""
+        if frames:
+            f = frames[-1]
+            name = (f.filename or "").rsplit("/", 1)[-1] or "?"
+            where = f" @ {name}:{f.lineno} in {f.name}"
+        print(traceback.format_exc())
+        _finish(db, run_id, "FAILED", (f"{type(exc).__name__}: {exc}{where}")[:500])
     finally:
         db.close()
 
