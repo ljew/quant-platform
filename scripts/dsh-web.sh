@@ -40,6 +40,10 @@ case "${1:-start}" in
       exit 0
     fi
     mkdir -p "$(dirname "$LOG")" "$DSH_HOME_DIR/profiles"
+    # 启动前先备份会话：dsh 的会话是 append 写的 zstd，误删不可恢复，
+    # 也没有回收站（2026-11-11 批量删测试会话时误伤过真实会话）。
+    # 备份失败不阻塞启动。
+    "$HOME/quant-platform/scripts/dsh_sessions_backup.sh" 2>/dev/null || true
     # 只保留最近一次启动的输出，避免后端读到旧 token
     : > "$LOG"
     # cwd 决定工作区分组（会话目录名按 cwd 生成）。从仓库根起，
