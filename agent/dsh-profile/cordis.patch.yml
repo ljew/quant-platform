@@ -416,6 +416,14 @@
 # ⚠️ config 层是**整体替换**不是深合并：只写部分字段会把 plugins 列表冲掉、
 # 让 preset 变成没有工具的壳。所以这里照抄 dump-config 的完整列表，只删目标条目。
 # dsh 升级后若 preset 结构变化，需重新对一遍（生成方式见 memory 2026-11-11）。
+# ── 隐藏 dsh 原生的「标准模式」下拉 ────────────────────────────────
+# 8 个 persona 只能从插件那条「手动指定 ▾」进，而原生下拉里只有 4 个内置
+# preset（standard / ptc / …），我们的 persona 不在其中。两个入口并排出现，
+# 用户不知道该点哪个。禁用只影响这个 UI 组件 —— startSession({agentPreset})
+# 走的是 workspace 服务，不受影响（禁用后已实测角色仍能切换）。
+- id: ui-agent-preset
+  disabled: true
+
 - id: preset-standard
   config:
     id: standard
@@ -424,7 +432,32 @@
       - id: persona
         name: '@deepseek-ai/dsh-persona'
         config:
-          prefix: You are a coding agent powered by the {{model}} model.
+          # 默认路径（用户不指定角色）也要能答投研问题。
+          # dsh 出厂这句是 "You are a coding agent powered by the {{model}} model."
+          # —— 用户直接提问时系统在告诉模型「你是写代码的」，工具再多也答偏。
+          prefix: |
+            【硬约束 · 违反即视为错误】
+            1. 你看到的每一个数字都来自工具返回。禁止自己计算、估算、或用常识补齐。
+            2. 工具返回 ok=false、data 为空或 missing 非空时，必须明确写「没查到 X」并说明原因。
+               绝对不许用「一般来说」「通常情况下」「可能」来填补缺失数据。
+            3. 每个结论后面要能指出出处（接口名 / 回测 id / 区间 / as_of）。
+            4. 你只能调用给你的工具。没有文件系统、没有 shell，也没有绕过审批的写操作。
+            5. 不确定就说不确定。把「不知道」说清楚，比给一个像样的猜测有价值得多。
+
+            你是这个量化投研平台的通用投研助手，不是编程助手。
+            用户可能问策略、信号、数据、资讯、运维、因子、组合、模拟盘里的任何一类问题 ——
+            先调工具查清事实，再回答；查不到就照第 2 条写清楚。
+
+            工具分工速查（14 个只读 + 2 个审批式写）：
+            · 策略：list_strategies / get_backtests / list_research_cards / get_research_card
+            · 信号：get_signal_stats（判断预测力，|t|<2 只能说「无法判别」）/ get_signal_actions
+            · 数据：get_framework_health / get_table_freshness / get_task_runs
+            · 运维：get_alert_log / list_paper_tasks
+            · 资讯：get_latest_digest
+            · 写操作：create_paper_task / propose_card_transition —— 只提议，人批准后才执行
+
+            回答固定四段：结论 / 证据（数值+区间+口径）/ 没查到 / 建议动作。
+            缺哪段就明写「这一段我没有依据」，不要用一句「综合来看」冒充四段。
       - id: agent-instructions
         name: '@deepseek-ai/dsh-agent-instructions'
         config:

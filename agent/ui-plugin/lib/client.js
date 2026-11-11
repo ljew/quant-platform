@@ -193,6 +193,8 @@ window.__ModuleLoader__.load({
 		function RoleDock({ uiWorkspace }) {
 			const [picked, setPicked] = react.useState(null);
 			const [note, setNote] = react.useState("");
+			// 8 个角色默认收起：默认形态是「给第一句」（见下面 head 的注释）
+			const [open, setOpen] = react.useState(false);
 
 			const base = {
 				border: "1px solid var(--dsh-border, rgba(128,128,128,.28))",
@@ -258,25 +260,80 @@ window.__ModuleLoader__.load({
 				);
 			});
 
-			const line = h(
+			// ── 默认形态：给第一句，不列 8 个人 ──────────────────────────
+			// 设计文档 09 节「空会话」写得很硬：「不列 8 个数字人让人选，
+			// 选人由编排器决定」。上一版把 8 个 chip 常驻在输入框上方，
+			// 等于把调度的活推给人 —— 老刘的原话是「不知道怎么选研究员」。
+			// 现在默认只给三个能直接开始的问题（各自绑定对应 persona），
+			// 想手动指定再展开。
+			const starter = (key, q) => {
+				const r = ROLES.find((x) => x.key === key);
+				return h(
+					"button",
+					{
+						key: "st-" + key,
+						title: "点一下：开新对话（" + r.name + "）并把问题填进输入框，回车发送",
+						onClick: () => void pick(Object.assign({}, r, { q: q })),
+						style: Object.assign({}, base, {
+							borderStyle: "dashed",
+							opacity: picked ? 0.45 : 0.95,
+						}),
+					},
+					q.length > 14 ? q.slice(0, 13) + "…" : q
+				);
+			};
+
+			const head = h(
 				"div",
 				{
-					key: "__row",
+					key: "__head",
 					style: {
-						display: "flex",
-						flexWrap: "wrap",
-						alignItems: "center",
-						gap: 6,
-						padding: "2px 2px 6px",
-						fontSize: 11.5,
+						display: "flex", flexWrap: "wrap", alignItems: "center",
+						gap: 6, padding: "2px 2px 6px", fontSize: 11.5,
 					},
 				},
 				h("span", { key: "__lb", style: { opacity: 0.55, marginRight: 2 } },
-					picked ? picked.hint : "选角色："),
-				chips
+					picked ? "已选：" + picked.name : "试试："),
+				picked
+					? null
+					: [
+							starter("strategy", "缠论还值不值得跟"),
+							starter("data", "今天数据齐吗"),
+							starter("ops", "服务正常吗、有任务漏跑吗"),
+					  ],
+				h(
+					"button",
+					{
+						key: "__more",
+						onClick: () => setOpen((v) => !v),
+						title: "手动指定角色（不指定就走通用助手，14 个工具全开）",
+						style: Object.assign({}, base, {
+							border: 0, opacity: 0.6, textDecoration: "underline",
+							marginLeft: "auto", padding: "3px 6px",
+						}),
+					},
+					open ? "收起 ▴" : "手动指定 ▾"
+				)
 			);
 
-			const out = [line];
+			const out = [head];
+			if (open) {
+				out.push(
+					h(
+						"div",
+						{
+							key: "__chips",
+							style: {
+								display: "flex", flexWrap: "wrap", alignItems: "center",
+								gap: 6, padding: "0 2px 6px", fontSize: 11.5,
+							},
+						},
+						h("span", { key: "__lb2", style: { opacity: 0.5, marginRight: 2 } },
+							"角色："),
+						chips
+					)
+				);
+			}
 			if (note) {
 				out.push(
 					h(
