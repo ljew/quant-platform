@@ -565,7 +565,11 @@ def _alert_fail(stage: str, label: str, error: str, detail: str) -> None:
         ],
         f"fund_pipeline_fail:{stage}:{d}",
     )
-    logger.warning("基金管道 %s 失败告警已发出", stage)
+    logger.warning(
+        "基金管道 %s 失败告警已发出｜错误：%s｜输出尾部：%s",
+        stage, (error or "未返回错误信息")[:200],
+        (tail.replace("\n", " ⏎ ")[-400:] or "（无输出）"),
+    )
 
 
 def _alert_missed(stage: str, label: str, run_at: str) -> None:
