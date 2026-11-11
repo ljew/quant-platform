@@ -60,12 +60,27 @@ export default function EChart({
   const { colors } = useTheme();
 
   useEffect(() => {
-    if (!ref.current) return;
-    const chart = init(ref.current);
+    const el = ref.current;
+    if (!el) return;
+    const chart = init(el);
     chartRef.current = chart;
     const onResize = () => chart.resize();
     window.addEventListener("resize", onResize);
+
+    // 合并页签（MergedTabs）用 display:none 藏非当前页。图表在隐藏容器里 init
+    // 量不到宽度，ECharts 会退回 100px 默认值；切回来时浏览器不发 window.resize，
+    // 于是整张图永远卡在 100px 宽、右侧一大片空白。
+    // 用 ResizeObserver 盯容器自身尺寸，可见/变宽时补一次 resize。
+    let raf = 0;
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => chart.resize());
+    });
+    ro.observe(el);
+
     return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
       window.removeEventListener("resize", onResize);
       chart.dispose();
       chartRef.current = null;

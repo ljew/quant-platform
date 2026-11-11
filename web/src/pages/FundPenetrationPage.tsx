@@ -177,7 +177,6 @@ interface Recheck {
 
 const C_DISC = "#2456c8";   // 披露
 const C_CARR = "#b7c4de";   // 继承
-const C_OLD = "#d97706";    // 旧截断数据
 const TYPE_LABEL: Record<string, string> = { Q1: "Q1 季报", H1: "半年报", Q3: "Q3 季报", FY: "年报" };
 
 /** 业界对照：来自公开研报 / 监管通报，非一手来源，需核实原文。 */
@@ -344,24 +343,28 @@ export default function FundPenetrationPage() {
   const pick = (f: FundItem) => { setCode(f.base_code); setEndDate(""); loadFund(f.base_code, ""); };
   useEffect(() => { if (funds.length && !code) pick(funds[0]); /* eslint-disable-line */ }, [funds]);
 
-  // ---- 图 1：修复前后对比 ----
+  // ---- 图 1：年报/半年报 vs 季报的披露完整度 ----
+  // 原图是「旧 CSV 截断 vs 重拉后」，但旧 CSV 已删（old_cover_median_by_year 恒空），
+  // 橙色系列没有数据，图上只剩一排 100% 的蓝柱 + 一个幽灵图例。
+  // 换成真正有对比的两条：年报/半年报依法全披露 vs Q1/Q3 只披露前十大。
   const repairOption = useMemo(() => {
     if (!ov) return null;
     const years = ov.yearly.map((y) => String(y.year));
-    const oldV = years.map((y) => ov.old_cover_median_by_year[y] ?? null);
-    const newV = ov.yearly.map((y) => y.annual_cover);
+    const fullV = ov.yearly.map((y) => y.annual_cover);
+    const q13V = ov.yearly.map((y) => y.q13_cover);
     return {
       grid: { left: 52, right: 20, top: 44, bottom: 42 },
       legend: { top: 6, textStyle: { color: colors.muted, fontSize: 11 },
-                data: ["旧数据（offset 截断）", "重拉后年报"] },
+                data: ["年报/半年报（完整披露）", "一季报/三季报（仅前十大）"] },
       tooltip: { trigger: "axis", valueFormatter: (v: number | null) => v == null ? "无" : `${v}%` },
       xAxis: { type: "category", data: years, axisLabel: { color: colors.muted, fontSize: 11 } },
       yAxis: { type: "value", max: 110, name: "权重和 %", nameTextStyle: { color: colors.muted, fontSize: 11 },
                axisLabel: { color: colors.muted, fontSize: 11 }, splitLine: { lineStyle: { color: colors.border } } },
       series: [
-        { name: "旧数据（offset 截断）", type: "bar", data: oldV, itemStyle: { color: C_OLD, opacity: 0.75 },
-          barMaxWidth: 26 },
-        { name: "重拉后年报", type: "bar", data: newV, itemStyle: { color: C_DISC }, barMaxWidth: 26 },
+        { name: "年报/半年报（完整披露）", type: "bar", data: fullV,
+          itemStyle: { color: C_DISC }, barMaxWidth: 22 },
+        { name: "一季报/三季报（仅前十大）", type: "bar", data: q13V,
+          itemStyle: { color: C_CARR }, barMaxWidth: 22 },
       ],
     } as never;
   }, [ov, colors]);
@@ -429,7 +432,9 @@ export default function FundPenetrationPage() {
       .slice(0, 16).reverse();
     return {
       grid: { left: 84, right: 58, top: 40, bottom: 34 },
-      legend: { top: 6, textStyle: { color: colors.muted, fontSize: 11 }, data: ["披露", "继承", "相对基准"] },
+      // 「相对基准」随正负变色（红超配/绿低配），图例色块无法表达，故不进图例，
+      // 改成标题右侧一行说明，避免图例显示成一块与实际柱子无关的深蓝。
+      legend: { top: 6, textStyle: { color: colors.muted, fontSize: 11 }, data: ["披露", "继承"] },
       tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
       xAxis: { type: "value", name: "权重 %", nameTextStyle: { color: colors.muted, fontSize: 11 },
                axisLabel: { color: colors.muted, fontSize: 11 }, splitLine: { lineStyle: { color: colors.border } } },
@@ -546,7 +551,7 @@ export default function FundPenetrationPage() {
         </div>
       )}
 
-      {note(
+      {brokenYears.length > 0 && note(
         mode === "dark" ? "#3a2318" : "#fff6e8", "#e8b96a",
         "先说结论：旧的「47% 未知」不是披露限制，是数据被截断了",
         <>
@@ -645,8 +650,8 @@ export default function FundPenetrationPage() {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
-        <Card title="修复前后：年报持仓权重和（按年中位）" colors={colors}
-          extra={<span style={{ fontSize: 11, color: colors.muted }}>橙=旧截断 / 蓝=重拉后</span>}>
+        <Card title="年报/半年报 vs 一季报：披露完整度（按年中位）" colors={colors}
+          extra={<span style={{ fontSize: 11, color: colors.muted }}>蓝=完整披露 / 浅=仅前十大</span>}>
           {repairOption && <EChart option={repairOption} height={260} />}
         </Card>
         <Card title="按报告期类型：覆盖度诊断" colors={colors}>
@@ -828,7 +833,10 @@ export default function FundPenetrationPage() {
               {covOption && <EChart option={covOption} height={300} />}
             </div>
             <div>
-              <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>当期行业配置（双轨）</div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 6 }}>
+                <span style={{ fontSize: 12.5, fontWeight: 600 }}>当期行业配置（双轨）</span>
+                <span style={{ fontSize: 11, color: colors.muted }}>细条 = 相对基准（红超配 / 绿低配）</span>
+              </div>
               {indOption && <EChart option={indOption} height={300} />}
             </div>
           </div>
