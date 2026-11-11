@@ -96,23 +96,72 @@ window.__ModuleLoader__.load({
 			"回答按四段写：结论 / 证据（数值+区间+口径）/ 没查到 / 建议动作。缺哪段就明写「这一段我没有依据」。",
 		].join("\n");
 
-		/** 把开场白写进 dsh 的输入框。
+		/** 把开场白写进 dsh 的输入框（异步，因为要等 Lexical 同步选区）。
 		 *
-		 *  必须用 execCommand('insertText')：innerHTML / textContent 只改 DOM，
-		 *  React 受控状态收不到，下一次渲染就盖回去；合成的 paste 事件也不可靠。
-		 *  插入前先全选 = 覆盖旧内容，避免上一个问题和新问题拼在一起。
+		 *  dsh 的输入框是 Lexical 富文本，不是 textarea。每个写法的行为都实测过
+		 *  （2026-11-11，反复试到能用为止）：
+		 *   · innerHTML / textContent —— 只改 DOM，React 受控状态收不到，下次渲染就盖回去
+		 *   · execCommand('insertText') —— 认选区（能替换），但**换行全被吃掉**
+		 *   · execCommand('insertParagraph' / 'insertHTML') —— Lexical 不响应
+		 *   · execCommand('selectAll' / 'delete') —— 同上，清不掉
+		 *   · 合成 paste（text/plain）—— 换行能保住，但只往光标处插，不替换选区
+		 *
+		 *  两个能力各一半，所以组合：先 insertText 顶一个零宽空格把旧内容替换掉，
+		 *  再 paste 真文本。零宽字符看不见，不影响阅读。
+		 *
+		 *  ⚠️ 关键：**改完选区必须等一拍**。直接 range.selectNodeContents() 紧接着
+		 *  execCommand，Lexical 内部的 selection 还没同步 —— execCommand 返回 true
+		 *  但内容纹丝不动（踩了很久才发现）。等 ~150ms 让 selectionchange 传进去，
+		 *  同一句就以「替换整个内容」生效了。
+		 *
+		 *  另外 lexical 不能 require（loader 的模块表里没有，会报 client-modules
+		 *  missed the module table），所以只能走 DOM 事件这条路。
 		 */
-		function fillComposer(text) {
+		const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+		async function fillComposer(text) {
 			const el = document.querySelector("[contenteditable]");
 			if (!el) return false;
+
 			el.focus();
+			await wait(120);
+
 			const sel = window.getSelection();
 			const range = document.createRange();
 			range.selectNodeContents(el);
 			sel.removeAllRanges();
 			sel.addRange(range);
-			document.execCommand("insertText", false, text);
-			return true;
+			await wait(160); // 等 Lexical 收到 selectionchange，否则下面那句是空转
+
+			try {
+				document.execCommand("insertText", false, "\u200b");
+			} catch (e) {
+				/* 没有 execCommand 就跳过，下面的 paste 至少能追加内容 */
+			}
+			await wait(60);
+
+			try {
+				const dt = new DataTransfer();
+				dt.setData("text/plain", text);
+				el.dispatchEvent(
+					new ClipboardEvent("paste", {
+						clipboardData: dt,
+						bubbles: true,
+						cancelable: true,
+					})
+				);
+			} catch (e) {
+				/* 合成 paste 不可用时退化成 insertText：内容对，换行会丢 */
+				const r2 = document.createRange();
+				r2.selectNodeContents(el);
+				sel.removeAllRanges();
+				sel.addRange(r2);
+				await wait(160);
+				document.execCommand("insertText", false, text);
+			}
+
+			await wait(120);
+			return !!(el.innerText || "").trim();
 		}
 
 		/** 输入框上方的角色条（list 槽，id + order 并存多方）。 */
@@ -162,11 +211,12 @@ window.__ModuleLoader__.load({
 						"button",
 						{
 							key: "__fill",
-							onClick: () => {
+							onClick: async () => {
 								const text =
 									"【角色】" + picked.name + " —— " + picked.hint + "\n" +
 									picked.rule + "\n\n" + COMMON + "\n\n" + picked.q;
-								const ok = fillComposer(text);
+								setNote("正在填入…");
+								const ok = await fillComposer(text);
 								setNote(ok ? "已填入输入框，按回车发送（可以再改）" : "没找到输入框，等它加载完再点");
 							},
 							style: Object.assign({}, base, {
