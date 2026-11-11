@@ -16,7 +16,7 @@ import json
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.engine.backtest_engine import BacktestEngine
 from app.core.engine.portfolio_backtest import PortfolioBacktestEngine
@@ -40,8 +40,16 @@ def _merge_params(meta: dict, params_json: str) -> dict:
     return p
 
 
-def _load_single(db, task: PaperTask) -> dict:
-    """单标的模拟盘：跑『到今天』的 BacktestEngine，最后一根 bar 用实时价覆盖。"""
+_UNSET = object()
+
+
+def _load_single(db, task: PaperTask, since_date=_UNSET) -> dict:
+    """单标的模拟盘：跑『到今天』的 BacktestEngine，最后一根 bar 用实时价覆盖。
+
+    since_date：成交补录水位（paper_trades 里该任务已有的最新成交日）。
+    显式传 None 表示「账本里一笔都没有」→ 从 task.start_date 起全量补；
+    不传（_UNSET）时退回旧行为，用 task.last_bar_date。
+    """
     symbols = [s.strip() for s in task.symbols.split(",") if s.strip()]
     if not symbols:
         raise ValueError("单标的任务需要 symbols")
@@ -71,7 +79,8 @@ def _load_single(db, task: PaperTask) -> dict:
     engine.run(meta["cls"], params)
 
     last_date = bars[-1]["date"]  # 已收盘的最后一根 bar 日期（成交截止日）
-    new_trades = _incremental_trades(engine.trades, task.last_bar_date, last_date, task.start_date)
+    watermark = task.last_bar_date if since_date is _UNSET else since_date
+    new_trades = _incremental_trades(engine.trades, watermark, last_date, task.start_date)
     positions = (
         {sym: {"shares": round(engine.shares, 2), "cost": round(engine.avg_cost, 4)}}
         if engine.shares > 0 else {}
@@ -100,8 +109,11 @@ def _load_single(db, task: PaperTask) -> dict:
     }
 
 
-def _load_portfolio(db, task: PaperTask) -> dict:
-    """组合模拟盘：跑『到今天』的 PortfolioBacktestEngine（日频 rebalance）。"""
+def _load_portfolio(db, task: PaperTask, since_date=_UNSET) -> dict:
+    """组合模拟盘：跑『到今天』的 PortfolioBacktestEngine（日频 rebalance）。
+
+    since_date 语义同 _load_single：显式 None = 全量补录，_UNSET = 用 last_bar_date。
+    """
     meta = get_strategy(task.strategy_key)
     index_code = task.index_code or meta.get("index_code") or "000906"
     # 399 开头是深证（国证A指 sz399317 是平台统一基准）。原来一刀切 "sh"+code，
@@ -268,7 +280,8 @@ def _load_portfolio(db, task: PaperTask) -> dict:
     result = engine.run(meta["cls"], params)
 
     last_date = engine.equity_curve[-1].date if engine.equity_curve else (engine.dates[-1] if engine.dates else end.isoformat())
-    new_trades = _incremental_trades(engine.trades, task.last_bar_date, last_date, task.start_date)
+    watermark = task.last_bar_date if since_date is _UNSET else since_date
+    new_trades = _incremental_trades(engine.trades, watermark, last_date, task.start_date)
     positions = {
         s: {"shares": round(sh, 2), "cost": round(engine.avg_cost.get(s, 0.0), 4)}
         for s, sh in engine.positions.items() if sh > 0
@@ -299,10 +312,18 @@ def run_paper_task(db, task: PaperTask) -> dict:
     """执行一次模拟盘任务，写入成交/快照并更新任务状态。返回摘要dict。"""
     try:
         meta = get_strategy(task.strategy_key)
+        # 成交补录水位：以「账本里已有的最新成交日」为准，不是 task.last_bar_date。
+        # last_bar_date 每跑一次就前进，只要有几天没跑（容器重启 / 数据库故障 /
+        # 任务被停用），那几天的成交就永久漏掉。2026-11-11 发现 paper_trades
+        # 一直是 0 行 —— 根因就是建任务时 last_bar_date 已是当天，
+        # 起始那批成交从没被扫过，而后续每天又只扫当天。
+        since = db.execute(
+            select(func.max(PaperTrade.date)).where(PaperTrade.task_id == task.id)
+        ).scalar()
         if task.kind == "portfolio":
-            r = _load_portfolio(db, task)
+            r = _load_portfolio(db, task, since_date=since)
         else:
-            r = _load_single(db, task)
+            r = _load_single(db, task, since_date=since)
 
         # 1) 写入增量成交（幂等：同 任务/日期/标的/方向/数量 已存在则跳过，防重复成交）
         for t in r["new_trades"]:
