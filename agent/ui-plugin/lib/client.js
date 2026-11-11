@@ -20,7 +20,9 @@ window.__ModuleLoader__.load({
 		const react = require("react");
 		const h = react.createElement;
 
-		const inject = ["slots"];
+		// uiWorkspace 提供 startSession(workspaceId, {agentPreset, prompt}) ——
+		// 这是 dsh 里「新建会话并绑定预设」的官方入口（内置的预设切换器就用它）。
+		const inject = ["slots", "uiWorkspace"];
 
 		/** 左栏品牌位：把 dsh 的 HARNESS 换成平台标识。
 		 *  该槽是 single，官方品牌插件已占 priority 0 —— 必须给更小的值才能顶替。 */
@@ -48,42 +50,42 @@ window.__ModuleLoader__.load({
 		 */
 		const ROLES = [
 			{
-				key: "strategy", name: "策略研究员", hint: "这条策略还值不值得跟",
+				key: "strategy", preset: "strategy-researcher", name: "策略研究员", hint: "这条策略还值不值得跟",
 				q: "jk001r 最近两次回测的超额、最大回撤、成交笔数分别是多少？区间是什么？",
 				rule: "你负责判断「一条策略值不值得继续跟」。只看绝对收益不够，必须比基准；一段区间好不算好，要看不同市场环境。成交笔数少于 5 的回测没有统计意义，|t|<2 只能说「无法判别」。",
 			},
 			{
-				key: "risk", name: "风控", hint: "要不要降级/退役，最坏会怎样",
+				key: "risk", preset: "risk", name: "风控", hint: "要不要降级/退役，最坏会怎样",
 				q: "现在有哪些策略该降级或退役？给出最坏情况和判断依据。",
 				rule: "你负责判断升级/降级/退役，必须同时给出最坏情况。给不出最坏情况时明说，不要只讲优点。",
 			},
 			{
-				key: "data", name: "数据工程师", hint: "数据能不能信",
+				key: "data", preset: "data-eng", name: "数据工程师", hint: "数据能不能信",
 				q: "今天的数据能不能用来做决策？有哪些表滞后了？",
 				rule: "你只判断「数据能不能信」。滞后要按当前时刻判断（交易日 19:00 前允许 1 天滞后），不要一刀切。",
 			},
 			{
-				key: "news", name: "资讯研究员", hint: "今天市场在交易什么",
+				key: "news", preset: "news", name: "资讯研究员", hint: "今天市场在交易什么",
 				q: "今天市场在交易什么？主要主线是什么？",
 				rule: "你只回答「今天市场在交易什么」。区分快讯和观点；券商研报不是 alpha，只作参考。",
 			},
 			{
-				key: "ops", name: "运维", hint: "服务活着吗、任务按时跑了吗",
+				key: "ops", preset: "ops", name: "运维", hint: "服务活着吗、任务按时跑了吗",
 				q: "服务都正常吗？有哪些任务没按时跑？",
 				rule: "你只回答「服务活着吗、任务按时跑了吗」。报状态要带具体指标，不要笼统说「正常」。",
 			},
 			{
-				key: "factor", name: "因子研究员", hint: "这个信号有没有预测力",
+				key: "factor", preset: "factor", name: "因子研究员", hint: "这个信号有没有预测力",
 				q: "chan_buy 这个信号最近 90 天的预测力怎么样？t 值和样本量是多少？",
 				rule: "你只判断「一个信号有没有预测力」。|t|<2 只能写「无法判别」，不许下结论；必须给样本量。",
 			},
 			{
-				key: "portfolio", name: "组合经理", hint: "几个策略怎么配、上多少钱",
+				key: "portfolio", preset: "portfolio", name: "组合经理", hint: "几个策略怎么配、上多少钱",
 				q: "jk001 和 xq_chan_buy 怎么配比？给个建议和理由。",
 				rule: "你负责「几个策略怎么配、上多少钱」。只给建议，不执行 —— 建盘这类写操作必须走审批，由人确认。",
 			},
 			{
-				key: "trader", name: "交易员", hint: "模拟盘执行得怎么样",
+				key: "trader", preset: "trader", name: "交易员", hint: "模拟盘执行得怎么样",
 				q: "模拟盘现在持仓几只？净值跑到哪一天了？",
 				rule: "你只管「模拟盘执行情况」，不能下单、不能改参数。净值要说明算到哪一天。",
 			},
@@ -164,8 +166,31 @@ window.__ModuleLoader__.load({
 			return !!(el.innerText || "").trim();
 		}
 
-		/** 输入框上方的角色条（list 槽，id + order 并存多方）。 */
-		function RoleDock() {
+		/** 把「身份 + 纪律 + 硬约束 + 示例问题」拼成开场白。 */
+		function rolePrompt(r) {
+			return (
+				"【角色】" + r.name + " —— " + r.hint + "\n" +
+				r.rule + "\n\n" + COMMON + "\n\n" + r.q
+			);
+		}
+
+		/** 输入框上方的角色条（list 槽，id + order 并存多方）。
+		 *
+		 *  ⚠️ 2026-11-11 改：点角色不再只是「填一段话」，而是**换掉这个会话的 preset**。
+		 *
+		 *  背景：我原来以为 dsh 只让选内置的四个运行模式、自定义 persona 进不了界面，
+		 *  于是退而求其次用开场白做软约束。查下去发现根本不是 UI 的问题 ——
+		 *  是我给 persona 配的 tool-guard 在 apply 阶段就调 ctx.tools.restrict()，
+		 *  而 MCP 工具是异步连上的，那一刻名单里的名字全是「未知工具」，
+		 *  restrict 直接抛 → preset 加载失败（agent-preset/invalid）。
+		 *  也就是说这 8 个角色**从来没生效过**，不只是选不到。
+		 *
+		 *  修好 tool-guard 之后，preset 能加载了，而且 dsh 暴露了
+		 *  uiWorkspace.startSession(workspaceId, {agentPreset, prompt}) ——
+		 *  内置的预设切换器用的就是它。所以现在点角色 = 开一个绑定该 persona 的
+		 *  新会话，并把开场白预填进去：系统提示词、工具白名单、开场白一起生效。
+		 */
+		function RoleDock({ uiWorkspace }) {
 			const [picked, setPicked] = react.useState(null);
 			const [note, setNote] = react.useState("");
 
@@ -181,17 +206,45 @@ window.__ModuleLoader__.load({
 				fontFamily: "inherit",
 			};
 
+			const pick = async (r) => {
+				setPicked(r);
+				const text = rolePrompt(r);
+
+				// 首选：换 preset（真正的身份 + 工具边界）
+				const uw = uiWorkspace;
+				if (uw && typeof uw.startSession === "function") {
+					try {
+						uw.startSession(undefined, {
+							agentPreset: r.preset,
+							// 只预填「问题」——身份与纪律已经由 preset 的
+							// agent-instructions 常驻了，再把那一大段塞进输入框
+							// 既重复又难改。输入框留给真正要问的话。
+							prompt: r.q,
+							clearPreviousDraft: true,
+						});
+						setNote("已切到「" + r.name + "」，开场白在输入框里，按回车开始");
+						return;
+					} catch (e) {
+						/* 落下去走兜底 */
+					}
+				}
+				// 兜底：至少把开场白塞进输入框
+				const ok = await fillComposer(text);
+				setNote(
+					ok
+						? "已填入开场白（预设没切成，角色纪律只在文字里，工具边界仍是默认）"
+						: "没找到输入框，等它加载完再点"
+				);
+			};
+
 			const chips = ROLES.map((r) => {
 				const on = picked && picked.key === r.key;
 				return h(
 					"button",
 					{
 						key: r.key,
-						title: r.hint,
-						onClick: () => {
-							setPicked(r);
-							setNote("");
-						},
+						title: r.hint + "（点一下开新对话并切到该角色）",
+						onClick: () => void pick(r),
 						style: on
 							? Object.assign({}, base, {
 									borderColor: "var(--dsh-accent, #4c7dff)",
@@ -204,33 +257,6 @@ window.__ModuleLoader__.load({
 					r.name
 				);
 			});
-
-			if (picked) {
-				chips.push(
-					h(
-						"button",
-						{
-							key: "__fill",
-							onClick: async () => {
-								const text =
-									"【角色】" + picked.name + " —— " + picked.hint + "\n" +
-									picked.rule + "\n\n" + COMMON + "\n\n" + picked.q;
-								setNote("正在填入…");
-								const ok = await fillComposer(text);
-								setNote(ok ? "已填入输入框，按回车发送（可以再改）" : "没找到输入框，等它加载完再点");
-							},
-							style: Object.assign({}, base, {
-								borderColor: "var(--dsh-accent, #4c7dff)",
-								background: "var(--dsh-accent, #4c7dff)",
-								color: "#fff",
-								fontWeight: 600,
-								padding: "3px 12px",
-							}),
-						},
-						"填入 ↑"
-					)
-				);
-			}
 
 			const line = h(
 				"div",
@@ -510,9 +536,12 @@ window.__ModuleLoader__.load({
 				);
 			});
 			ctx.slots.inject("conversation.input.dock", function* () {
+				// 把 uiWorkspace 直接塞进去：点角色要调 startSession 换 preset
+				const uw = ctx.get("uiWorkspace");
+				const Bound = (props) => react.createElement(RoleDock, { ...props, uiWorkspace: uw });
 				yield ctx.slots.register(
 					{ name: "conversation.input.dock", id: "quant-roles", order: -10 },
-					RoleDock
+					Bound
 				);
 			});
 			// 工具卡：keyed 槽，key = 工具名。11 个 quant 工具各注册一份，
