@@ -9,11 +9,11 @@
   · **每个结果带 source + as_of + missing**：模型能看见「这是哪个接口、什么时候
     取的、缺什么」，才可能在回答里如实说「没查到」。
 
-9 个工具全部只读，一个有副作用的都没有。写操作（create_paper_task /
-propose_card_transition）留到第 3 步，且必须带审批令牌。
+12 个工具里 10 个只读，一个有副作用的都没有（另外 2 个是写操作，走审批）。
+写操作（create_paper_task / propose_card_transition）必须带审批令牌。
 
 自检：
-    python3 agent/quant_mcp.py --selftest    # 9 个工具逐个调通 + 耗时
+    python3 agent/quant_mcp.py --selftest    # 全部工具逐个调通 + 耗时
     python3 agent/quant_mcp.py --check-urls  # 路径与 /openapi.json 逐一核对
     python3 agent/quant_mcp.py               # stdio 启动（给 dsh 用）
 """
@@ -85,57 +85,135 @@ def _get_backtests(strategy_key: str | None = None, limit: int = 5) -> dict:
         return err(e, "GET /strategy/backtests")
 
 
-def _get_signal_stats(window_days: int = 90) -> dict:
+_HORIZONS = (1, 3, 5, 10, 20)
+
+
+def _slim_rows(rows, keys):
+    """把统计行压成「每档一行、每个持有期一组数」，避免把 20 个字段摊平。"""
+    out = []
+    for r in rows or []:
+        item = {k: r.get(k) for k in keys}
+        per = {}
+        for n in _HORIZONS:
+            if r.get(f"n_{n}") is None:
+                continue
+            per[f"{n}d"] = {
+                "n": r.get(f"n_{n}"),
+                "exc": r.get(f"exc_{n}"),
+                "win": r.get(f"win_{n}"),
+                "t": r.get(f"t_{n}"),
+            }
+        item["by_horizon"] = per
+        out.append(item)
+    return out
+
+
+def _get_signal_stats(window_days: int = 90, strategy: str = "") -> dict:
+    """信号有效性统计。
+
+    `strategy` 是 2026-11-11 补的关键参数：不传时 by_streak / by_tier / by_regime
+    是**全信号聚合**（所有选股器混在一起），回答不了「chan_buy 的超额集中在
+    连榜第几档」这类单策略问题 —— 上一版智能体只能回「没查到」。传了 strategy
+    之后所有切分维度都只统计该策略。
+
+    同时补上 1/3/10/20 日的 t 值：底层一直算着，只是这里原来只挑了 5 日。
+    """
     try:
         window_days = max(5, min(int(window_days or 90), 365))
-        d, url = get("/signal/stats", {"window_days": window_days})
-        by_st = [
-            {
-                "strategy": r.get("strategy"),
-                "n": r.get("n_5"),
-                "exc_5d": r.get("exc_5"),
-                "win_5d": r.get("win_5"),
-                "t_5d": r.get("t_5"),
-            }
-            for r in (d.get("by_strategy") or [])
-        ]
-        missing = [] if by_st else ["窗口内没有任何策略的信号统计"]
+        params = {"window_days": window_days}
+        if strategy:
+            params["strategy"] = strategy
+        d, url = get("/signal/stats", params)
+        if not d.get("ok"):
+            return ok({"error": d.get("error")}, f"GET {url}",
+                      missing=[d.get("error") or "统计不可用"])
+
+        by_st = _slim_rows(d.get("by_strategy"), ["strategy"])
+        streak = _slim_rows(d.get("by_streak"), ["streak_bucket"])
+        tier = _slim_rows(d.get("by_tier"), ["tier"])
+        regime = _slim_rows(d.get("by_regime"), ["regime"])
+
+        missing = []
+        if not by_st:
+            missing.append("窗口内没有任何策略的信号统计")
+        if strategy and not streak:
+            missing.append(f"{strategy} 在窗口内没有可切分的连榜样本")
+        if strategy and not regime:
+            missing.append(f"{strategy} 在窗口内没有可切分的市场环境样本")
+
+        scope = f"（只统计 {strategy}）" if strategy else "（全信号聚合，未按策略拆分）"
         return ok(
             {
                 "window_days": d.get("window_days"),
+                "scope": scope.strip("（）"),
                 "n_signals": d.get("n_signals"),
                 "by_strategy": by_st,
-                "by_streak": d.get("by_streak"),
-                "by_tier": d.get("by_tier"),
+                "by_streak": streak,
+                "by_tier": tier,
+                "by_regime": regime,
             },
             f"GET {url}",
             missing=missing,
-            note="exc_5d 是 5 日持有超额（%），t_5d 是显著性；|t|<2 不要下结论。",
+            note=("exc 是相对全市场等权的超额（%），t 是显著性；|t|<2 不要下结论。"
+                  "市场环境按「过去 60 个交易日等权全市场涨跌幅」分："
+                  ">+5% 上涨 / ±5% 内震荡 / <-5% 下跌。"
+                  "要判断单个策略，必须带 strategy 参数，否则分档数据是全信号混算的。"),
         )
     except Exception as e:  # noqa: BLE001
         return err(e, "GET /signal/stats")
 
 
 def _get_signal_actions(date: str | None = None) -> dict:
+    """当日信号动作。
+
+    ⚠️ 2026-11-11 修字段名：原来读 `strategy` / `score`，接口里根本没有这两个键
+    （真实字段是 `strategies`，多选股器用「、」拼成一个串；没有 score）。
+    结果模型每次都说「strategy 字段全为空，查不到命中的选股器」——
+    它没编，是我给错了字段。这类错误不会报错，只会静默返回 null，
+    所以下面的 `--selftest` 之外还得靠「空字段扫描」才发现。
+    """
     try:
+        from collections import Counter
+
         d, url = get("/signal/actions", {"date": date})
         items = d.get("items") or []
+
+        # 一屏答完「今天有多少买入信号、都命中哪个选股器」，不让模型自己数 20 行
+        by_action = Counter(it.get("action") or "?" for it in items)
+        by_strategy: Counter = Counter()
+        for it in items:
+            for nm in (it.get("strategies") or "").split("、"):
+                nm = nm.strip()
+                if nm:
+                    by_strategy[nm] += 1
+
         slim = [
             {
                 "symbol": it.get("symbol"),
                 "name": it.get("name"),
                 "action": it.get("action"),
-                "strategy": it.get("strategy"),
-                "score": it.get("score"),
+                "strategies": it.get("strategies"),
+                "streak": it.get("streak"),
+                "resonance": it.get("resonance"),
+                "tier": it.get("quality_tier"),
+                "reason": it.get("reason"),
             }
             for it in items[:20]
         ]
         missing = [] if items else [f"{d.get('date') or date or '最新交易日'} 没有信号动作"]
         return ok(
-            {"date": d.get("date"), "total": len(items), "top20": slim},
+            {
+                "date": d.get("date"),
+                "total": len(items),
+                "n_by_action": dict(by_action.most_common()),
+                "n_by_picker": dict(by_strategy.most_common()),
+                "top20": slim,
+            },
             f"GET {url}",
             missing=missing,
-            note=f"共 {len(items)} 条，这里只给前 20 条明细。",
+            note=(f"共 {len(items)} 条，top20 只是前 20 条明细；"
+                  "n_by_action / n_by_picker 是全量计数，回答「多少只」直接用它们。"
+                  "strategies 是「、」分隔的多选股器串，统计要拆开。"),
         )
     except Exception as e:  # noqa: BLE001
         return err(e, "GET /signal/actions")
@@ -268,6 +346,127 @@ def _get_latest_digest() -> dict:
         return err(e, "GET /factor/brief-digest/latest")
 
 
+# ─────────────────────── 任务 / 数据新鲜度（运维 & 数据工程） ───────────────────────
+# 这两块是「问深了就答不上来」的重灾区：framework-health 只说「数据层 WARN」，
+# 说不出是哪张表、落后几天；paper/tasks 只说「跑了」，说不出「该跑却没跑」。
+# 下面三个工具补的正是这个缺口 —— 仍然只整理平台返回的字段，不做任何计算。
+
+def _digest_run(r: dict | None) -> dict | None:
+    """把一次运行记录裁成模型能用的形状（summary 里的长列表去掉）。"""
+    if not r:
+        return None
+    summ = r.get("summary")
+    keep = None
+    if isinstance(summ, dict):
+        keep = {k: summ[k] for k in ("date", "paused", "reason", "n_strategies")
+                if k in summ} or None
+    return {
+        "id": r.get("id"),
+        "job": r.get("job"),
+        "status": r.get("status"),
+        "started_at": r.get("started_at"),
+        "finished_at": r.get("finished_at"),
+        "error": (str(r.get("error"))[:160] or None) if r.get("error") else None,
+        "summary": keep,
+    }
+
+
+def _get_task_runs(limit: int = 8) -> dict:
+    """定时任务与编排器最近几次运行 —— 回答「该跑的都跑了吗、什么时候跑」。"""
+    try:
+        st, u1 = get("/agent/state")
+        au, u2 = get("/auto/status")
+        sched = st.get("scheduler") or {}
+        org = st.get("orchestrator") or {}
+        recent = [_digest_run(r) for r in (st.get("recent_runs") or [])[:limit]]
+        jobs = [
+            {"job": "orchestrator", "cron": sched.get("run_at"),
+             "next": sched.get("next_run"), "last_run_date": sched.get("last_run_date"),
+             "last": _digest_run(st.get("latest_run")), "last_error": sched.get("last_error")},
+            {"job": "mining", "next": au.get("mining_next"),
+             "last": _digest_run(au.get("last_mining"))},
+            {"job": "review", "next": au.get("review_next"),
+             "last": _digest_run(au.get("last_review"))},
+        ]
+        missing = []
+        if not sched.get("next_run"):
+            missing.append("编排器的下次运行时间（scheduler.next_run 为空）")
+        if not recent:
+            missing.append("编排器历史运行记录（recent_runs 为空）")
+        return ok(
+            {
+                "orchestrator": {
+                    "enabled": sched.get("enabled"),
+                    "cron": sched.get("run_at"),
+                    "next_run": sched.get("next_run"),
+                    "last_run_date": sched.get("last_run_date"),
+                    "running": org.get("running"),
+                    "current_step": org.get("step"),
+                },
+                "jobs": jobs,
+                "recent_orchestrator_runs": recent,
+                "total_auto_runs": au.get("total_runs"),
+                "last_auto_error": au.get("last_error"),
+            },
+            f"GET {u1} + {u2}",
+            missing=missing,
+            note="status=SKIPPED 表示按策略跳过（看 error/summary.reason 的原因），"
+                 "不等于失败。last_run_date 是编排器最后一次『成功记账』的日期。",
+        )
+    except Exception as e:  # noqa: BLE001
+        return err(e, "GET /agent/state + /auto/status")
+
+
+def _get_table_freshness(limit: int = 25) -> dict:
+    """哪些表滞后了 —— 每张表的最后日期、落后天数、阈值判定。"""
+    try:
+        d, url = get("/monitor/table-freshness")
+        tables = d.get("tables") or []
+        bad = [t for t in tables if t.get("status") in ("FAIL", "EMPTY")]
+        bad.sort(key=lambda t: -(t.get("days_ago") or 0))
+        slim = [
+            {"table": t.get("table"), "status": t.get("status"),
+             "latest": t.get("latest"), "days_ago": t.get("days_ago"),
+             "rows": t.get("rows"), "why": t.get("note")}
+            for t in bad[:max(1, min(int(limit), 60))]
+        ]
+        return ok(
+            {"as_of": d.get("as_of"), "worst": d.get("worst"),
+             "grace_days": d.get("grace_days"), "total_tables": d.get("total"),
+             "counts": d.get("counts"), "bad_tables": slim,
+             "bad_total": len(bad), "truncated": len(bad) > len(slim)},
+            f"GET {url}",
+            note="只列 FAIL/EMPTY 的表，正常表只进 counts。EMPTY 可能是「本来就没数据」"
+                 "（如未启用的模块），要结合 why 字段判断，不要一律当成故障。",
+        )
+    except Exception as e:  # noqa: BLE001
+        return err(e, "GET /monitor/table-freshness")
+
+
+def _get_alert_log(days: int = 3, level: str = "", limit: int = 20) -> dict:
+    """告警发送记录（邮件/渠道），回答「出过什么事、通知发出去没有」。"""
+    try:
+        d, url = get("/monitor/alert-log", {"days": int(days)})
+        items = d.get("items") or []
+        if level:
+            items = [it for it in items if str(it.get("level", "")).upper() == level.upper()]
+        slim = [
+            {"at": it.get("at"), "level": it.get("level"), "status": it.get("status"),
+             "title": it.get("title"), "error": (str(it.get("error"))[:120] or None)
+             if it.get("error") else None}
+            for it in items[:max(1, min(int(limit), 100))]
+        ]
+        return ok(
+            {"days": days, "total": d.get("total"), "counts": d.get("counts"),
+             "items": slim, "truncated": len(items) > len(slim)},
+            f"GET {url}",
+            note="status 是「这条通知有没有发出去」，不是平台状态；"
+                 "platform 是否异常要看 level 与 title。",
+        )
+    except Exception as e:  # noqa: BLE001
+        return err(e, "GET /monitor/alert-log")
+
+
 # ─────────────────────────── 写操作（两段式） ───────────────────────────
 # 这两个工具是全局唯一的写入口，都走「提议 → 人批准 → 执行」：
 # 第一次调用只写 pending，返回 action_id；用户在审批中心通过后，
@@ -374,14 +573,19 @@ def get_backtests(strategy_key: str | None = None, limit: int = 5) -> str:
 
 
 @mcp.tool()
-def get_signal_stats(window_days: int = 90) -> str:
-    """信号有效性统计：各策略 5 日持有超额、胜率、t 值，以及连榜/分级切分。
+def get_signal_stats(window_days: int = 90, strategy: str = "") -> str:
+    """信号有效性统计：多持有期（1/3/5/10/20 日）超额、胜率、t 值，
+    以及按连榜档位 / 质量分级 / 市场环境（上涨/震荡/下跌）的切分。
 
     什么时候用：判断「信号本身有没有效」，与回测表现分开看。
+
+    ⚠️ 判断某个策略（如 chan_buy）时**必须传 strategy** —— 不传时
+    by_streak / by_tier / by_regime 是所有选股器混算的聚合口径，
+    回答不了「它的超额集中在哪一档」。
     注意：|t|<2 时只能说「无法判别」，不能下结论。
-    参数：window_days 默认 90，上限 365。
+    参数：window_days 默认 90，上限 365；strategy 例 chan_buy（强烈建议传）。
     """
-    return _wrap(_get_signal_stats, window_days)
+    return _wrap(_get_signal_stats, window_days, strategy)
 
 
 @mcp.tool()
@@ -444,6 +648,42 @@ def get_latest_digest() -> str:
 
 
 @mcp.tool()
+def get_task_runs(limit: int = 8) -> str:
+    """定时任务与编排器最近几次运行：下次什么时候跑、上次跑成没跑成、为什么跳过。
+
+    什么时候用：回答「任务按时跑了吗」「今天该跑的都跑了吗」「为什么没跑」。
+    覆盖三块：编排器（每日 17:30 的 8 步 DAG）、GP 挖矿、每周复盘。
+    参数：limit 默认 8，上限 20（编排器历史条数）。
+    注意：status=SKIPPED 是「按策略跳过」，看 error 或 summary.reason 的原因；
+    它跟 FAIL 不是一回事，别混着说。
+    """
+    return _wrap(_get_task_runs, limit)
+
+
+@mcp.tool()
+def get_table_freshness(limit: int = 25) -> str:
+    """表新鲜度：哪些表滞后、最后有数据的日期是哪天、落后几天、阈值判定。
+
+    什么时候用：回答「哪些表滞后了」「数据能不能用」「某张表更到哪天」。
+    只返回 FAIL/EMPTY 的表（短板优先），正常表只给计数。
+    参数：limit 默认 25，上限 60。
+    注意：EMPTY 可能是「这个模块本来就没启用」，要结合 why 判断，别一律当故障。
+    """
+    return _wrap(_get_table_freshness, limit)
+
+
+@mcp.tool()
+def get_alert_log(days: int = 3, level: str = "", limit: int = 20) -> str:
+    """告警发送记录：什么时候报过警、级别、通知有没有发出去。
+
+    什么时候用：回答「最近出过什么问题」「有没有漏发通知」「何时恢复的」。
+    参数：days 默认 3；level 可填 FAIL / WARN / INFO 过滤；limit 默认 20。
+    注意：status 指「通知发送状态」，不是平台状态；平台状态看 level 和 title。
+    """
+    return _wrap(_get_alert_log, days, level, limit)
+
+
+@mcp.tool()
 def create_paper_task(strategy_key: str, name: str = "", kind: str = "single",
                       symbols: str = "", index_code: str = "",
                       initial_cash: float = 2000000.0, commission: float = 0.0001,
@@ -474,7 +714,7 @@ def propose_card_transition(card_id: int, to_state: str, reason: str) -> str:
 
 
 # ─────────────────────────── 自检 ───────────────────────────
-# 第 1 步验收：9 个工具逐个调通 + 路径与 /openapi.json 一致。
+# 每个工具逐个调通 + 路径与 /openapi.json 一致（条数以 _SELFTEST 为准）。
 # 不用人眼看，跑这两条命令即可。
 
 _SELFTEST: list[tuple[str, tuple, dict]] = [
@@ -487,6 +727,9 @@ _SELFTEST: list[tuple[str, tuple, dict]] = [
     ("list_paper_tasks", (), {}),
     ("get_framework_health", (), {}),
     ("get_latest_digest", (), {}),
+    ("get_task_runs", (), {"limit": 3}),
+    ("get_table_freshness", (), {"limit": 5}),
+    ("get_alert_log", (), {"days": 2, "limit": 3}),
 ]
 
 # 工具 → 平台路径（不含 /api/v1 前缀），用来和 openapi 核对
@@ -500,12 +743,44 @@ _TOOL_PATHS: dict[str, str] = {
     "list_paper_tasks": "/paper/tasks",
     "get_framework_health": "/monitor/framework-health",
     "get_latest_digest": "/factor/brief-digest/latest",
+    # 复合来源：agent/state + auto/status 两张表一起读
+    "get_task_runs": "/agent/state",
+    "get_table_freshness": "/monitor/table-freshness",
+    "get_alert_log": "/monitor/alert-log",
 }
+
+
+def _null_fields(data) -> list[str]:
+    """找出「每一行都是 null」的字段名。
+
+    这是**字段名写错**的典型症状：接口返回 `strategies`，我读 `strategy`，
+    json 不报错、值就是 null，模型于是老实说「这个字段全为空」——
+    2026-11-11 真踩过（get_signal_actions 的 strategy / score）。
+    selftest 原来只查 ok / missing，查不出这类错误。
+    """
+    from collections import Counter
+
+    rows = data if isinstance(data, list) else [data]
+    rows = [r for r in rows if isinstance(r, dict)]
+    if len(rows) < 2:
+        return []
+    keys = set(rows[0])
+    for r in rows[1:]:
+        keys &= set(r)
+    if not keys:
+        return []
+    seen = Counter()
+    for r in rows:
+        for k in keys:
+            if r.get(k) is None:
+                seen[k] += 1
+    return sorted(k for k in keys if seen[k] == len(rows))
 
 
 def selftest() -> int:
     print(f"API_BASE = {API_BASE}")
     failed = 0
+    warns: list[str] = []
     for name, args, kwargs in _SELFTEST:
         fn = globals()[f"_{name}"]
         t0 = time.perf_counter()
@@ -524,8 +799,17 @@ def selftest() -> int:
         size = len(data) if isinstance(data, (list, dict)) else 1
         miss = res.get("missing") or []
         flag = f"missing={len(miss)}" if miss else "ok"
+        nulls = _null_fields(data)
+        if nulls:
+            # 只预警不算失败：有些字段本来就可能整列为空（如从未跑过的任务）
+            warns.append(f"{name}: {', '.join(nulls)}")
+            flag += "  ⚠ 整列为 None"
         print(f"  ✓ {name:<22} {ms:6.0f}ms  {size} 项  {flag}")
-    print(f"\n{9 - failed}/9 通过")
+    if warns:
+        print("\n⚠️ 整列为 None 的字段（多半是字段名与接口不符，去核对一下）：")
+        for w in warns:
+            print(f"   · {w}")
+    print(f"\n{len(_SELFTEST) - failed}/{len(_SELFTEST)} 通过")
     return 1 if failed else 0
 
 

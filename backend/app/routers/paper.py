@@ -56,6 +56,31 @@ def list_strategies():
     return out
 
 
+def _index_symbol(code: str) -> str:
+    """指数代码 → 行情表里的 symbol。
+
+    399 开头是深证（sz399317 国证A指是平台统一基准），其余按上证。
+    引擎里原来是 `"sh" + index_code` 一刀切 —— 对 399317 会拼成 sh399317，
+    取不到任何行（2026-11-11 修）。两处必须同口径，改一处记得看另一处。
+    """
+    c = (code or "").strip().lower()
+    if c.startswith(("sh", "sz", "bj")):
+        return c
+    return ("sz" if c.startswith("399") else "sh") + c
+
+
+def _last_index_date(db, index_code: str):
+    """该指数最近一个有行情的交易日（引擎要拿它算基准，空日会报错）。"""
+    from sqlalchemy import func, select as _select
+
+    from app.models import IndexKlineDaily
+
+    return db.execute(
+        _select(func.max(IndexKlineDaily.trade_date))
+        .where(IndexKlineDaily.symbol == _index_symbol(index_code))
+    ).scalar()
+
+
 @router.post("/tasks")
 def create_task(req: PaperTaskCreate, db=Depends(get_db)):
     try:
@@ -74,11 +99,21 @@ def create_task(req: PaperTaskCreate, db=Depends(get_db)):
         raise HTTPException(status_code=400, detail="任务名称已存在")
 
     index_code = req.index_code or meta.get("index_code") or "000906"
+
+    # 建仓日不能空着。空着时引擎会拿「今天」当起点，而今天（16:00 前）还没有
+    # 日线 —— 基准取空 → 任务直接报「未获取到基准指数 399317 的行情数据」，
+    # 老刘点「建盘」就是这个结果（2026-11-11 实测两个任务都死在这）。
+    # 退到最近一个有指数行情的交易日，才是能算的起点。
+    start_date = req.start_date or _last_index_date(db, index_code)
+    if not start_date:
+        raise HTTPException(status_code=400,
+                            detail=f"{index_code} 还没有任何指数行情，先跑一次 ETL")
+
     t = PaperTask(
         name=req.name, strategy_key=req.strategy_key, kind=kind,
         symbols=req.symbols, index_code=index_code, params_json=req.params_json,
         initial_cash=req.initial_cash, commission=req.commission, slippage=req.slippage,
-        adj=req.adj, start_date=req.start_date, enabled=req.enabled,
+        adj=req.adj, start_date=start_date, enabled=req.enabled,
     )
     db.add(t)
     db.commit()

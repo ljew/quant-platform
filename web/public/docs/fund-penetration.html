@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>基金持仓穿透 · 使用说明</title>
+<style>
+  :root{
+    --ink:#1f2533; --muted:#6b7488; --line:#e3e8f2; --bg:#f4f6fa;
+    --card:#ffffff; --accent:#2456c8; --accent-soft:#eef3fc;
+    --up:#c62828; --down:#1a8a48; --warn:#b26b00; --warn-bg:#fff8ec;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--ink);
+    font:14px/1.72 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .sheet{max-width:920px;margin:0 auto;padding:32px 24px 64px}
+
+  /* ---------- 封面头 ---------- */
+  header{
+    background:linear-gradient(135deg,#101a2e 0%,#1c2f55 60%,#2456c8 100%);
+    color:#eef2fa;border-radius:14px;padding:26px 30px;margin-bottom:22px;
+  }
+  header .kicker{font-size:11.5px;letter-spacing:2px;opacity:.66;text-transform:uppercase}
+  header h1{margin:6px 0 8px;font-size:25px;letter-spacing:.5px;font-weight:700}
+  header p{margin:0;font-size:13px;line-height:1.8;opacity:.9;max-width:700px}
+  header .meta{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px}
+  header .meta span{
+    font-size:11.5px;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.18);
+    padding:3px 10px;border-radius:999px;
+  }
+
+  /* ---------- 通用块 ---------- */
+  section{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:20px 24px;margin-bottom:16px}
+  h2{font-size:16px;margin:0 0 12px;font-weight:700;letter-spacing:.3px;
+     display:flex;align-items:center;gap:9px}
+  h2 .n{display:inline-flex;align-items:center;justify-content:center;
+    width:22px;height:22px;border-radius:6px;background:var(--accent);color:#fff;
+    font-size:12px;font-weight:700;flex:0 0 auto}
+  h3{font-size:13.5px;margin:18px 0 8px;font-weight:700}
+  p{margin:0 0 10px}
+  ul,ol{margin:0 0 10px;padding-left:20px}
+  li{margin-bottom:5px}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;
+    background:#f1f4fa;border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+  .lead{font-size:15px;line-height:1.85}
+  .muted{color:var(--muted)}
+  .small{font-size:12.5px}
+
+  /* ---------- 铁律 ---------- */
+  .law{background:var(--warn-bg);border:1px solid #f0d9ad;border-left:4px solid var(--warn);
+    border-radius:8px;padding:14px 16px;margin:14px 0 0;font-size:13px;line-height:1.85}
+  .law b{color:var(--warn)}
+
+  /* ---------- 表格 ---------- */
+  table{width:100%;border-collapse:collapse;font-size:12.8px;margin:10px 0 4px}
+  th{text-align:left;font-weight:600;color:var(--muted);font-size:11.5px;letter-spacing:.4px;
+     padding:7px 10px;border-bottom:1.5px solid var(--line);background:#fafbfe;white-space:nowrap}
+  td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.7}
+  tr:last-child td{border-bottom:none}
+  td.name{font-weight:600;white-space:nowrap;color:var(--accent)}
+  .trap{color:#8a5300}
+  .tag{display:inline-block;font-size:10.5px;padding:1px 7px;border-radius:999px;
+    background:var(--accent-soft);color:var(--accent);border:1px solid #d8e3f8;
+    margin-left:6px;vertical-align:1px;white-space:nowrap}
+  .tag.warn{background:var(--warn-bg);color:var(--warn);border-color:#f0d9ad}
+  .tag.ok{background:#eefaf2;color:var(--down);border-color:#c9ead7}
+
+  /* ---------- 四问卡片 ---------- */
+  .asks{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:12px}
+  .ask{border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:#fbfcff}
+  .ask .q{font-weight:700;font-size:13px;margin-bottom:8px;line-height:1.6}
+  .ask .q i{font-style:normal;color:var(--accent);margin-right:6px}
+  .ask .go{font-size:12.5px;color:var(--muted);line-height:1.9}
+  .ask .go b{color:var(--ink);font-weight:600}
+
+  /* ---------- 动线 ---------- */
+  .flow{display:flex;gap:0;align-items:stretch;margin-top:14px;flex-wrap:wrap}
+  .step{flex:1 1 200px;border:1px solid var(--line);border-radius:10px;padding:12px 14px;
+    background:#fbfcff;position:relative;margin-right:10px}
+  .step:last-child{margin-right:0}
+  .step .t{font-size:11px;color:var(--accent);font-weight:700;letter-spacing:1px}
+  .step .h{font-weight:700;font-size:13px;margin:4px 0 5px}
+  .step .d{font-size:12px;color:var(--muted);line-height:1.7}
+
+  /* ---------- 可信度条 ---------- */
+  .scale{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
+  .band{border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:12.5px;line-height:1.75}
+  .band .lvl{font-weight:700;font-size:13px;margin-bottom:4px}
+  .band.hi{background:#eefaf2;border-color:#c9ead7}
+  .band.mid{background:var(--warn-bg);border-color:#f0d9ad}
+  .band.lo{background:#fdf1f1;border-color:#f2cfcf}
+
+  /* ---------- 打印 ---------- */
+  .printbar{max-width:920px;margin:0 auto;padding:16px 24px 0;text-align:right}
+  .printbar button{
+    font:inherit;font-size:13px;padding:7px 16px;border-radius:8px;cursor:pointer;
+    border:1px solid var(--accent);background:var(--accent);color:#fff;
+  }
+  @page{size:A4;margin:13mm 12mm}
+  @media print{
+    body{background:#fff;font-size:11.2px;line-height:1.62}
+    .sheet{padding:0;max-width:none}
+    .printbar{display:none}
+    header{background:#101a2e !important;border-radius:0;padding:16px 20px;
+      -webkit-print-color-adjust:exact;print-color-adjust:exact}
+    header h1{font-size:20px}
+    section{border-radius:0;padding:12px 0;margin-bottom:10px;border:none;
+      border-bottom:1px solid var(--line);break-inside:auto}
+    h2{font-size:14px}
+    table{font-size:10.6px}
+    th,td{padding:5px 7px}
+    code{font-size:9.6px;padding:0 3px}
+    .asks,.scale{grid-template-columns:repeat(2,1fr)}
+    .ask,.band,.step{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    .nobreak{break-inside:avoid}
+    section.pb{break-before:page}
+  }
+</style>
+</head>
+<body>
+
+<div class="printbar"><button onclick="window.print()">打印 / 存为 PDF</button></div>
+
+<div class="sheet">
+
+  <header>
+    <div class="kicker">量化投研平台 · 基金研究</div>
+    <h1>基金持仓穿透 · 使用说明</h1>
+    <p>
+      这一页只回答四个问题：这只基金现在押什么、这个行业谁在重仓、全市场在加什么减什么、
+      这些数字能信几分。下面的顺序就是回答顺序，不是功能清单。
+    </p>
+    <div class="meta">
+      <span>入口：策略研究 → 基金研究 → 持仓穿透</span>
+      <span>接口：/api/v1/fund/nowcast/*、/penetration/*</span>
+      <span>重算：每晚 22:10 截面 · 22:35 风格</span>
+    </div>
+  </header>
+
+  <!-- 1 -->
+  <section>
+    <h2><span class="n">1</span>先记住一条铁律</h2>
+    <p class="lead">
+      持仓明细只在法定报告期披露：<b>年报、半年报是全持仓（权重和 100%）</b>，
+      <b>一季报、三季报只披露前十大（权重和约 55%）</b>。要算「今天押了什么」，
+      就只能把上期全披露的持仓按结构衰减推过去。
+    </p>
+    <p>所以每个数字都带一个来源标签，必须分开看：</p>
+    <table class="nobreak">
+      <thead><tr><th>标签</th><th>含义</th><th>能用来做什么</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="name">disclosed</td>
+          <td>基金真金白银披露出来的持仓</td>
+          <td>可以下结论、可以进收益归因、可以算真实换手</td>
+        </tr>
+        <tr>
+          <td class="name">carried</td>
+          <td>从上一个全披露报告期继承下来的影子持仓</td>
+          <td>只用于行业结构的分母校正 —— 让权重和回到 100%</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="law">
+      <b>铁律：carried 永远不进收益归因和持仓结论。</b>
+      看到明细里带继承标记的行，读法是「它上期大概持有这些」，不是「它现在还拿着」。
+      这条不守，后面所有结论都会被继承值污染，而且看不出错在哪。
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section>
+    <h2><span class="n">2</span>四类问题 → 看哪一块</h2>
+    <div class="asks">
+      <div class="ask nobreak">
+        <div class="q"><i>Q1</i>这只基金现在到底押的是什么？</div>
+        <div class="go"><b>单基金钻取</b> → <b>风格穿透</b><br>
+          先看权重口径标签，再看行业结构，最后对五因子画像。</div>
+      </div>
+      <div class="ask nobreak">
+        <div class="q"><i>Q2</i>这个行业谁在重仓、谁在偷偷减？</div>
+        <div class="go"><b>行业反查</b><br>
+          选行业 → 设最低权重 → 按超配排序。</div>
+      </div>
+      <div class="ask nobreak">
+        <div class="q"><i>Q3</i>全市场这一阵在加什么、减什么？</div>
+        <div class="go"><b>当日估算截面</b> → <b>全市场行业配置</b><br>
+          截面看日间漂移，行业配置看长期结构。</div>
+      </div>
+      <div class="ask nobreak">
+        <div class="q"><i>Q4</i>这些数字我能信几分？</div>
+        <div class="go"><b>披露完整度</b> → <b>三轨校验</b> → <b>方法与口径</b><br>
+          置信度、交叉验证、以及明写的「没做」。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="pb">
+    <h2><span class="n">3</span>逐板块：回答什么、怎么读、坑在哪</h2>
+    <p class="small muted">顺序与页面从上到下一致。带 <span class="tag warn">坑</span> 的是最常被读错的地方。</p>
+
+    <table>
+      <thead>
+        <tr><th style="width:14%">板块</th><th style="width:24%">回答什么问题</th><th style="width:33%">怎么读</th><th style="width:29%">坑在哪</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="name">当日估算截面</td>
+          <td>今天（不是上季度）全池的行业配置长什么样、比昨天动了多少。</td>
+          <td>左列是全池平均权重，右列红绿是相对全池基准的超配／低配（pp）。「已补齐 N 天」= 锚点到今天的距离，当前 133 天。</td>
+          <td class="trap">置信度是锚点年龄的函数（133 天 → 0.49），只能读「结构大致还在哪」，不能读「今天买了多少」。</td>
+        </tr>
+        <tr>
+          <td class="name">披露完整度</td>
+          <td>为什么季报的权重和只有一半？是没抓好数据吗？</td>
+          <td>FY/H1 覆盖中位 100%、持仓数中位 44 只、完整率 99.8%；Q1/Q3 覆盖 54.9%/56.0%、持仓数中位 10 只、完整率 0。</td>
+          <td class="trap">那 55% 是<b>法定只披露前十大</b>，不是抓取失败。补齐是拿锚点补的，补完到 100% 但补的部分是推算值。</td>
+        </tr>
+        <tr>
+          <td class="name">全市场行业配置</td>
+          <td>全池的钱压在哪些行业，其中多少是真披露、多少是继承。</td>
+          <td>深色是真实披露、浅色是锚点继承。看的是长期结构，不是今天的变化。</td>
+          <td class="trap">这里没有基准线，所以看不出「超配」。要看超配低配，往下走单基金钻取。</td>
+        </tr>
+        <tr>
+          <td class="name">行业反查</td>
+          <td>这个行业谁重仓、谁超配最多、超配多少 pp。</td>
+          <td>选行业 → 设最低权重门槛 → 按 <code>active_w</code> 排序。每行同时给披露权重和继承权重，口径标签在右侧。</td>
+          <td class="trap">按绝对权重排出来永远是银行、电子 —— 那是市值结构，不是基金经理的主动选择。</td>
+        </tr>
+        <tr>
+          <td class="name">单基金钻取</td>
+          <td>这一只具体押了什么、什么时候押的、哪几期数据是虚的。</td>
+          <td>搜索代码 → 看覆盖度轨迹（虚的季度一眼能认出）→ 看行业穿透 → 展开持仓明细。</td>
+          <td class="trap">先看顶部的权重口径：<code>net_value</code> 才是真占净值比；<code>structure_only</code> 只代表结构，不能乘净值当收益来源。</td>
+        </tr>
+        <tr>
+          <td class="name">风格穿透</td>
+          <td>这批持仓在规模／价值／动量／波动／质量上是什么画像。</td>
+          <td>五因子给 p10 / 中位 / p90，配标签分布和覆盖率。当前 7,959 只、覆盖中位 81.5%、滞后 41 天、置信度 0.77。</td>
+          <td class="trap">标签是<b>分位归类</b>不是评级。「规模过小」是中性描述，不是差评。</td>
+        </tr>
+        <tr>
+          <td class="name">净值回归校验<span class="tag">第三轨</span></td>
+          <td>用净值反推的行业暴露，和持仓推算的对不对得上。</td>
+          <td>看 R² 中位、Spearman、两套行业排序一致的占比（<code>agree_share</code>）、高冲突占比。</td>
+          <td class="trap">R² 低不等于持仓错，可能是换手快或风格漂移；真正要回头查的是<b>高冲突占比</b>高。</td>
+        </tr>
+        <tr>
+          <td class="name">监管披露校验<span class="tag">第四轨</span></td>
+          <td>季报法定的 A 股仓位是多少？我们假设的整仓对不对。</td>
+          <td>覆盖 93,441 个截面（48.2%），A 股占净值比中位 80.9%。用来替换「按锚点继承 100% 股票仓位」的旧假设。</td>
+          <td class="trap">证监会行业分类 ≠ 申万一级。它只约束<b>A 股总量</b>，不要强行把它映射到申万行业上。</td>
+        </tr>
+        <tr>
+          <td class="name">回归隐含持仓<span class="tag">第五轨</span></td>
+          <td>季报看不见的那部分股票，大概是什么。</td>
+          <td><code>bayes_w</code> 是「看不见那部分」内部的分配，覆盖约 35% 净值。</td>
+          <td class="trap">别当全组合权重用。它和披露持仓加起来才是整仓，单独看会高估小票占比。</td>
+        </tr>
+        <tr>
+          <td class="name">方法与口径</td>
+          <td>这些数字怎么算出来的、哪些明确<b>没做</b>。</td>
+          <td>五步流程 + 置信度定义 + 「没做」清单。</td>
+          <td class="trap">这是全页唯一能反驳结论的地方。下任何结论前，先读「没做」那一栏。</td>
+        </tr>
+        <tr>
+          <td class="name">结论复核</td>
+          <td>持仓数据修好之后，旧结论有没有变。</td>
+          <td>看同一批信号在修复前后是否变显著、方向是否一致。</td>
+          <td class="trap">「变显著」不等于「能交易」，还得过成本和容量这一关。</td>
+        </tr>
+        <tr>
+          <td class="name">FOF 两层</td>
+          <td>FOF 有没有嵌套买基金、能不能穿透到股票层。</td>
+          <td>直接持仓层能穿透到个股；基金层因数据源不返回被投基金明细，明令不做，逐只打标。</td>
+          <td class="trap">不要拿 FOF 的股票层结论去推它的基金层收益 —— 两层口径完全不同。</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 4 -->
+  <section>
+    <h2><span class="n">4</span>置信度怎么用</h2>
+    <p class="small">
+      置信度不是一个装饰数字，它决定了你能写多硬的话。当前当日截面的置信度是 <b>0.4857</b>
+      （锚点 2026-09-30，滞后 133 天），风格截面是 <b>0.77</b>（滞后 41 天）。
+    </p>
+    <div class="scale">
+      <div class="band hi nobreak">
+        <div class="lvl">≥ 0.70 · 可以写「是」</div>
+        句子可以下判断：<b>「该基金超配电子约 8pp」</b>。适合写进复盘、写进策略假设。
+      </div>
+      <div class="band mid nobreak">
+        <div class="lvl">0.50 – 0.70 · 只能写「可能」</div>
+        必须带限定词：<b>「可能仍在超配电子」</b>。可以当线索去验证，不能当结论。
+      </div>
+      <div class="band lo nobreak">
+        <div class="lvl">&lt; 0.50 · 只能写「待确认」</div>
+        只用来发现问题、提问题：<b>「结构疑似转向，待下期披露确认」</b>。不得进任何归因或回测输入。
+      </div>
+    </div>
+    <p class="small muted" style="margin-top:10px">
+      置信度随锚点年龄衰减：披露越新越高，越旧越低。想把一个判断写硬，唯一的办法是等新一期披露，
+      不是调参数。
+    </p>
+  </section>
+
+  <!-- 5 -->
+  <section class="pb">
+    <h2><span class="n">5</span>每晚的动线（三步，十分钟）</h2>
+    <div class="flow">
+      <div class="step nobreak">
+        <div class="t">STEP 1 · 22:10 之后</div>
+        <div class="h">看当日截面</div>
+        <div class="d">先读置信度和「已补齐 N 天」。再看日变化 Top 6 里有没有异常大的单行业漂移 —— 那是结构在动，还是数据在抖。</div>
+      </div>
+      <div class="step nobreak">
+        <div class="t">STEP 2</div>
+        <div class="h">异常落到单只</div>
+        <div class="d">哪个行业漂移最大，就去行业反查看是谁带的；锁定基金后进单基金钻取，确认是新披露还是继承推算。</div>
+      </div>
+      <div class="step nobreak">
+        <div class="t">STEP 3</div>
+        <div class="h">下结论前过一遍校验</div>
+        <div class="d">三轨里至少看一条：净值回归的冲突占比、监管 A 股仓位、或「没做」清单。都对得上，才写进复盘。</div>
+      </div>
+    </div>
+    <p class="small muted" style="margin-top:14px">
+      日变化的对比版本每天只留一版，所以<b>第一次只有一版时右列是空的</b> —— 那是正常的，
+      第二天起才有日间漂移可比。
+    </p>
+  </section>
+
+  <!-- 6 -->
+  <section>
+    <h2><span class="n">6</span>三个最容易踩的坑</h2>
+    <ol>
+      <li>
+        <b>把补齐后的 100% 当成真实持仓。</b>
+        只有年报和半年报是真的全持仓；一季报三季报补到 100% 之后，多出来的那 45% 是推算的。
+        页面把 disclosed 和 carried 分开存、分开展示，就是为了防止这件事。
+      </li>
+      <li>
+        <b>用 carried 做收益归因。</b>
+        继承值代表「上期大概还拿着」，用它算出来的收益归因，会系统性地把上期的行业配置当成现在的，
+        在市场风格切换时错得最厉害。
+      </li>
+      <li>
+        <b>把 Q1/Q3 的 55% 当数据缺陷去修。</b>
+        这是《公开募集证券投资基金信息披露管理办法》下的披露制度，不是抓取问题。
+        想提高季报的可见度，正确路径是走监管披露校验和净值回归，不是去补前十大之外的明细。
+      </li>
+    </ol>
+  </section>
+
+  <!-- 7 -->
+  <section>
+    <h2><span class="n">7</span>数据在哪、什么时候更新</h2>
+    <table class="nobreak">
+      <thead><tr><th style="width:26%">环节</th><th style="width:20%">时间</th><th style="width:24%">表</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td class="name">净值采集</td><td>每交易日</td><td><code>fund_nav_daily</code></td><td>按日拉全市场，回看 3 天补 QDII</td></tr>
+        <tr><td class="name">当日持仓截面</td><td>22:10 每日</td><td><code>fund_industry_nowcast</code></td><td>锚点 → as_of 推算，保留 7 天</td></tr>
+        <tr><td class="name">当日风格截面</td><td>22:35 每日</td><td><code>fund_style_nowcast</code></td><td>五因子分位，基准固定在前一标准报告期</td></tr>
+        <tr><td class="name">持仓补齐</td><td>有新披露才跑</td><td><code>by_fund/*.csv</code> + 明细表</td><td>披露期驱动，不是日历驱动</td></tr>
+      </tbody>
+    </table>
+    <p class="small muted" style="margin-top:10px">
+      调度器带心跳自愈：进程断了 4 分钟会被判定中断并立即重跑，每天最多 3 次、失败冷却 10 分钟。
+      所以「某天没更新」通常是上游数据没发布，不是任务没跑。
+    </p>
+  </section>
+
+</div>
+</body>
+</html>

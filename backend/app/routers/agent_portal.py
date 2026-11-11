@@ -1,4 +1,4 @@
-"""智能体门户：把 dsh web（宿主 :3080）反代到平台同域 /agent/ 下。
+"""智能体门户：把量化智能体（宿主 :3081）反代到平台同域 /agent/ 下。
 
 为什么必须同域，而不是前端直接 <a href=":3080">：
 1. dsh 的登录态是 HttpOnly cookie；:8000 → :3080 是跨**端口**，浏览器里
@@ -31,8 +31,12 @@ from app.config import BASE_DIR
 
 logger = logging.getLogger(__name__)
 
-# dsh 跑在宿主上，容器里访问宿主要用 host.docker.internal
-DSH_UPSTREAM = "http://host.docker.internal:3080"
+# 量化智能体跑在宿主上，容器里访问宿主要用 host.docker.internal。
+#
+# 端口 3081 而不是 3080：智能体是**独立的一套 dsh**（DSH_HOME=~/quant-agent，
+# profile=quant），不跟日常用的标准 dsh 共服务。改前端、改 preset 白名单、
+# 加 MCP 都只影响这一套；标准 dsh 的 profile 保持原样，他打开还是熟悉的样子。
+DSH_UPSTREAM = "http://host.docker.internal:3081"
 # dsh 每次启动都会打印带 token 的 URL，由 dsh-web.sh 落到这个文件
 TOKEN_LOG = BASE_DIR / "data" / "agent_portal.log"
 
@@ -170,7 +174,7 @@ async def agent_ws(websocket: WebSocket, path: str = "") -> None:
     if not sub.startswith("/"):
         sub = "/" + sub
     qs = websocket.scope.get("query_string", b"").decode("latin-1")
-    url = f"ws://host.docker.internal:3080{sub}" + (f"?{qs}" if qs else "")
+    url = f"ws://host.docker.internal:3081{sub}" + (f"?{qs}" if qs else "")
 
     hdrs = {"Host": "localhost:8000"}
     cookie = websocket.headers.get("cookie")
@@ -223,6 +227,86 @@ async def agent_ws(websocket: WebSocket, path: str = "") -> None:
             await websocket.close()
         except RuntimeError:
             pass
+
+
+@api_router.get("/deliverables")
+def deliverables(limit: int = 4):
+    """智能体右栏「产物」：最近能点回去核对的东西。
+
+    设计文档 08 节的判断是「没有产物的回答，等于没回答」—— 对话里说
+    「jk001r 上次回测超额 3.2%」，你得能一眼点回那张回测；否则只能信它。
+
+    刻意**不**猜「它刚才引用了哪几条」：那需要解析消息流，而且猜错会误导。
+    这里给的是「最近发生的事实」，按时间排，你自己对号入座。
+    标题里带日期与关键数字，扫一眼就知道是不是它在说的那条。
+    """
+    from sqlalchemy import desc, select
+
+    from sqlalchemy import text as _sql
+
+    from app.database import SessionLocal
+    from app.models import Backtest, ResearchCard
+
+    out: list[dict] = []
+    db = SessionLocal()
+    try:
+        for b in db.execute(
+            select(Backtest).order_by(desc(Backtest.id)).limit(limit)
+        ).scalars().all():
+            r = (b.total_return or 0) * 100
+            out.append({
+                "id": f"bt{b.id}",
+                "kind": "回测",
+                "title": f"{b.strategy_key} · {b.start_date} ~ {b.end_date}",
+                "sub": f"累计 {r:+.2f}% · 回撤 {(b.max_drawdown or 0) * 100:.1f}%"
+                       f" · 夏普 {b.sharpe or 0:.2f}",
+                "at": (b.created_at.strftime("%Y-%m-%d %H:%M") if b.created_at else ""),
+                "href": f"/#backtests/{b.id}",
+            })
+
+        # 只在还没退役的卡里挑 —— 退役卡不是「待核对的东西」
+        for c in db.execute(
+            select(ResearchCard).where(ResearchCard.state != "retired")
+            .order_by(desc(ResearchCard.updated_at)).limit(limit)
+        ).scalars().all():
+            out.append({
+                "id": f"rc{c.id}",
+                "kind": "研究卡",
+                "title": c.name,
+                "sub": f"{c.state} · {c.card_type}",
+                "at": (c.updated_at.strftime("%Y-%m-%d %H:%M") if c.updated_at else ""),
+                "href": f"/#cards/{c.id}",
+            })
+
+        # market_reports 没有 ORM 模型（news.py 那边也是裸 SQL），照同口径走
+        for r in db.execute(
+            _sql("select report_id, title, data_asof, generated_at from market_reports "
+                 "order by generated_at desc limit :lim"),
+            {"lim": limit},
+        ).mappings().all():
+            out.append({
+                "id": f"rp{r['report_id']}",
+                "kind": "报告",
+                "title": r["title"] or "",
+                "sub": f"数据截至 {r['data_asof'] or '—'}",
+                "at": (r["generated_at"] or "")[:16],
+                "href": "/#news",
+            })
+    finally:
+        db.close()
+
+    # 每类只留最新几条再混排 —— 报告一天四份，不限量会把回测和研究卡全挤下去，
+    # 那栏就变成「今天发了几封邮件」，失去核对价值。
+    out.sort(key=lambda x: x["at"], reverse=True)
+    keep, seen = [], {}
+    for it in out:
+        k = it["kind"]
+        cap = 2 if k == "报告" else 4
+        if seen.get(k, 0) >= cap:
+            continue
+        seen[k] = seen.get(k, 0) + 1
+        keep.append(it)
+    return {"count": len(keep), "items": keep}
 
 
 @api_router.get("/status")

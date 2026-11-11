@@ -13,6 +13,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Btn, Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
 import EChart from "../components/EChart";
 import FundStylePanel from "../components/FundStylePanel";
+import FundPenetrationGuide from "../components/FundPenetrationGuide";
 import { get } from "../api/client";
 import { useTheme } from "../theme";
 
@@ -177,7 +178,6 @@ interface Recheck {
 
 const C_DISC = "#2456c8";   // 披露
 const C_CARR = "#b7c4de";   // 继承
-const C_OLD = "#d97706";    // 旧截断数据
 const TYPE_LABEL: Record<string, string> = { Q1: "Q1 季报", H1: "半年报", Q3: "Q3 季报", FY: "年报" };
 
 /** 业界对照：来自公开研报 / 监管通报，非一手来源，需核实原文。 */
@@ -344,24 +344,28 @@ export default function FundPenetrationPage() {
   const pick = (f: FundItem) => { setCode(f.base_code); setEndDate(""); loadFund(f.base_code, ""); };
   useEffect(() => { if (funds.length && !code) pick(funds[0]); /* eslint-disable-line */ }, [funds]);
 
-  // ---- 图 1：修复前后对比 ----
+  // ---- 图 1：年报/半年报 vs 季报的披露完整度 ----
+  // 原图是「旧 CSV 截断 vs 重拉后」，但旧 CSV 已删（old_cover_median_by_year 恒空），
+  // 橙色系列没有数据，图上只剩一排 100% 的蓝柱 + 一个幽灵图例。
+  // 换成真正有对比的两条：年报/半年报依法全披露 vs Q1/Q3 只披露前十大。
   const repairOption = useMemo(() => {
     if (!ov) return null;
     const years = ov.yearly.map((y) => String(y.year));
-    const oldV = years.map((y) => ov.old_cover_median_by_year[y] ?? null);
-    const newV = ov.yearly.map((y) => y.annual_cover);
+    const fullV = ov.yearly.map((y) => y.annual_cover);
+    const q13V = ov.yearly.map((y) => y.q13_cover);
     return {
       grid: { left: 52, right: 20, top: 44, bottom: 42 },
       legend: { top: 6, textStyle: { color: colors.muted, fontSize: 11 },
-                data: ["旧数据（offset 截断）", "重拉后年报"] },
+                data: ["年报/半年报（完整披露）", "一季报/三季报（仅前十大）"] },
       tooltip: { trigger: "axis", valueFormatter: (v: number | null) => v == null ? "无" : `${v}%` },
       xAxis: { type: "category", data: years, axisLabel: { color: colors.muted, fontSize: 11 } },
       yAxis: { type: "value", max: 110, name: "权重和 %", nameTextStyle: { color: colors.muted, fontSize: 11 },
                axisLabel: { color: colors.muted, fontSize: 11 }, splitLine: { lineStyle: { color: colors.border } } },
       series: [
-        { name: "旧数据（offset 截断）", type: "bar", data: oldV, itemStyle: { color: C_OLD, opacity: 0.75 },
-          barMaxWidth: 26 },
-        { name: "重拉后年报", type: "bar", data: newV, itemStyle: { color: C_DISC }, barMaxWidth: 26 },
+        { name: "年报/半年报（完整披露）", type: "bar", data: fullV,
+          itemStyle: { color: C_DISC }, barMaxWidth: 22 },
+        { name: "一季报/三季报（仅前十大）", type: "bar", data: q13V,
+          itemStyle: { color: C_CARR }, barMaxWidth: 22 },
       ],
     } as never;
   }, [ov, colors]);
@@ -429,7 +433,9 @@ export default function FundPenetrationPage() {
       .slice(0, 16).reverse();
     return {
       grid: { left: 84, right: 58, top: 40, bottom: 34 },
-      legend: { top: 6, textStyle: { color: colors.muted, fontSize: 11 }, data: ["披露", "继承", "相对基准"] },
+      // 「相对基准」随正负变色（红超配/绿低配），图例色块无法表达，故不进图例，
+      // 改成标题右侧一行说明，避免图例显示成一块与实际柱子无关的深蓝。
+      legend: { top: 6, textStyle: { color: colors.muted, fontSize: 11 }, data: ["披露", "继承"] },
       tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
       xAxis: { type: "value", name: "权重 %", nameTextStyle: { color: colors.muted, fontSize: 11 },
                axisLabel: { color: colors.muted, fontSize: 11 }, splitLine: { lineStyle: { color: colors.border } } },
@@ -533,6 +539,8 @@ export default function FundPenetrationPage() {
         desc="双轨隔离口径：披露值与继承值分开存、分开展示，继承值只用于行业结构分母校正"
       />
 
+      <FundPenetrationGuide />
+
       {/* completed 为 null 表示「池规模未知」（主库被容器占用时读不到），
           此时不能当成「未完成」渲染 —— total 为 null 会直接把整页打崩 */}
       {ov.fetch_progress && ov.fetch_progress.completed === false
@@ -546,7 +554,7 @@ export default function FundPenetrationPage() {
         </div>
       )}
 
-      {note(
+      {brokenYears.length > 0 && note(
         mode === "dark" ? "#3a2318" : "#fff6e8", "#e8b96a",
         "先说结论：旧的「47% 未知」不是披露限制，是数据被截断了",
         <>
@@ -559,7 +567,7 @@ export default function FundPenetrationPage() {
       )}
 
       {nc && (
-        <Card title={`当日估算截面 · 截至 ${fmtDate(nc.as_of)}`} colors={colors}
+        <Card id="sec-nowcast" title={`当日估算截面 · 截至 ${fmtDate(nc.as_of)}`} colors={colors}
           extra={<span style={{ fontSize: 11, color: colors.muted }}>
             锚点 {fmtDate(nc.anchor)} · 已补齐 {nc.stale_days} 天 · 每日 22:10 重算
           </span>}>
@@ -645,8 +653,8 @@ export default function FundPenetrationPage() {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
-        <Card title="修复前后：年报持仓权重和（按年中位）" colors={colors}
-          extra={<span style={{ fontSize: 11, color: colors.muted }}>橙=旧截断 / 蓝=重拉后</span>}>
+        <Card id="sec-coverage" title="年报/半年报 vs 一季报：披露完整度（按年中位）" colors={colors}
+          extra={<span style={{ fontSize: 11, color: colors.muted }}>蓝=完整披露 / 浅=仅前十大</span>}>
           {repairOption && <EChart option={repairOption} height={260} />}
         </Card>
         <Card title="按报告期类型：覆盖度诊断" colors={colors}>
@@ -676,7 +684,7 @@ export default function FundPenetrationPage() {
         </Card>
       </div>
 
-      <Card title="全市场行业配置：平均权重与补齐贡献" colors={colors}
+      <Card id="sec-industry" title="全市场行业配置：平均权重与补齐贡献" colors={colors}
         extra={<span style={{ fontSize: 11, color: colors.muted }}>蓝=真实披露 / 浅=锚点继承</span>} >
         {marketOption && <EChart option={marketOption} height={430} />}
         <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 6, lineHeight: 1.8 }}>
@@ -691,7 +699,7 @@ export default function FundPenetrationPage() {
 
       <div style={{ height: 14 }} />
 
-      <Card title="行业反查：谁在重仓这个行业" colors={colors}
+      <Card id="sec-reverse" title="行业反查：谁在重仓这个行业" colors={colors}
         extra={<span style={{ fontSize: 11, color: colors.muted }}>与下方单基金钻取互为反向</span>}>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
           <select value={indSel}
@@ -768,11 +776,13 @@ export default function FundPenetrationPage() {
 
       <div style={{ height: 14 }} />
 
-      <FundStylePanel />
+      <div id="sec-style" style={{ scrollMarginTop: 12 }}>
+        <FundStylePanel />
+      </div>
 
       <div style={{ height: 14 }} />
 
-      <Card title="单基金钻取：覆盖度轨迹与行业穿透" colors={colors}
+      <Card id="sec-drill" title="单基金钻取：覆盖度轨迹与行业穿透" colors={colors}
         extra={<span style={{ fontSize: 11, color: colors.muted }}>{fd ? `${fd.name} · ${fd.ts_code}` : ""}</span>}>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
           <input value={query} onChange={(e) => setQuery(e.target.value)}
@@ -828,7 +838,10 @@ export default function FundPenetrationPage() {
               {covOption && <EChart option={covOption} height={300} />}
             </div>
             <div>
-              <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>当期行业配置（双轨）</div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 6 }}>
+                <span style={{ fontSize: 12.5, fontWeight: 600 }}>当期行业配置（双轨）</span>
+                <span style={{ fontSize: 11, color: colors.muted }}>细条 = 相对基准（红超配 / 绿低配）</span>
+              </div>
               {indOption && <EChart option={indOption} height={300} />}
             </div>
           </div>
@@ -874,7 +887,7 @@ export default function FundPenetrationPage() {
       {fd?.regression?.available && (
         <>
           <div style={{ height: 14 }} />
-          <Card title="净值回归校验 · 第三轨交叉验证" colors={colors}
+          <Card id="sec-nav" title="净值回归校验 · 第三轨交叉验证" colors={colors}
             extra={<span style={{ fontSize: 11, color: colors.muted }}>回归结果不覆盖主口径，只作验证</span>}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(145px,1fr))",
               gap: 10, marginBottom: 14 }}>
@@ -923,7 +936,7 @@ export default function FundPenetrationPage() {
       {fd?.regulatory?.available && (
         <>
           <div style={{ height: 14 }} />
-          <Card title="监管披露校验 · 第四轨（证监会行业配置）" colors={colors}
+          <Card id="sec-reg" title="监管披露校验 · 第四轨（证监会行业配置）" colors={colors}
             extra={<span style={{ fontSize: 11, color: colors.muted }}>
               总仓位来源：{fd.current.equity_source === "regulatory" ? "监管披露值" : "锚点回退"}
             </span>}>
@@ -1066,7 +1079,7 @@ export default function FundPenetrationPage() {
       {ov.method && (
         <>
           <div style={{ height: 14 }} />
-          <Card title="方法与口径 · 数据怎么来 / 怎么补 / 怎么穿透" colors={colors}
+          <Card id="sec-method" title="方法与口径 · 数据怎么来 / 怎么补 / 怎么穿透" colors={colors}
             extra={<span style={{ fontSize: 11, color: colors.muted }}>{ov.method.version}</span>}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(215px,1fr))", gap: 10 }}>
               {ov.method.steps.map((s) => (

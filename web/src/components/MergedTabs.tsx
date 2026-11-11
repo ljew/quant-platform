@@ -8,10 +8,15 @@ import { HubTabs } from "./Hub";
  */
 export function MergedTabs({
   tabs,
+  defaultKey,
 }: {
   tabs: { key: string; label: string; node: ReactNode }[];
+  /** 初始子页签（来自地址栏 #hub/id/inner）；不传或匹配不上就用第一个。 */
+  defaultKey?: string;
 }) {
-  const [active, setActive] = useState(tabs[0].key);
+  const [active, setActive] = useState(
+    () => tabs.find((t) => t.key === defaultKey)?.key ?? tabs[0].key,
+  );
   return (
     <div>
       <HubTabs tabs={tabs} active={active} onChange={setActive} />

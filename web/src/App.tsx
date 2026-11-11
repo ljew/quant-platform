@@ -136,7 +136,7 @@ function HubContent({ sub, id, inner }: { sub: string; id?: number; inner?: stri
     case "market": return <MarketHubPage />;
     case "strategy-overview": return <StrategyOverviewPage />;
     case "cards": return <ResearchCardsPage initialDetailId={id} initialTab={inner} />;
-    case "fund-research": return <FundResearchPage />;
+    case "fund-research": return <FundResearchPage initialTab={inner} />;
     case "btopt": return <BacktestOptimizePage />;
     case "factorlab": return <FactorMinePage />;
     case "paper": return <PaperPage />;
@@ -146,7 +146,7 @@ function HubContent({ sub, id, inner }: { sub: string; id?: number; inner?: stri
     case "pipeline": return <DataPipelinePage />;
     case "monitor": return <MonitorPage />;
     case "auto": return <AutoResearchHubPage />;
-    case "agent": return <AgentPortalPage />;
+    case "agent": return <AgentPortalPage cardId={id} />;
     case "approvals": return <ApprovalsPage />;
     default: return null;
   }
@@ -162,7 +162,12 @@ export default function App() {
 
   // 地址栏 hash 跟随当前页：刷新不回首页、也方便存链接直达（如 /#wechat、/#cards/384）
   useEffect(() => {
-    const want = id ? `${sub}/${id}${inner ? `/${inner}` : ""}` : sub;
+    // inner 但无 id 时补一个 0 占位（如 #fund-research/0/holding）：
+    // parseHash 里 Number("0") 不 > 0，会被当成「无 id」，但 inner 段能留下，
+    // 这样「子页签直达」刷新后不丢。
+    const want = id
+      ? `${sub}/${id}${inner ? `/${inner}` : ""}`
+      : inner ? `${sub}/0/${inner}` : sub;
     if (window.location.hash.replace(/^#/, "") !== want) {
       window.history.replaceState(null, "", `#${want}`);
     }

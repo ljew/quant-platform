@@ -588,16 +588,23 @@ def step_sync_duckdb(db) -> int:
     """分析库同步（Gold 层写入后）。
 
     ⚠️ 用 sync_all 而不是 sync_after_seed：后者把异常吞成一行 print，
-    结果是「步骤绿着、分析库压根没动」。这里捕获后上报 note，
+    结果是「步骤绿着、分析库压根没动」。这里捕获后上报 note + 打容器日志，
     步骤会显示「完成 0 行（跳过：xxx）」，看得出发生了什么。
+
+    返回值改成**实际搬运的总行数**（以前恒 0）。恒 0 的坏处是「绿着但没干活」
+    和「绿着干了活」在页面上长得一模一样 —— 2026-11-11 分析库冻结 26 小时
+    却没人发现，就是栽在这。
     """
     from app.services.duckdb_sync import sync_all
 
     try:
-        sync_all()
+        res = sync_all()
     except Exception as e:  # noqa: BLE001
-        _STEP_STATS.setdefault("sync_duckdb", {})["note"] = f"跳过：{str(e)[:90]}"
-    return 0
+        note = f"跳过：{str(e)[:90]}"
+        _STEP_STATS.setdefault("sync_duckdb", {})["note"] = note
+        print(f"[sync_duckdb] {note}", flush=True)
+        return 0
+    return int(sum(v[1] for v in res.values()))
 
 
 def step_compute_factors(db) -> int:

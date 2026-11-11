@@ -15,9 +15,10 @@ import { MergedTabs } from "../components/MergedTabs";
 import FundPersistencePage from "./FundPersistencePage";
 import FundPenetrationPage from "./FundPenetrationPage";
 
-export default function FundResearchPage() {
+export default function FundResearchPage({ initialTab }: { initialTab?: string }) {
   return (
     <MergedTabs
+      defaultKey={initialTab}
       tabs={[
         { key: "persistence", label: "持续性（业绩能不能延续）", node: <FundPersistencePage /> },
         { key: "holding", label: "持仓穿透（超额买了什么）", node: <FundPenetrationPage /> },

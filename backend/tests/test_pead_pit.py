@@ -126,7 +126,8 @@ def test_mining_corr_and_mine_use_asof():
     src = Path(__file__).resolve().parents[1] / "app" / "services" / "factor_mining.py"
     text = src.read_text(encoding="utf-8")
     assert "esv=es_map.get(sym)" not in text
-    assert text.count("_es_asof(es_map, sym, snap)") >= 2
+    # 主路径已改成 ctx.es_map，不能把变量名写死；只要两处都走 _es_asof 就满足意图
+    assert text.count("esv=_es_asof(") >= 2
 
 
 def test_pit_earnings_surprise_still_raw_pp():

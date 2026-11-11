@@ -26,6 +26,16 @@ from sqlalchemy import text
 _DATE_COLS = ("trade_date", "date", "as_of", "ann_date",
               "created_at", "updated_at", "publish_time")
 
+# 已知「当前没有任何写入方」的表：它们陈旧不是故障，不该把 worst 拉到 FAIL。
+# ⚠️ 只在**判定为陈旧**时才降级；一旦哪天真的写进新数据，仍然照常报 OK —— 
+# 这样以后接上写入方不用回来改这里。
+_INACTIVE = {
+    "factor_mined_daily": "GP 挖矿已熔断（M2-1），定时任务不产出",
+    "live_decision_snapshot": "实盘接口未接入，目前只有模拟盘",
+    "live_order_intent": "实盘接口未接入，目前只有模拟盘",
+    "etf_category_daily": "全代码只有模型定义，没有任何写入方",
+}
+
 # 缓存：86 张表逐张查要 1~2 秒，页面轮询别每次都扫
 _CACHE: dict = {"at": 0.0, "data": None}
 _TTL = 60.0
@@ -71,6 +81,10 @@ def _classify(table: str, col: str, rows: int) -> tuple[str, int, int]:
     """
     if col == "ann_date":
         return "财报类（半年/年度）", 400, 800
+    if table == "index_membership":
+        # 实测节奏：9-03 / 9-15 / 9-30 / 10-03 / 10-30 / 11-01 / 11-09 ——
+        # 按多个指数分批落，不是日更。用日频阈值会天天误报 WARN。
+        return "成分快照（分批/月级）", 25, 45
     if col in ("created_at", "updated_at"):
         if rows < 50:
             return "config", 0, 0          # 配置/登记表：不参与判断
@@ -118,8 +132,13 @@ def table_freshness(db, use_cache: bool = True) -> dict:
         try:
             days = (now.date() - date.fromisoformat(latest)).days
         except ValueError:
+            # 日期列里混进了非日期值（2026-11-09 的 '杨逸君' 事件）。原来这里
+            # 降级成 n/a —— 页面上一片灰，看不出「这张表已经不可信」。
+            # 脏值是硬故障：要么数据被写坏了，要么 _pick_col 把非日期列当成了
+            # 日期列（fund 表的 manager 就是典型），两种都要红出来。
             rows.append({"table": name, "date_col": col, "rows": cnt,
-                         "latest": latest, "days_ago": None, "status": "n/a"})
+                         "latest": None, "days_ago": None, "status": "FAIL",
+                         "note": f"日期列 {col} 含非日期值（{str(latest)[:24]}）"})
             continue
 
         kind, warn_d, fail_d = _classify(name, col, cnt)
@@ -135,6 +154,11 @@ def table_freshness(db, use_cache: bool = True) -> dict:
             status = "WARN"
         else:
             status = "FAIL"
+        if status in ("FAIL", "WARN") and name in _INACTIVE:
+            rows.append({"table": name, "date_col": col, "rows": cnt,
+                         "latest": latest, "days_ago": days, "status": "n/a",
+                         "note": f"预期不活跃：{_INACTIVE[name]}（最新 {latest}）"})
+            continue
         rows.append({"table": name, "date_col": col, "rows": cnt,
                      "latest": latest, "days_ago": days, "status": status,
                      "note": f"阈值 {warn_d}/{fail_d} 天（{kind}）"})
