@@ -1,9 +1,31 @@
 # 量化智能体的 profile 覆盖层（只放平台自己加的东西）。
 #
-# ⚠️ 模型与凭据（ui-settings-general / agent-default-model / llm-pi-ai）
-# **不在这里**：那几条含 API Key，不进仓库。安装脚本会从你自己的
-# ~/.dsh/profiles/web/cordis.patch.yml 里按 id 抽出来拼在前面。
-# 见 agent/install_dsh_profile.sh。
+# ⚠️ 凭据（ui-settings-general / llm-pi-ai）含 API Key，**不在这里**：
+# 安装脚本会从你自己的 ~/.dsh/profiles/web/cordis.patch.yml 里按 id 抽出来
+# 拼在前面；DeepSeek 的 key 从平台库 llm_providers 取，写进
+# ~/quant-agent/.credentials.yaml。见 agent/install_dsh_profile.py。
+#
+# 默认模型是**平台自己的决定**（不是抄日常 dsh 的），所以留在仓库里。
+
+# ── 模型路由：默认 DeepSeek 官方，Kimi 留作备选 ────────────────────────
+# 两条 route 并存，UI 的模型选择器里都能看到（catalog 来自各自插件）：
+#   deepseek-official → deepseek-flash（=DeepSeek-V4.1-Flash）/ deepseek-v4-pro
+#   kimi-code         → k3                                          （carry 过来的）
+# deepseek-official 由 llm-deepseek 提供，凭据走 refs.DEEPSEEK_API_KEY；
+# 拿不到 key 时该 route 会**从选择器里隐藏**（不是报错），所以 key 必须写进
+# ~/quant-agent/.credentials.yaml。
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek-api-key'
+  config:
+    apiKeyEnv: DEEPSEEK_API_KEY
+    # 官方 listing 只列 deepseek-flash / deepseek-v4-pro，不写死 models，
+    # 上游加模型时自动跟上。
+    reasoningEffort: high
+- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config:
+    provider: deepseek-official
+    model: deepseek-flash
 
 # ── quant-mcp：量化平台的事实接口（9 个只读工具）─────────────────────
 # 工具会以 mcp__quant__<name> 出现在模型工具列表里。
