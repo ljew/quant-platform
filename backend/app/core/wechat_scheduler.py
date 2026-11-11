@@ -52,6 +52,7 @@ _retry: dict[str, dict] = {}     # 失败重试记账：key -> {attempts, last_t
 
 _COOL_FILE = Path(settings.wechat_data_dir) / "state" / "collect_cooldown.json"
 _DONE_FILE = Path(settings.wechat_data_dir) / "state" / "collect_done.json"
+_REPORT_FILE = Path(settings.wechat_data_dir) / "state" / "collect_last.json"
 
 
 def _load_done() -> set[str]:
@@ -129,6 +130,18 @@ _CATCHUP_HOURS = 3               # 错过 slot 后最多补 3 小时（6:20 最�
 _lock = threading.Lock()
 
 
+def _load_report() -> dict:
+    """最近一次采集的失败明细（_run_crawl 落盘）。读不到就返回空。"""
+    import json
+
+    try:
+        d = json.loads(_REPORT_FILE.read_text(encoding="utf-8"))
+        return {"at": d.get("at"), "summary": d.get("summary"),
+                "failures": (d.get("failures") or [])[:30]}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def get_status() -> dict:
     with _lock:
         return {
@@ -137,6 +150,7 @@ def get_status() -> dict:
             "retry_today": {k: v["attempts"] for k, v in _retry.items()
                             if k.startswith(_today())},
             "max_attempts": _MAX_ATTEMPTS,
+            "last_report": _load_report(),
         }
 
 
@@ -192,6 +206,28 @@ def _run_crawl() -> tuple[bool, str]:
         if "已抓正文" in line or "完成：" in line:
             summary = line.strip()
             break
+    # 汇总只有「失败 N」这个数字，谁失败、为什么失败全被丢掉了 ——
+    # 2026-11-12 连着两轮都是「失败 15」，只能靠猜。把明细留一份：
+    # 日志里打前 5 条（方便 docker logs 直接看），完整清单落盘给页面/排查用。
+    # ⚠️ 必须在退出码判断**之前**写：凭证失效（退出码 2）恰恰是最需要明细的场景。
+    fails = [ln.strip() for ln in out.splitlines()
+             if ("失败" in ln or "❌" in ln) and not ln.strip().startswith("完成：")]
+    if fails or r.returncode != 0:
+        if fails:
+            logger.warning("公众号抓取失败明细 %d 条，前 5 条：%s",
+                           len(fails), " ｜ ".join(fails[:5]))
+        try:
+            import json as _json
+            import time as _time
+
+            _REPORT_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _REPORT_FILE.write_text(_json.dumps(
+                {"at": _time.strftime("%Y-%m-%d %H:%M:%S"), "rc": r.returncode,
+                 "summary": summary, "failures": fails},
+                ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+
     if r.returncode != 0:
         return False, f"退出码 {r.returncode}：{out.strip()[-300:]}"
     return True, summary or "完成"
