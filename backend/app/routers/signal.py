@@ -250,6 +250,64 @@ def actions(trade_date: str = Query("", alias="date"), db: Session = Depends(get
     }
 
 
+@router.get("/build-pool")
+def build_pool(trade_date: str = Query("", alias="date"), actions: str = "",
+               db: Session = Depends(get_db)):
+    """动作卡 → 建模拟盘：这批票里哪个 xq 策略最多，就建它的跟踪盘。
+
+    口径（2026-11-11 老刘拍板）：
+    一卡几十只票，逐只建会让组合表爆炸；建「票最多的那个 xq 策略」的跟踪盘 ——
+    `xq_<signal>` 的规则就是「跟着这个选股器做」，今天这批里属于它的那部分
+    正好是它当日的信号，剩下的是别的东西混进来的噪音。
+
+    `SignalAction.strategies` 是多策略用「、」拼起来的字符串，必须拆开再计数；
+    只按整串统计会把「A、B」当成一个独立的策略名。
+
+    找不到对应回测策略的信号不丢：照样计数，`strategy_key` 给 null，
+    前端会把它标成「无法建盘」—— 静默丢掉一小半票更难解释。
+    """
+    from app.core.strategies.registry import _XQ_STRATEGIES
+
+    by_cname = {cn: (sk, f"xq_{sk}", tier) for sk, cn, tier, _ in _XQ_STRATEGIES}
+    want = [a.strip().upper() for a in (actions or "").split(",") if a.strip()]
+
+    q = select(SignalAction)
+    if trade_date:
+        q = q.where(SignalAction.date == date.fromisoformat(trade_date))
+    rows = db.scalars(q).all()
+    if not rows:
+        return {"date": None, "total": 0, "distribution": [], "recommended": None, "symbols": []}
+
+    d = max(r.date for r in rows)
+    pool = [r for r in rows if r.date == d and (not want or r.action in want)]
+
+    cnt: dict[str, int] = {}
+    for r in pool:
+        for nm in (r.strategies or "").split("、"):
+            nm = nm.strip()
+            if nm:
+                cnt[nm] = cnt.get(nm, 0) + 1
+
+    dist = []
+    for cname, n in sorted(cnt.items(), key=lambda kv: -kv[1]):
+        hit = by_cname.get(cname)
+        dist.append({
+            "cname": cname, "count": n,
+            "signal_key": hit[0] if hit else None,
+            "strategy_key": hit[1] if hit else None,
+            "tier": hit[2] if hit else None,
+        })
+
+    rec = next((x for x in dist if x["strategy_key"]), None)
+    if rec:
+        rec = {**rec, "others": len(pool) - rec["count"]}
+    return {
+        "date": d.isoformat(), "total": len(pool), "actions": want,
+        "distribution": dist, "recommended": rec,
+        "symbols": sorted(r.symbol for r in pool),
+    }
+
+
 @router.get("/picks")
 def picks(trade_date: str = Query("", alias="date"), db: Session = Depends(get_db)):
     """某日各策略命中明细（与 /actions 同样用 alias="date" 对齐前端）。"""

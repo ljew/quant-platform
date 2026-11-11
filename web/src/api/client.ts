@@ -128,6 +128,42 @@ export interface TimelineEvent {
 }
 
 /** 跟踪偏离：实际快照 vs 理论净值（回测重算）。partial=true 表示只覆盖有快照的日子。 */
+/** 动作卡建盘池：这批票按「命中策略」分布，取最多的那个建跟踪盘。 */
+/** 智能体审批：一条「动作级授权」，人点了通过才签发一次性令牌。 */
+export interface ApprovalRow {
+  id: number;
+  action: string;
+  payload: Record<string, unknown>;
+  reason: string;
+  proposed_by: string;
+  status: string;          // pending / approved / done / rejected / expired / failed
+  created_at: string | null;
+  expires_at: string | null;
+  decided_at: string | null;
+  decided_by: string | null;
+  executed_at: string | null;
+  note: string;
+  has_token: boolean;
+}
+
+export interface BuildPoolItem {
+  cname: string;
+  count: number;
+  signal_key: string | null;
+  strategy_key: string | null;
+  tier: string | null;
+  others?: number;
+}
+
+export interface BuildPool {
+  date: string | null;
+  total: number;
+  actions: string[];
+  distribution: BuildPoolItem[];
+  recommended: BuildPoolItem | null;
+  symbols: string[];
+}
+
 export interface PaperDeviation {
   task_id: number;
   name: string;
@@ -1360,6 +1396,9 @@ export interface NotifyConfig {
 }
 
 export const signalApi = {
+  /** 动作卡 → 建盘：传 date + 动作集合，返回该批票的策略分布与推荐策略。 */
+  buildPool: (date: string, actions: string[]) =>
+    get<BuildPool>(`/signal/build-pool?date=${date}&actions=${actions.join(",")}`),
   portfolio: () => get<PortfolioSnapshot>("/signal/portfolio"),
   portfolioExp: () => get<PortfolioSnapshot>("/signal/portfolio-exp"),
   notifyConfig: () => get<NotifyConfig>("/agent/notify-config"),
@@ -1466,7 +1505,32 @@ export interface ForeignDigest {
 }
 
 
+/** 资讯合流的一条。group 是语义分组（domestic/foreign/wechat/report），筛选器靠它。 */
+export interface NewsStreamItem {
+  id: string;
+  group: string;
+  source: string;
+  source_cn: string;
+  title: string;
+  summary: string;
+  url: string;
+  at: string;
+}
+
+export interface NewsStreamResp {
+  count: number;
+  total: number;
+  since: string;
+  days: number;
+  groups: Record<string, number>;
+  group_cn: Record<string, string>;
+  items: NewsStreamItem[];
+}
+
 export const newsApi = {
+  /** 统一资讯流：一条时间倒序的流，groups 逗号分隔（空=全要）。 */
+  stream: (days: number, groups: string[] = []) =>
+    get<NewsStreamResp>(`/news/stream?days=${days}${groups.length ? `&groups=${groups.join(",")}` : ""}&limit=200`),
   feed: (refresh = false) => get<NewsFeed>(`/news/feed${refresh ? "?refresh=true" : ""}`),
   stock: (symbol: string) =>
     get<StockNews>(`/news/stock?symbol=${encodeURIComponent(symbol)}`),
@@ -2180,6 +2244,16 @@ export interface AgentPortalStatus {
   upstream: string;
   hint: string;
 }
+
+export const approvalsApi = {
+  list: (status = "", limit = 50) =>
+    get<{ ok: boolean; count: number; items: ApprovalRow[] }>(
+      `/approvals?limit=${limit}${status ? `&status=${status}` : ""}`),
+  one: (id: number) => get<{ ok: boolean; item: ApprovalRow }>(`/approvals/${id}`),
+  approve: (id: number) => post<{ ok: boolean; status: string }>(`/approvals/${id}/approve`, {}),
+  reject: (id: number, reason: string) =>
+    post<{ ok: boolean; status: string }>(`/approvals/${id}/reject`, { reason }),
+};
 
 export const agentPortalApi = {
   status: () => get<AgentPortalStatus>("/portal/status"),

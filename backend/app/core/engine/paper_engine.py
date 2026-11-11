@@ -22,7 +22,7 @@ from app.core.engine.backtest_engine import BacktestEngine
 from app.core.engine.portfolio_backtest import PortfolioBacktestEngine
 from app.core.strategies.registry import get_strategy
 from app.models import (Stock, PaperTask, PaperTrade, PaperSnapshot,
-                        FundamentalsHistory, FinancialsRaw)
+                        FundamentalsHistory, FinancialsRaw, SignalDaily)
 from app.services.data_source import get_realtime_prices
 from app.services.membership_store import get_membership as _get_membership
 # 复用回测路由里的数据加载函数（DB 优先、缺失回源落地），避免重复实现
@@ -107,26 +107,63 @@ def _load_portfolio(db, task: PaperTask) -> dict:
     index_symbol = meta.get("index_symbol") or ("sh" + index_code)
     params = _merge_params(meta, task.params_json)
     end = date.today()
-    sd = date(end.year - 5, 1, 1)
-    start = sd.isoformat()
+    # 回测起点 = 账户建账日，不是「5 年前」。
+    # 原来固定 5 年前：chan_buy 的 signal_union 池有 4787 只（几乎全A），
+    # 5 年 × 4787 只日线直接把 4.5G 地址空间打爆 → MemoryError，
+    # 而 run_paper_task 的 except 吞掉它、error_msg 存成空串，
+    # 任务状态看着「成功」但没净值（2026-11-11 实测两次才定位到）。
+    # 账户从哪天开始，就只需要那天的数据 + 预热。
+    acc = None
+    for cand in (task.start_date, task.account_start):
+        if cand:
+            try:
+                acc = date.fromisoformat(str(cand)[:10])
+                break
+            except ValueError:
+                continue
+    sd = acc or end
     # ⚠️ 必须往前多取预热数据：jk 这类策略要 260 根 bar 才出第一个信号。
     # 原来从 sd 当天开始取、warmup 只跳 125 根 → 策略看到的历史不足，
     # `_build_pool` 返回空、rebalance 静默 return，整段 5 年零交易
     # （2026-11-06 实测：模拟盘 0 笔 vs 同参数回测 3101 笔）。
     # 口径与 routers/strategy.py 的回测一致：warmup_days * 1.6 + 40 天。
-    warmup_days = int(params.get("warmup_days", 0) or 0)
-    load_start = (sd - timedelta(days=int(warmup_days * 1.6) + 40)) if warmup_days > 0 else sd
+    # 预热天数要按**实际需要的 bar 数**推，不能只看 warmup_days：
+    # xq 系声明 warmup_days=20，但 warmup_min 要 125 根（动量/波动/尾部回看取 max），
+    # 只推 72 天根本凑不满，_load_bars 会被 len(b) >= warmup_min 全部过滤掉。
+    _wd = int(params.get("warmup_days", 0) or 0)
+    _need = max(_wd, 125)
+    load_start = sd - timedelta(days=int(_need * 1.6) + 40)
 
-    membership = _get_membership(db, index_code, sd, end)
-    if not membership:
-        raise ValueError(f"未获取到指数 {index_code} 的时点成分股")
-    union: list[str] = []
-    seen: set = set()
-    for _ds, sset in membership:
-        for s in sset:
-            if s not in seen:
-                seen.add(s)
-                union.append(s)
+    # 股票池必须跟回测同口径 —— 这里原来无脑用指数成分并集，忽略了策略的
+    # pool_mode。xq 系（signal_union）实测就是这个原因 OOM：
+    # 全A池要加载几千只 × 5 年日线，RSS 到 2.4G 时地址空间先撞 4.5G 上限，
+    # 抛 MemoryError，任务状态却记成「成功但没数据」（2026-11-11 实测）。
+    # 回测侧 routers/strategy.py 早就按 signal_union 只取信号命中过的票，
+    # 同参数下 200 秒能跑完；模拟盘照抄这套即可。
+    pool_mode = str(meta.get("pool_mode") or params.get("pool_mode") or "")
+    membership = None
+    if pool_mode == "signal_union":
+        # 池子已由信号名单限死，引擎不再需要 PIT 成分过滤（传 None 即跳过）
+        sig_key = str(meta.get("signal_key") or params.get("signal_key") or "")
+        union = [r[0] for r in db.execute(
+            select(SignalDaily.symbol).distinct().where(
+                SignalDaily.strategy == sig_key,
+                SignalDaily.date <= end,
+            )
+        ).all()]
+        if not union:
+            raise ValueError(f"选股器 {sig_key} 没有任何历史信号，无法建立股票池")
+    else:
+        membership = _get_membership(db, index_code, sd, end)
+        if not membership:
+            raise ValueError(f"未获取到指数 {index_code} 的时点成分股")
+        union: list[str] = []
+        seen: set = set()
+        for _ds, sset in membership:
+            for s in sset:
+                if s not in seen:
+                    seen.add(s)
+                    union.append(s)
 
     warmup_min = (
         max(
@@ -334,12 +371,21 @@ def run_paper_task(db, task: PaperTask) -> dict:
             "positions": r.get("positions", {}),
             "last_bar_date": r["last_bar_date"],
         }
+    except MemoryError:
+        # str(MemoryError()) == ""，被下面的 except Exception 接住就会写出
+        # 一个空 error_msg —— 看着成功、实际啥也没算（踩过两次）。
+        db.rollback()
+        task.last_run_at = datetime.utcnow()
+        task.error_msg = ("内存超限：策略股票池太大。缩短建账日到今天的区间，"
+                          "或调高 PAPER_MEM_LIMIT_GB")
+        db.commit()
+        return {"ok": False, "error": task.error_msg}
     except Exception as e:  # noqa: BLE001
         db.rollback()
         task.last_run_at = datetime.utcnow()
-        task.error_msg = str(e)[:255]
+        task.error_msg = f"{type(e).__name__}: {str(e)}"[:255]
         db.commit()
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": task.error_msg}
 
 
 def _paper_fa_blob(task) -> dict:

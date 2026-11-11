@@ -8,7 +8,7 @@ import { Badge, Card, PageHeader } from "../components/ui";
 import EChart from "../components/EChart";
 import DigestCard from "../components/DigestCard";
 import HotBriefCard from "../components/HotBriefCard";
-import { agentApi, api, get, newsApi, AgentState, KlineBar, NewsFeed } from "../api/client";
+import { agentApi, api, get, newsApi, signalApi, AgentState, BuildPool, KlineBar, NewsFeed } from "../api/client";
 import { localDate } from "../utils/date";
 import { formatPrice2, klineTooltip } from "../utils/klineTooltip";
 import { useTheme } from "../theme";
@@ -57,6 +57,9 @@ export default function TodayPage() {
   const [idxQuotes, setIdxQuotes] = useState<{ name: string; price: number; pct: number }[]>([]);
   // K 线抽屉
   const [drawer, setDrawer] = useState<{ symbol: string; name: string } | null>(null);
+  // 动作卡 → 建模拟盘。口径（2026-11-11 老刘拍板）：一卡几十只票，建「票最多的那个
+  // xq 策略」的跟踪盘；逐只建会让组合表爆炸，而 xq 策略的规则本来就是「跟着它做」。
+  const [buildFor, setBuildFor] = useState<{ key: string; label: string; acts: string[] } | null>(null);
   const [bars, setBars] = useState<KlineBar[]>([]);
   const [drawerLoading, setDrawerLoading] = useState(false);
 
@@ -219,7 +222,8 @@ export default function TodayPage() {
       {/* —— 动作汇总卡 —— */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
         {CARD_DEFS.map((c) => (
-          <button key={c.key} onClick={() => setFilter(c.key)} style={{
+          <div key={c.key} onClick={() => setFilter(c.key)} style={{
+            position: "relative",
             background: colors.card, border: `1px solid ${filter === c.key ? colors.accent : colors.border}`,
             borderLeft: `3px solid ${c.color}`, borderRadius: 12, padding: "10px 16px",
             cursor: "pointer", textAlign: "left", color: colors.text,
@@ -228,7 +232,18 @@ export default function TodayPage() {
               {counts[c.key]?.length ?? 0}
             </div>
             <div style={{ fontSize: 12, color: colors.muted }}>{c.label}</div>
-          </button>
+            {/* 只有「买入 / 关注」能建盘：减仓/卖出是退出信号，建盘没有意义 */}
+            {(c.key === "buy" || c.key === "watch") && (counts[c.key]?.length ?? 0) > 0 && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setBuildFor({ key: c.key, label: c.label, acts: c.acts }); }}
+                style={{
+                  position: "absolute", right: 10, bottom: 10,
+                  border: `1px solid ${c.color}55`, background: `${c.color}0f`, color: c.color,
+                  borderRadius: 6, padding: "2px 8px", fontSize: 11, cursor: "pointer",
+                }}
+              >建盘 →</button>
+            )}
+          </div>
         ))}
       </div>
 
@@ -344,6 +359,214 @@ export default function TodayPage() {
       {/* 策略体检（数据新鲜度 / OOS 门禁 / 成本口径）已搬到「策略研究 → 总览」。
           它是研发期一周看一次的检查，压在首页最底部只会把「今天做什么」挤下去。
           设计文档 08 节：这一页不负责自检，只负责今天该干什么。 */}
+
+      {buildFor && (
+        <BuildPoolModal
+          card={buildFor}
+          date={date}
+          colors={colors}
+          onClose={() => setBuildFor(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ================= 动作卡 → 建模拟盘 ================= */
+
+/**
+ * 口径（2026-11-11 老刘拍板）：一卡几十只票，建「票最多的那个 xq 策略」的跟踪盘。
+ *
+ * 为什么不逐只建：几十个单标的任务会把组合表冲垮，而且第二天就没人看得过来。
+ * 为什么是「票最多的那个策略」：xq 策略的规则本来就是「跟着这个选股器做」，
+ * 今天这批里属于它的那部分正好是它当日的信号；剩下的是别的东西混进来的。
+ *
+ * 必须讲清楚的一点：建出来的盘**不是**把今天这几十只一次性买进去，
+ * 它按策略自己的规则调仓（每 5 个交易日一期、单期最多 20 只）。
+ * 所以弹层里要把这句话写出来，否则会以为点完就把票全买了。
+ */
+function BuildPoolModal({ card, date, colors, onClose }: {
+  card: { key: string; label: string; acts: string[] };
+  date: string;
+  colors: ReturnType<typeof useTheme>["colors"];
+  onClose: () => void;
+}) {
+  const [pool, setPool] = useState<BuildPool | null>(null);
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [done, setDone] = useState<number | null>(null);
+
+  useEffect(() => {
+    signalApi.buildPool(date, card.acts).then((p) => {
+      setPool(p);
+      const rec = p.recommended;
+      if (rec) {
+        // 任务名带日期，避免同一天点两次撞「任务名称已存在」
+        setName(`信号跟踪 · ${rec.cname} · ${(p.date || date).slice(5).replace("-", "")}`);
+      }
+    }).catch((e) => setErr((e as Error).message));
+  }, [date, card.acts]);
+
+  const rec = pool?.recommended ?? null;
+
+  const submit = async () => {
+    if (!rec?.strategy_key) return;
+    setBusy(true); setErr("");
+    try {
+      const t = await api.paperCreate({
+        name: name.trim(),
+        strategy_key: rec.strategy_key,
+        kind: "portfolio",
+        index_code: "399317",
+        initial_cash: 1_000_000,
+        // 与回测默认口径一致（万2.5 + 万1滑点），不传就会静默落到别的默认值
+        commission: 0.00025,
+        slippage: 0.0001,
+        adj: "qfq",
+        enabled: true,
+      });
+      setDone(t.id);
+      // 建完立刻跑一遍，否则要等下一个调度周期才看到净值
+      api.paperRun(t.id).catch(() => {});
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const ov: React.CSSProperties = {
+    position: "fixed", inset: 0, background: "rgba(8,12,20,.55)",
+    display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60,
+  };
+
+  return (
+    <div style={ov}>
+      <div style={{
+        width: 540, maxWidth: "92vw", background: colors.card, color: colors.text,
+        borderRadius: 14, border: `1px solid ${colors.border}`, padding: 22,
+        boxShadow: "0 18px 48px rgba(0,0,0,.28)",
+      }}>
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>
+          建模拟盘 · {card.label} {pool ? `${pool.total} 只` : ""}
+        </div>
+        <div style={{ fontSize: 12, color: colors.muted, lineHeight: 1.8 }}>
+          按「这批票里命中最多的那个策略」建一个跟踪盘
+        </div>
+
+        {!pool && !err && (
+          <div style={{ padding: "28px 0", textAlign: "center", color: colors.muted, fontSize: 13 }}>
+            正在统计这批票的策略分布…
+          </div>
+        )}
+
+        {err && (
+          <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 8,
+            background: `${colors.up}12`, border: `1px solid ${colors.up}44`, color: colors.up, fontSize: 12.5 }}>
+            {err}
+          </div>
+        )}
+
+        {pool && !rec && !done && (
+          <div style={{ marginTop: 14, fontSize: 12.5, color: colors.muted, lineHeight: 1.9 }}>
+            这批票没有命中可回测的 xq 策略（可能是弱分级、或信号来自已下线选股器），
+            建不了跟踪盘。
+          </div>
+        )}
+
+        {pool && rec && !done && (
+          <>
+            <div style={{
+              marginTop: 14, padding: "12px 14px", borderRadius: 10,
+              border: `1px solid ${colors.accent}44`, background: `${colors.accent}0d`,
+            }}>
+              <div style={{ fontSize: 12, color: colors.muted }}>主策略（票最多）</div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 3 }}>
+                <b style={{ fontSize: 15 }}>{rec.cname}</b>
+                <span style={{ fontSize: 12, color: colors.muted }}>
+                  {rec.count} / {pool.total} 只 · 回测入口 <code>{rec.strategy_key}</code>
+                </span>
+              </div>
+              {rec.others ? (
+                <div style={{ marginTop: 6, fontSize: 11.5, color: colors.muted, lineHeight: 1.7 }}>
+                  另外 {rec.others} 只不在这个策略的规则里，建盘后不会被自动买入 ——
+                  它们属于别的选股器或已被过滤。
+                </div>
+              ) : null}
+            </div>
+
+            {pool.distribution.length > 1 && (
+              <div style={{ marginTop: 10, fontSize: 11.5, color: colors.muted, lineHeight: 1.9 }}>
+                分布：
+                {pool.distribution.map((x) => (
+                  <span key={x.cname} style={{ marginLeft: 8 }}>
+                    {x.cname} {x.count}
+                    {!x.strategy_key && <span style={{ color: colors.up }}>（不可建盘）</span>}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 11.5, color: colors.muted, marginBottom: 5 }}>任务名</div>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                style={{
+                  width: "100%", boxSizing: "border-box", padding: "8px 10px",
+                  borderRadius: 8, border: `1px solid ${colors.border}`,
+                  background: colors.bg, color: colors.text, fontSize: 13,
+                }}
+              />
+            </div>
+
+            <div style={{
+              marginTop: 12, padding: "9px 12px", borderRadius: 8,
+              background: colors.bg, border: `1px solid ${colors.border}`,
+              fontSize: 11.5, color: colors.muted, lineHeight: 1.75,
+            }}>
+              ⚠️ 建出来的盘<b>不是</b>把今天这 {pool.total} 只一次性买进去。
+              它按 {rec.cname} 的规则自己调仓（每 5 个交易日一期，单期最多 20 只），
+              初始资金 100 万，费率万2.5 + 万1 滑点。
+            </div>
+          </>
+        )}
+
+        {done != null && (
+          <div style={{ marginTop: 16, padding: "14px 16px", borderRadius: 10,
+            background: `${colors.down}12`, border: `1px solid ${colors.down}44`, fontSize: 12.5, lineHeight: 1.9 }}>
+            ✅ 已建盘（任务 #{done}），正在跑第一遍净值。
+            <div style={{ marginTop: 6 }}>
+              <a
+                href="#paper"
+                onClick={onClose}
+                style={{ color: colors.accent, textDecoration: "none", fontWeight: 600 }}
+              >去组合跟踪看 →</a>
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+          <button onClick={onClose} style={{
+            padding: "7px 16px", borderRadius: 8, border: `1px solid ${colors.border}`,
+            background: "transparent", color: colors.text, cursor: "pointer", fontSize: 12.5,
+          }}>{done != null ? "关闭" : "取消"}</button>
+          {pool && rec && done == null && (
+            <button
+              onClick={submit}
+              disabled={busy || !name.trim()}
+              style={{
+                padding: "7px 18px", borderRadius: 8, border: 0,
+                background: busy || !name.trim() ? colors.tableStripe : colors.accent,
+                color: busy || !name.trim() ? colors.muted : "#fff",
+                cursor: busy || !name.trim() ? "not-allowed" : "pointer",
+                fontSize: 12.5, fontWeight: 600,
+              }}
+            >{busy ? "建盘中…" : "建盘并运行"}</button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
