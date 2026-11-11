@@ -51,6 +51,40 @@ _done: set[str] = set()          # 已完成（成功）的时间点（形如 20
 _retry: dict[str, dict] = {}     # 失败重试记账：key -> {attempts, last_ts}
 
 _COOL_FILE = Path(settings.wechat_data_dir) / "state" / "collect_cooldown.json"
+_DONE_FILE = Path(settings.wechat_data_dir) / "state" / "collect_done.json"
+
+
+def _load_done() -> set[str]:
+    """读「今天哪些 slot 已经成功跑过」的落盘记录。
+
+    为什么必须落盘：_done 原来是纯内存，容器一重启就清空，而 slot 只要还在
+    补跑窗口内（_CATCHUP_HOURS）就会被重新触发。2026-11-12 凌晨连着重启三次，
+    06:20 那轮采集跟着重复跑了三次 —— 每次约 10 分钟，还白撞一轮限流。
+    """
+    import json
+    import time
+
+    try:
+        items = json.loads(_DONE_FILE.read_text(encoding="utf-8")).get("done") or []
+        today = time.strftime("%Y-%m-%d")
+        return {str(k) for k in items if str(k).startswith(today)}
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _save_done() -> None:
+    import json
+    import time
+
+    try:
+        _DONE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _DONE_FILE.write_text(
+            json.dumps({"done": sorted(_done), "saved_at": time.time()},
+                       ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _load_cooldown() -> float:
@@ -225,6 +259,7 @@ def _loop(enabled: bool) -> None:
                     with _lock:
                         if ok:
                             _done.add(key)
+                            _save_done()
                             _retry.pop(key, None)
                             _status["last_success"] = datetime.now().isoformat(timespec="seconds")
                             _status["last_summary"] = msg
@@ -265,6 +300,9 @@ def start_wechat_scheduler(enabled: bool | None = None) -> threading.Thread:
         enabled = settings.wechat_schedule
     with _lock:
         _status["enabled"] = enabled
+        # 重启不丢「今天已跑过」——否则只要还在补跑窗口内就会重跑一遍采集
+        # 用 update 而不是 |= ：函数里对模块级 set 用 |= 会被当成局部变量重新绑定
+        _done.update(_load_done())
     t = threading.Thread(target=_loop, args=(enabled,), daemon=True, name="wechat-scheduler")
     t.start()
     _sched_thread = t
