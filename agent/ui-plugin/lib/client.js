@@ -190,11 +190,71 @@ window.__ModuleLoader__.load({
 		 *  内置的预设切换器用的就是它。所以现在点角色 = 开一个绑定该 persona 的
 		 *  新会话，并把开场白预填进去：系统提示词、工具白名单、开场白一起生效。
 		 */
+		/** 问题关键词 → 该由谁接（零 token 的规则路由）。
+		 *
+		 *  设计文档 09 节：「不列 8 个数字人让人选，**选人由编排器决定**」。
+		 *  完整的 ask 工作流（多 persona 并行取证）还没做，这里先落最轻的一半：
+		 *  用户打字时实时判断「这问题该问谁」，给一个一键切换的推荐。
+		 *  不拦截发送 —— 用户直接回车仍走通用助手（14 个工具全开，P0 已把
+		 *  提示词改成投研助手），推荐只是把更专业的那条路摆在手边。
+		 *
+		 *  为什么用规则不用模型：这层要可复现、零成本、不因为 API 抖动停摆
+		 *  （设计文档 05 节对编排层的三条要求）。关键词表跟着 persona 的 hint 走，
+		 *  改 persona 时一起改。
+		 */
+		const ROUTE_WORDS = {
+			strategy: ["策略", "回测", "超额", "回撤", "夏普", "胜率", "值不值得",
+				"jk", "chan", "缠论", "海龟", "双参数", "rps", "突破", "定增"],
+			risk: ["降级", "退役", "风险", "最坏", "止损", "仓位上限", "该不该停"],
+			data: ["数据", "滞后", "哪张表", "表新", "齐不齐", "etl", "采集", "因子截面"],
+			news: ["市场在交易", "主线", "资讯", "新闻", "消息面", "热点", "发生了什么"],
+			ops: ["服务", "任务", "漏跑", "跑了没", "告警", "调度", "容器", "挂了"],
+			factor: ["因子", "ic", "预测力", "t 值", "t值", "有效性", "信号质量", "衰减"],
+			portfolio: ["配比", "组合", "怎么配", "上多少", "资金", "权重"],
+			trader: ["模拟盘", "持仓", "净值", "成交", "换手", "建盘"],
+		};
+
+		/** 一句话 → 最匹配的角色；一个词都不命中就返回 null（走通用助手）。 */
+		function routeText(text) {
+			const s = String(text || "").toLowerCase();
+			if (s.trim().length < 3) return null;
+			let best = null;
+			let bestN = 0;
+			for (const [key, words] of Object.entries(ROUTE_WORDS)) {
+				let n = 0;
+				for (const w of words) if (s.indexOf(w) >= 0) n += 1;
+				if (n > bestN) {
+					bestN = n;
+					best = key;
+				}
+			}
+			return best ? ROLES.find((r) => r.key === best) || null : null;
+		}
+
 		function RoleDock({ uiWorkspace }) {
 			const [picked, setPicked] = react.useState(null);
 			const [note, setNote] = react.useState("");
 			// 8 个角色默认收起：默认形态是「给第一句」（见下面 head 的注释）
 			const [open, setOpen] = react.useState(false);
+			// 输入框里的草稿（用于实时推荐角色）——dsh 的 composer 是 Lexical，
+			// 只能从 DOM 读；input 和 keyup 都挂，Lexical 有时只发其中一个。
+			const [draft, setDraft] = react.useState("");
+
+			react.useEffect(() => {
+				const read = () => {
+					const el = document.querySelector("[data-composer-input]");
+					setDraft(el ? el.innerText || "" : "");
+				};
+				read();
+				document.addEventListener("input", read, true);
+				document.addEventListener("keyup", read, true);
+				return () => {
+					document.removeEventListener("input", read, true);
+					document.removeEventListener("keyup", read, true);
+				};
+			}, []);
+
+			const suggest = picked ? null : routeText(draft);
 
 			const base = {
 				border: "1px solid var(--dsh-border, rgba(128,128,128,.28))",
@@ -283,6 +343,39 @@ window.__ModuleLoader__.load({
 				);
 			};
 
+			// 三种形态：已选角色 / 有草稿且能判断该问谁 → 推荐一键切换 / 空态给三个示例
+			const body = [];
+			if (picked) {
+				// 标签已经显示「已选：X」，这里不再放东西
+			} else if (suggest && draft.trim().length >= 3) {
+				body.push(
+					h(
+						"button",
+						{
+							key: "__sug",
+							title:
+								"按关键词判断，这类问题更适合「" + suggest.name + "」（" +
+								suggest.hint + "）。点一下：带着你刚写的问题切过去",
+							onClick: () =>
+								void pick(Object.assign({}, suggest, { q: draft.trim().slice(0, 800) })),
+							style: Object.assign({}, base, {
+								borderColor: "var(--dsh-accent, #4c7dff)",
+								background: "rgba(76,125,255,.10)",
+								color: "var(--dsh-accent, #4c7dff)",
+								fontWeight: 600,
+							}),
+						},
+						"→ 推荐：" + suggest.name
+					)
+				);
+			} else {
+				body.push(
+					starter("strategy", "缠论还值不值得跟"),
+					starter("data", "今天数据齐吗"),
+					starter("ops", "服务正常吗、有任务漏跑吗")
+				);
+			}
+
 			const head = h(
 				"div",
 				{
@@ -293,14 +386,8 @@ window.__ModuleLoader__.load({
 					},
 				},
 				h("span", { key: "__lb", style: { opacity: 0.55, marginRight: 2 } },
-					picked ? "已选：" + picked.name : "试试："),
-				picked
-					? null
-					: [
-							starter("strategy", "缠论还值不值得跟"),
-							starter("data", "今天数据齐吗"),
-							starter("ops", "服务正常吗、有任务漏跑吗"),
-					  ],
+					picked ? "已选：" + picked.name : body.length && suggest ? "判断：" : "试试："),
+				body,
 				h(
 					"button",
 					{
