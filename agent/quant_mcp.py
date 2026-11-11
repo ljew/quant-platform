@@ -164,25 +164,56 @@ def _get_signal_stats(window_days: int = 90, strategy: str = "") -> dict:
 
 
 def _get_signal_actions(date: str | None = None) -> dict:
+    """当日信号动作。
+
+    ⚠️ 2026-11-11 修字段名：原来读 `strategy` / `score`，接口里根本没有这两个键
+    （真实字段是 `strategies`，多选股器用「、」拼成一个串；没有 score）。
+    结果模型每次都说「strategy 字段全为空，查不到命中的选股器」——
+    它没编，是我给错了字段。这类错误不会报错，只会静默返回 null，
+    所以下面的 `--selftest` 之外还得靠「空字段扫描」才发现。
+    """
     try:
+        from collections import Counter
+
         d, url = get("/signal/actions", {"date": date})
         items = d.get("items") or []
+
+        # 一屏答完「今天有多少买入信号、都命中哪个选股器」，不让模型自己数 20 行
+        by_action = Counter(it.get("action") or "?" for it in items)
+        by_strategy: Counter = Counter()
+        for it in items:
+            for nm in (it.get("strategies") or "").split("、"):
+                nm = nm.strip()
+                if nm:
+                    by_strategy[nm] += 1
+
         slim = [
             {
                 "symbol": it.get("symbol"),
                 "name": it.get("name"),
                 "action": it.get("action"),
-                "strategy": it.get("strategy"),
-                "score": it.get("score"),
+                "strategies": it.get("strategies"),
+                "streak": it.get("streak"),
+                "resonance": it.get("resonance"),
+                "tier": it.get("quality_tier"),
+                "reason": it.get("reason"),
             }
             for it in items[:20]
         ]
         missing = [] if items else [f"{d.get('date') or date or '最新交易日'} 没有信号动作"]
         return ok(
-            {"date": d.get("date"), "total": len(items), "top20": slim},
+            {
+                "date": d.get("date"),
+                "total": len(items),
+                "n_by_action": dict(by_action.most_common()),
+                "n_by_picker": dict(by_strategy.most_common()),
+                "top20": slim,
+            },
             f"GET {url}",
             missing=missing,
-            note=f"共 {len(items)} 条，这里只给前 20 条明细。",
+            note=(f"共 {len(items)} 条，top20 只是前 20 条明细；"
+                  "n_by_action / n_by_picker 是全量计数，回答「多少只」直接用它们。"
+                  "strategies 是「、」分隔的多选股器串，统计要拆开。"),
         )
     except Exception as e:  # noqa: BLE001
         return err(e, "GET /signal/actions")
@@ -555,9 +586,37 @@ _TOOL_PATHS: dict[str, str] = {
 }
 
 
+def _null_fields(data) -> list[str]:
+    """找出「每一行都是 null」的字段名。
+
+    这是**字段名写错**的典型症状：接口返回 `strategies`，我读 `strategy`，
+    json 不报错、值就是 null，模型于是老实说「这个字段全为空」——
+    2026-11-11 真踩过（get_signal_actions 的 strategy / score）。
+    selftest 原来只查 ok / missing，查不出这类错误。
+    """
+    from collections import Counter
+
+    rows = data if isinstance(data, list) else [data]
+    rows = [r for r in rows if isinstance(r, dict)]
+    if len(rows) < 2:
+        return []
+    keys = set(rows[0])
+    for r in rows[1:]:
+        keys &= set(r)
+    if not keys:
+        return []
+    seen = Counter()
+    for r in rows:
+        for k in keys:
+            if r.get(k) is None:
+                seen[k] += 1
+    return sorted(k for k in keys if seen[k] == len(rows))
+
+
 def selftest() -> int:
     print(f"API_BASE = {API_BASE}")
     failed = 0
+    warns: list[str] = []
     for name, args, kwargs in _SELFTEST:
         fn = globals()[f"_{name}"]
         t0 = time.perf_counter()
@@ -576,7 +635,16 @@ def selftest() -> int:
         size = len(data) if isinstance(data, (list, dict)) else 1
         miss = res.get("missing") or []
         flag = f"missing={len(miss)}" if miss else "ok"
+        nulls = _null_fields(data)
+        if nulls:
+            # 只预警不算失败：有些字段本来就可能整列为空（如从未跑过的任务）
+            warns.append(f"{name}: {', '.join(nulls)}")
+            flag += "  ⚠ 整列为 None"
         print(f"  ✓ {name:<22} {ms:6.0f}ms  {size} 项  {flag}")
+    if warns:
+        print("\n⚠️ 整列为 None 的字段（多半是字段名与接口不符，去核对一下）：")
+        for w in warns:
+            print(f"   · {w}")
     print(f"\n{9 - failed}/9 通过")
     return 1 if failed else 0
 

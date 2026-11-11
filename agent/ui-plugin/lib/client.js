@@ -266,6 +266,242 @@ window.__ModuleLoader__.load({
 			return h("div", { style: { padding: "0 14px" } }, out);
 		}
 
+		/* ───────────────── 工具卡（设计文档 08 节「需自绘」最后一块）─────────────────
+		 *
+		 * dsh 默认把 MCP 工具调用渲染成「一行 + 可展开的原始 JSON」—— 那是给写代码的人看的。
+		 * 投研场景要的是：这次查了什么、拿到几个数、**缺了什么**、来源和时点。
+		 *
+		 * 插槽契约：`tool.call.toolview` 是 keyed 槽，**key 就是工具名**
+		 * （ui-tool 里 `entryKey: toolName`），命中就替换掉默认卡片。
+		 * 组件拿到的 props（读 ui-tool 源码确认）：
+		 *   toolName / block / sessionId / useSessions / inspect / useDisclosure / t
+		 * block 的两种形态：
+		 *   运行中 { phase: "start"|"preparing"|"running", argsRaw }，没有 kind
+		 *   已完成 { kind, call:{argsRaw}, args, content:[{type:'text',text}], error, meta, isError }
+		 * 结果文本在 content[0].text —— quant-mcp 返回的是 JSON 字符串。
+		 */
+
+		/** 工具名 → 中文标题。只收录平台自己的 11 个，其余走默认卡片。 */
+		const TOOL_CN = {
+			list_strategies: "策略清单",
+			get_backtests: "回测记录",
+			get_signal_stats: "信号有效性",
+			get_signal_actions: "当日信号动作",
+			list_research_cards: "研究卡列表",
+			get_research_card: "研究卡详情",
+			list_paper_tasks: "模拟盘任务",
+			get_framework_health: "框架体检",
+			get_latest_digest: "最新日报",
+			propose_card_transition: "提议改卡状态",
+			create_paper_task: "建模拟盘",
+		};
+
+		/** `mcp__quant__get_backtests` → `get_backtests`；不是 quant 工具返回 null。 */
+		function quantToolName(name) {
+			if (typeof name !== "string") return null;
+			const m = /^mcp__quant__(.+)$/.exec(name);
+			return m ? m[1] : null;
+		}
+
+		function parseJson(text) {
+			try {
+				return JSON.parse(text);
+			} catch (e) {
+				return null;
+			}
+		}
+
+		/** 把任意值压成一行可读文本。 */
+		function flat(v) {
+			if (v === null || v === undefined) return "—";
+			if (typeof v === "number") return Number.isInteger(v) ? String(v) : v.toFixed(2);
+			if (typeof v === "boolean") return v ? "是" : "否";
+			if (typeof v === "string") return v;
+			if (Array.isArray(v)) return `[${v.length}]`;
+			return "{…}";
+		}
+
+		/** 对象 → 前 n 个标量字段的 "k: v" 串；数组取第一条样例。 */
+		function preview(obj, n) {
+			if (!obj || typeof obj !== "object") return [];
+			const rows = [];
+			for (const k of Object.keys(obj)) {
+				const v = obj[k];
+				// 一层 dict 展开成 `NEW=49 · WATCH=5`：n_by_action / n_by_picker
+				// 这类计数最关键，直接跳过等于把答案藏起来。
+				if (v && typeof v === "object" && !Array.isArray(v)) {
+					const inner = Object.entries(v)
+						.filter(([, vv]) => vv === null || typeof vv !== "object")
+						.slice(0, 6)
+						.map(([kk, vv]) => `${kk}=${flat(vv)}`)
+						.join(" · ");
+					if (inner) rows.push([k, inner]);
+					if (rows.length >= n) break;
+					continue;
+				}
+				if (Array.isArray(v)) {
+					rows.push([k, `${v.length} 条`]);
+					if (v.length && v[0] && typeof v[0] === "object") {
+						const first = Object.entries(v[0])
+							.filter(([, vv]) => vv === null || typeof vv !== "object")
+							.slice(0, 4)
+							.map(([kk, vv]) => `${kk}=${flat(vv)}`)
+							.join(" · ");
+						if (first) rows.push(["  └ 如", first]);
+					}
+				} else {
+					rows.push([k, flat(v)]);
+				}
+				if (rows.length >= n) break;
+			}
+			return rows;
+		}
+
+		const C = {
+			border: "var(--dsh-border, rgba(128,128,128,.26))",
+			ok: "#16a34a",
+			bad: "#dc2626",
+			warn: "#d97706",
+			accent: "#4c7dff",
+		};
+
+		/** quant 工具卡：一行摘要 + 展开看数据、缺口、来源。 */
+		function QuantToolCard({ toolName, block }) {
+			const [open, setOpen] = react.useState(false);
+			const short = quantToolName(toolName) || toolName;
+			const title = TOOL_CN[short] || short;
+
+			const done = block && "kind" in block;
+			const rawArgs = done
+				? (block.call && block.call.argsRaw) || ""
+				: (block && block.argsRaw) || "";
+			// ⚠️ 优先解析 argsRaw，不要用 block.args —— 已完成的 block 里
+			// block.args 存的是流式元数据（{chunks:[1], sealed:true}），
+			// 真正的调用参数只有 call.argsRaw 那份 JSON 才对。
+			const args = parseJson(rawArgs) || (block && block.args) || {};
+			const argLine = Object.entries(args)
+				.filter(([, v]) => v !== null && v !== undefined && v !== "")
+				.map(([k, v]) => `${k}=${flat(v)}`)
+				.join(" · ");
+
+			const text = done && Array.isArray(block.content) && block.content[0]
+				? block.content[0].text || ""
+				: "";
+			const payload = done ? parseJson(text) : null;
+			const failed = done && (block.isError || (payload && payload.ok === false) || block.error);
+			const missing = (payload && payload.missing) || [];
+			const tone = failed ? C.bad : missing.length ? C.warn : C.ok;
+
+			const head = react.createElement(
+				"div",
+				{
+					onClick: () => setOpen((v) => !v),
+					style: {
+						display: "flex", alignItems: "center", gap: 8,
+						padding: "5px 10px", cursor: "pointer", fontSize: 12.5,
+						borderRadius: 8, border: "1px solid " + C.border,
+						// 淡底色：dsh 默认的工具行是纯文本，容易跟正文糊在一起；
+						// 给一层极浅的底，扫读时能一眼分出「这是查数、那是结论」。
+						background: "rgba(128,128,128,.06)",
+					},
+				},
+				react.createElement("span", {
+					style: { width: 6, height: 6, borderRadius: 99, background: tone, flexShrink: 0 },
+				}),
+				react.createElement("span", { style: { fontWeight: 600 } }, title),
+				react.createElement(
+					"span",
+					{ style: { opacity: 0.5, fontSize: 11 } },
+					done ? (failed ? "失败" : missing.length ? "有缺口" : "完成") : "运行中…"
+				),
+				argLine
+					? react.createElement(
+							"span",
+							{
+								style: {
+									opacity: 0.55, fontSize: 11, flex: 1, minWidth: 0,
+									overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+								},
+								title: argLine,
+							},
+							argLine
+					  )
+					: react.createElement("span", { style: { flex: 1 } }),
+				react.createElement("span", { style: { opacity: 0.4, fontSize: 11 } },
+					open ? "收起" : "展开")
+			);
+
+			if (!open) return head;
+
+			const body = [];
+			if (failed) {
+				body.push(react.createElement("div", {
+					key: "err",
+					style: { color: C.bad, fontSize: 12, marginTop: 6, lineHeight: 1.7 },
+				}, "× " + ((payload && payload.error) || (block.error && block.error.message) || "调用失败")));
+			}
+			// 缺口标黄 —— 设计文档 08 节那条：缺哪段就明写，不许用「一般来说」补
+			if (missing.length) {
+				body.push(react.createElement("div", {
+					key: "miss",
+					style: {
+						marginTop: 6, padding: "6px 9px", borderRadius: 6, fontSize: 11.5,
+						lineHeight: 1.7, color: C.warn,
+						border: "1px solid " + C.warn + "55", background: C.warn + "12",
+					},
+				}, "⚠ 没拿到：" + missing.join("；")));
+			}
+			if (payload && payload.data !== undefined) {
+				const rows = preview(payload.data, 8);
+				if (rows.length) {
+					body.push(react.createElement("div", {
+						key: "data",
+						style: { marginTop: 6, fontSize: 11.5, lineHeight: 1.85 },
+					}, rows.map(([k, v], i) => react.createElement("div", {
+						key: i,
+						style: { display: "flex", gap: 8 },
+					}, [
+						react.createElement("span", {
+							key: "k", style: { opacity: 0.55, minWidth: 96, flexShrink: 0 },
+						}, k),
+						react.createElement("span", {
+							key: "v", style: { wordBreak: "break-all" },
+						}, v),
+					]))));
+				}
+			} else if (text) {
+				body.push(react.createElement("pre", {
+					key: "raw",
+					style: {
+						marginTop: 6, fontSize: 11, maxHeight: 180, overflow: "auto",
+						whiteSpace: "pre-wrap", wordBreak: "break-all", opacity: 0.8,
+					},
+				}, text.slice(0, 2000)));
+			}
+			if (payload && (payload.source || payload.as_of)) {
+				body.push(react.createElement("div", {
+					key: "src",
+					style: { marginTop: 6, fontSize: 10.5, opacity: 0.45 },
+				}, [payload.source, payload.as_of, payload.note]
+					.filter(Boolean)
+					.join(" · ")
+					.slice(0, 220)));
+			}
+
+			return react.createElement("div", null, [head, ...body]);
+		}
+
+		/* dsh 里模型看到的工具名可能是带前缀的 mcp__quant__x，也可能被剥成 x。
+		 * 两种都注册一份，命中哪个都能用上。 */
+		function quantToolKeys() {
+			const keys = [];
+			for (const k of Object.keys(TOOL_CN)) {
+				keys.push("mcp__quant__" + k);
+				keys.push(k);
+			}
+			return keys;
+		}
+
 		function apply(ctx) {
 			ctx.slots.inject("sidebar.brand.name", function* () {
 				yield ctx.slots.register(
@@ -278,6 +514,16 @@ window.__ModuleLoader__.load({
 					{ name: "conversation.input.dock", id: "quant-roles", order: -10 },
 					RoleDock
 				);
+			});
+			// 工具卡：keyed 槽，key = 工具名。11 个 quant 工具各注册一份，
+			// 命中就替换掉 dsh 默认的「原始 JSON」卡片。
+			ctx.slots.inject("tool.call.toolview", function* () {
+				for (const key of quantToolKeys()) {
+					yield ctx.slots.register(
+						{ name: "tool.call.toolview", key },
+						QuantToolCard
+					);
+				}
 			});
 		}
 
