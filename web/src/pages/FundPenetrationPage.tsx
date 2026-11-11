@@ -13,6 +13,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Btn, Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
 import EChart from "../components/EChart";
 import FundStylePanel from "../components/FundStylePanel";
+import FundPenetrationGuide from "../components/FundPenetrationGuide";
 import { get } from "../api/client";
 import { useTheme } from "../theme";
 
@@ -538,6 +539,8 @@ export default function FundPenetrationPage() {
         desc="双轨隔离口径：披露值与继承值分开存、分开展示，继承值只用于行业结构分母校正"
       />
 
+      <FundPenetrationGuide />
+
       {/* completed 为 null 表示「池规模未知」（主库被容器占用时读不到），
           此时不能当成「未完成」渲染 —— total 为 null 会直接把整页打崩 */}
       {ov.fetch_progress && ov.fetch_progress.completed === false
@@ -564,7 +567,7 @@ export default function FundPenetrationPage() {
       )}
 
       {nc && (
-        <Card title={`当日估算截面 · 截至 ${fmtDate(nc.as_of)}`} colors={colors}
+        <Card id="sec-nowcast" title={`当日估算截面 · 截至 ${fmtDate(nc.as_of)}`} colors={colors}
           extra={<span style={{ fontSize: 11, color: colors.muted }}>
             锚点 {fmtDate(nc.anchor)} · 已补齐 {nc.stale_days} 天 · 每日 22:10 重算
           </span>}>
@@ -650,7 +653,7 @@ export default function FundPenetrationPage() {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
-        <Card title="年报/半年报 vs 一季报：披露完整度（按年中位）" colors={colors}
+        <Card id="sec-coverage" title="年报/半年报 vs 一季报：披露完整度（按年中位）" colors={colors}
           extra={<span style={{ fontSize: 11, color: colors.muted }}>蓝=完整披露 / 浅=仅前十大</span>}>
           {repairOption && <EChart option={repairOption} height={260} />}
         </Card>
@@ -681,7 +684,7 @@ export default function FundPenetrationPage() {
         </Card>
       </div>
 
-      <Card title="全市场行业配置：平均权重与补齐贡献" colors={colors}
+      <Card id="sec-industry" title="全市场行业配置：平均权重与补齐贡献" colors={colors}
         extra={<span style={{ fontSize: 11, color: colors.muted }}>蓝=真实披露 / 浅=锚点继承</span>} >
         {marketOption && <EChart option={marketOption} height={430} />}
         <div style={{ fontSize: 11.5, color: colors.muted, marginTop: 6, lineHeight: 1.8 }}>
@@ -696,7 +699,7 @@ export default function FundPenetrationPage() {
 
       <div style={{ height: 14 }} />
 
-      <Card title="行业反查：谁在重仓这个行业" colors={colors}
+      <Card id="sec-reverse" title="行业反查：谁在重仓这个行业" colors={colors}
         extra={<span style={{ fontSize: 11, color: colors.muted }}>与下方单基金钻取互为反向</span>}>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
           <select value={indSel}
@@ -773,11 +776,13 @@ export default function FundPenetrationPage() {
 
       <div style={{ height: 14 }} />
 
-      <FundStylePanel />
+      <div id="sec-style" style={{ scrollMarginTop: 12 }}>
+        <FundStylePanel />
+      </div>
 
       <div style={{ height: 14 }} />
 
-      <Card title="单基金钻取：覆盖度轨迹与行业穿透" colors={colors}
+      <Card id="sec-drill" title="单基金钻取：覆盖度轨迹与行业穿透" colors={colors}
         extra={<span style={{ fontSize: 11, color: colors.muted }}>{fd ? `${fd.name} · ${fd.ts_code}` : ""}</span>}>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
           <input value={query} onChange={(e) => setQuery(e.target.value)}
@@ -882,7 +887,7 @@ export default function FundPenetrationPage() {
       {fd?.regression?.available && (
         <>
           <div style={{ height: 14 }} />
-          <Card title="净值回归校验 · 第三轨交叉验证" colors={colors}
+          <Card id="sec-nav" title="净值回归校验 · 第三轨交叉验证" colors={colors}
             extra={<span style={{ fontSize: 11, color: colors.muted }}>回归结果不覆盖主口径，只作验证</span>}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(145px,1fr))",
               gap: 10, marginBottom: 14 }}>
@@ -931,7 +936,7 @@ export default function FundPenetrationPage() {
       {fd?.regulatory?.available && (
         <>
           <div style={{ height: 14 }} />
-          <Card title="监管披露校验 · 第四轨（证监会行业配置）" colors={colors}
+          <Card id="sec-reg" title="监管披露校验 · 第四轨（证监会行业配置）" colors={colors}
             extra={<span style={{ fontSize: 11, color: colors.muted }}>
               总仓位来源：{fd.current.equity_source === "regulatory" ? "监管披露值" : "锚点回退"}
             </span>}>
@@ -1074,7 +1079,7 @@ export default function FundPenetrationPage() {
       {ov.method && (
         <>
           <div style={{ height: 14 }} />
-          <Card title="方法与口径 · 数据怎么来 / 怎么补 / 怎么穿透" colors={colors}
+          <Card id="sec-method" title="方法与口径 · 数据怎么来 / 怎么补 / 怎么穿透" colors={colors}
             extra={<span style={{ fontSize: 11, color: colors.muted }}>{ov.method.version}</span>}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(215px,1fr))", gap: 10 }}>
               {ov.method.steps.map((s) => (

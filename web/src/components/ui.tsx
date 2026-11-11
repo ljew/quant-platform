@@ -4,6 +4,7 @@ import { ThemeColors } from "../theme";
 /** 投研平台设计系统：统一卡片/指标/徽章/页头。 */
 
 export function Card({
+  id,
   title,
   extra,
   children,
@@ -12,6 +13,8 @@ export function Card({
   style,
   bodyStyle,
 }: {
+  /** 锚点 id：供页面内「跳到某一块」跳转使用（会配套 scrollMarginTop）。 */
+  id?: string;
   title?: ReactNode;
   extra?: ReactNode;
   children: ReactNode;
@@ -24,7 +27,9 @@ export function Card({
 }) {
   return (
     <div
+      id={id}
       style={{
+        scrollMarginTop: 12,
         background: colors.card,
         borderRadius: 12,
         border: `1px solid ${colors.border}`,
