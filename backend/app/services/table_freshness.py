@@ -118,8 +118,13 @@ def table_freshness(db, use_cache: bool = True) -> dict:
         try:
             days = (now.date() - date.fromisoformat(latest)).days
         except ValueError:
+            # 日期列里混进了非日期值（2026-11-09 的 '杨逸君' 事件）。原来这里
+            # 降级成 n/a —— 页面上一片灰，看不出「这张表已经不可信」。
+            # 脏值是硬故障：要么数据被写坏了，要么 _pick_col 把非日期列当成了
+            # 日期列（fund 表的 manager 就是典型），两种都要红出来。
             rows.append({"table": name, "date_col": col, "rows": cnt,
-                         "latest": latest, "days_ago": None, "status": "n/a"})
+                         "latest": None, "days_ago": None, "status": "FAIL",
+                         "note": f"日期列 {col} 含非日期值（{str(latest)[:24]}）"})
             continue
 
         kind, warn_d, fail_d = _classify(name, col, cnt)

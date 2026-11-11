@@ -10,7 +10,6 @@ from datetime import date, datetime
 
 from sqlalchemy import select, func
 
-from app.database import SessionLocal
 from app.models import (
     FactorDaily,
     IndexKlineDaily,
@@ -29,11 +28,89 @@ def _mk(name: str, ok: bool | None, value: str, expect: str) -> dict:
             "value": value, "expect": expect}
 
 
+def _shown(latest: str | None, days: int) -> str:
+    """把「最近日期 + 距今天数」拼成一句人话。
+
+    days < 0 有两种含义：无数据（latest 为 None）或列里有脏值（latest 已是
+    一句说明）。两种都不该再拼「(-1天前)」，那会让人以为是未来日期。
+    """
+    if latest is None:
+        return "无数据"
+    if days is None or days < 0:
+        return latest
+    return f"{latest} ({days}天前)"
+
+
 def _latest_date(db, col_model_col) -> tuple[str | None, int]:
-    d = db.execute(select(func.max(col_model_col))).scalar()
+    """某张表日期列的最近一天 + 距今天数。
+
+    ⚠️ 2026-11-09 编排器连崩 3 次（run 311/312/313）的根因就在这里：
+    某张表的日期列里混进了一条非 ISO 值（`'杨逸君'`，基金经理姓名），
+    SQLAlchemy 从 SQLite 读 Date/DateTime 列时走 `fromisoformat` 解析，
+    直接抛 `ValueError: Invalid isoformat string: '杨逸君'`。异常穿透到
+    `orchestrator._run` 的最外层 except → 整条流水线 FAILED，而 error 字段
+    只有那一行天书，**连是哪张表都看不出来**，复盘只能靠猜。
+
+    现在的行为：脏值降级成「该列不可判定」（days=-1，不算新鲜也不算陈旧），
+    value 里直接写出 `表.列=样例值`，一眼能定位。真正的修复动作是清掉脏行，
+    但至少不再让一行脏数据炸掉整个日更。
+    """
+    tbl, cname = col_model_col.table.name, col_model_col.name
+    try:
+        d = db.execute(select(func.max(col_model_col))).scalar()
+    except ValueError:
+        # 列里存在非日期值：单独扫一遍，把样例带出来（不依赖 SQLAlchemy 的类型解析）
+        sample: list[str] = []
+        try:
+            from sqlalchemy import text as _text
+
+            rows = db.execute(_text(
+                f'select "{cname}" from "{tbl}" '
+                f'where "{cname}" is not null '
+                f"and \"{cname}\" not glob '[0-9][0-9][0-9][0-9]-[0-9][0-9]-*' "
+                f"limit 3"
+            )).fetchall()
+            sample = [str(r[0])[:24] for r in rows]
+        except Exception:  # noqa: BLE001
+            pass
+        shown = "、".join(sample) if sample else "?"
+        return f"脏值 {tbl}.{cname}={shown}", -1
     if not d:
         return None, -1
     return d.isoformat(), (date.today() - d).days
+
+
+def scan_dirty_dates(db) -> list[dict]:
+    """扫一遍关键表日期列里的非法值（编排器 quality 步骤调用，只报不拦）。
+
+    与 `_latest_date` 的容错互补：那边保证不炸，这边负责**说清楚**——
+    哪张表、哪一列、几条、样例值、影响哪一段。
+    """
+    targets = [
+        (KlineDaily, KlineDaily.trade_date),
+        (IndexKlineDaily, IndexKlineDaily.trade_date),
+        (FactorDaily, FactorDaily.trade_date),
+        (IndexMembership, IndexMembership.trade_date),
+        (PipelineRun, PipelineRun.started_at),
+        (ResearchRun, ResearchRun.started_at),
+    ]
+    from sqlalchemy import text as _text
+
+    out: list[dict] = []
+    for _model, col in targets:
+        tbl, cname = col.table.name, col.name
+        try:
+            row = db.execute(_text(
+                f'select count(*), min("{cname}") from "{tbl}" '
+                f'where "{cname}" is not null '
+                f"and \"{cname}\" not glob '[0-9][0-9][0-9][0-9]-[0-9][0-9]-*'"
+            )).fetchone()
+        except Exception:  # noqa: BLE001
+            continue
+        if row and row[0]:
+            out.append({"table": tbl, "column": cname,
+                        "bad_rows": int(row[0]), "sample": str(row[1])[:24]})
+    return out
 
 
 def health_report(db=None) -> dict:
@@ -57,11 +134,11 @@ def health_report(db=None) -> dict:
         kl_latest, kl_days = _latest_date(db, KlineDaily.trade_date)
         collect_checks.append(_mk("个股K线新鲜度",
                                   kl_days is not None and 0 <= kl_days <= 5,
-                                  f"{kl_latest} ({kl_days}天前)", "≤5 天"))
+                                  _shown(kl_latest, kl_days), "≤5 天"))
         idx_latest, idx_days = _latest_date(db, IndexKlineDaily.trade_date)
         collect_checks.append(_mk("指数K线新鲜度",
                                   idx_days is not None and 0 <= idx_days <= 5,
-                                  f"{idx_latest} ({idx_days}天前)", "≤5 天"))
+                                  _shown(idx_latest, idx_days), "≤5 天"))
 
         # 管道最近一次运行
         try:
@@ -118,20 +195,34 @@ def health_report(db=None) -> dict:
             n_bronze += len([f for f in files if f.endswith(".parquet")])
         collect_checks.append(_mk("Bronze 分区文件", n_bronze > 0, f"{n_bronze} 个 parquet", ">0"))
 
+        # 日期列里混进非日期值（2026-11-09 让编排器连崩 3 次的那类问题）。
+        # 单独成项：不炸流水线，但要能在健康分和「未过项」里看见。
+        dirty = scan_dirty_dates(db)
+        collect_checks.append(_mk(
+            "日期列合法性",
+            not dirty,
+            "全部合法" if not dirty else
+            "；".join(f"{d['table']}.{d['column']} {d['bad_rows']} 条（{d['sample']}）"
+                      for d in dirty[:3]),
+            "无非法日期值"))
+
         # ========== 处理层 ==========
         process_checks: list[dict] = []
         fa_latest, fa_days = _latest_date(db, FactorDaily.trade_date)
         process_checks.append(_mk("因子截面新鲜度",
                                   fa_days is not None and 0 <= fa_days <= 6,
-                                  f"{fa_latest} ({fa_days}天前)", "≤6 天"))
+                                  _shown(fa_latest, fa_days), "≤6 天"))
         fa_rows = db.execute(select(func.count()).select_from(FactorDaily)).scalar() or 0
         process_checks.append(_mk("因子覆盖率", fa_rows >= 1000, f"{fa_rows:,} 行", "≥1,000"))
 
         mem_latest, mem_days = _latest_date(db, IndexMembership.trade_date)
         this_month = date.today().replace(day=1).isoformat()
+        # mem_latest 在脏值情况下是一句说明而不是日期，不能直接比大小
+        # （中文码点比数字大，'脏值…' >= '2026-11-01' 会意外判成 True）
         process_checks.append(_mk("成分快照月更",
-                                  mem_latest is not None and mem_latest >= this_month,
-                                  str(mem_latest), f"≥{this_month}"))
+                                  mem_days >= 0 and mem_latest is not None
+                                  and mem_latest >= this_month,
+                                  _shown(mem_latest, mem_days), f"≥{this_month}"))
 
         # 最近质检报告（Silver 层）
         try:
