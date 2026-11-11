@@ -749,6 +749,24 @@ class FactorRegistry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+
+
+class FactorWorkset(Base):
+    """少而正交工作集薄表（W48-1）：挂注册表主键，不加第四态。"""
+
+    __tablename__ = "factor_workset"
+    __table_args__ = (UniqueConstraint("registry_id", name="uq_fw_registry"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    registry_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    added_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    note: Mapped[str] = mapped_column(Text, default="")
+    source_mine_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    def __repr__(self):
+        return f"<FactorWorkset registry={self.registry_id}>"
+
+
 class FactorMinedDaily(Base):
     """启用挖掘因子的日频截面值（长表）。"""
 
