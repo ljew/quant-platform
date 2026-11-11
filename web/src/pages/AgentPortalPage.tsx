@@ -215,9 +215,13 @@ export default function AgentPortalPage() {
                 >{r.name}</button>
               );
             })}
-            {role && (
+            {role ? (
               <span style={{ fontSize: 11.5, color: colors.muted, marginLeft: 4 }}>
                 {role.hint}
+              </span>
+            ) : (
+              <span style={{ fontSize: 11, color: colors.muted, marginLeft: 4 }}>
+                ← 点一个角色开始。左侧历史会话是 dsh 以前工作区留下的，与量化无关，忽略即可
               </span>
             )}
           </div>

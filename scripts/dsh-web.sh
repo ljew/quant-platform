@@ -28,7 +28,9 @@ case "${1:-start}" in
     mkdir -p "$(dirname "$LOG")"
     # 只保留最近一次启动的输出，避免后端读到旧 token
     : > "$LOG"
-    cd "$HOME" || exit 1
+    # cwd 决定 dsh 的工作区分组（会话目录名按 cwd 生成）。从 $HOME 起会让
+    # 左侧「工作区」挂着别的项目；从仓库根起，新会话才落在 quant-platform 下。
+    cd "$HOME/quant-platform" || exit 1
     nohup "$DSH" web --no-open \
       --public-url "$PUBLIC_URL" \
       --trusted-host localhost:8000 \
