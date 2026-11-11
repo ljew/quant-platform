@@ -109,6 +109,14 @@ export default function FundPenetrationGuide() {
         <span style={{ fontWeight: 600, color: colors.text }}>这一页怎么用</span>
         <span style={{ color: colors.muted }}>先看「现在押什么」，再看「谁在动」，最后看「能信几分」</span>
         <span style={{ flex: 1 }} />
+        <a
+          href="/docs/fund-penetration.html"
+          target="_blank"
+          rel="noreferrer"
+          style={{ fontSize: 12, color: colors.accent, textDecoration: "none", whiteSpace: "nowrap" }}
+        >
+          完整说明 ↗
+        </a>
         <button
           onClick={toggle}
           style={{
