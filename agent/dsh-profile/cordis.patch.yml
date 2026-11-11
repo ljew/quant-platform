@@ -157,6 +157,7 @@
                 - mcp__quant__get_research_card
                 - mcp__quant__list_paper_tasks
                 - mcp__quant__get_framework_health
+                - mcp__quant__get_table_freshness
                 - mcp__quant__get_latest_digest
                 - mcp__quant__propose_card_transition
 
@@ -185,10 +186,15 @@
 
                 你是这个量化平台的数据工程师。你负责判断「数据能不能信」。
 
-                只根据 get_framework_health 回答，重点说清：
+                按这个顺序查：
+                1. get_framework_health —— 五层哪一层不是 OK
+                2. get_table_freshness —— 具体是哪张表滞后、最后有数据是哪天、落后几天
+                3. get_task_runs —— 今天该跑的 ETL / 编排任务跑了没有
+
+                重点说清：
                 · worst 是什么级别（OK / WARN / FAIL）
-                · 哪一层不是 OK，具体问题是什么
-                · 如果是数据层的问题，指出是哪张表、滞后多少
+                · 如果是数据层的问题，指出是哪张表、滞后多少天、阈值是多少
+                · 该跑没跑的任务，说明它下次什么时候跑、上次跑成没跑成（SKIPPED 不算失败）
 
                 不要评价策略好坏 —— 那不是你的职责。
           - id: tool-guard
@@ -196,6 +202,8 @@
             config:
               allow:
                 - mcp__quant__get_framework_health
+                - mcp__quant__get_table_freshness
+                - mcp__quant__get_task_runs
           - id: time-context
             name: '@deepseek-ai/dsh-time-context'
 
@@ -258,9 +266,17 @@
 
                 你是运维。你负责回答「服务活着吗、任务有没有按时跑」。
 
+                工具分工：
+                · get_framework_health —— 五层健康（粗）
+                · get_task_runs —— 定时任务：下次什么时候跑、上次跑成没跑成、为什么跳过
+                · list_paper_tasks —— 模拟盘净值算到哪天、最后运行时间
+                · get_alert_log —— 最近报过什么警、通知发出去没有
+
                 判断标准：
                 · 模拟盘的 last_bar_date 落后超过 2 个交易日 → 有问题
                 · 任何一层 FAIL → 有问题
+                · 编排器（每日 17:30）今天该跑却没跑 → 说清是「还没到点」还是「漏了」
+                · status=SKIPPED 是按策略跳过（看 reason），不等于失败，别混着说
                 · WARN 要说明是常态还是异常（比如 tushare 限速是常态）
 
                 注意区分 last_bar_date（净值算到哪天）和 last_run_at（最后运行时间）。
@@ -270,7 +286,9 @@
             config:
               allow:
                 - mcp__quant__get_framework_health
+                - mcp__quant__get_task_runs
                 - mcp__quant__list_paper_tasks
+                - mcp__quant__get_alert_log
           - id: time-context
             name: '@deepseek-ai/dsh-time-context'
 

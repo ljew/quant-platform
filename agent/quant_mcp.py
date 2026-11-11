@@ -9,11 +9,11 @@
   · **每个结果带 source + as_of + missing**：模型能看见「这是哪个接口、什么时候
     取的、缺什么」，才可能在回答里如实说「没查到」。
 
-9 个工具全部只读，一个有副作用的都没有。写操作（create_paper_task /
-propose_card_transition）留到第 3 步，且必须带审批令牌。
+12 个工具里 10 个只读，一个有副作用的都没有（另外 2 个是写操作，走审批）。
+写操作（create_paper_task / propose_card_transition）必须带审批令牌。
 
 自检：
-    python3 agent/quant_mcp.py --selftest    # 9 个工具逐个调通 + 耗时
+    python3 agent/quant_mcp.py --selftest    # 全部工具逐个调通 + 耗时
     python3 agent/quant_mcp.py --check-urls  # 路径与 /openapi.json 逐一核对
     python3 agent/quant_mcp.py               # stdio 启动（给 dsh 用）
 """
@@ -346,6 +346,127 @@ def _get_latest_digest() -> dict:
         return err(e, "GET /factor/brief-digest/latest")
 
 
+# ─────────────────────── 任务 / 数据新鲜度（运维 & 数据工程） ───────────────────────
+# 这两块是「问深了就答不上来」的重灾区：framework-health 只说「数据层 WARN」，
+# 说不出是哪张表、落后几天；paper/tasks 只说「跑了」，说不出「该跑却没跑」。
+# 下面三个工具补的正是这个缺口 —— 仍然只整理平台返回的字段，不做任何计算。
+
+def _digest_run(r: dict | None) -> dict | None:
+    """把一次运行记录裁成模型能用的形状（summary 里的长列表去掉）。"""
+    if not r:
+        return None
+    summ = r.get("summary")
+    keep = None
+    if isinstance(summ, dict):
+        keep = {k: summ[k] for k in ("date", "paused", "reason", "n_strategies")
+                if k in summ} or None
+    return {
+        "id": r.get("id"),
+        "job": r.get("job"),
+        "status": r.get("status"),
+        "started_at": r.get("started_at"),
+        "finished_at": r.get("finished_at"),
+        "error": (str(r.get("error"))[:160] or None) if r.get("error") else None,
+        "summary": keep,
+    }
+
+
+def _get_task_runs(limit: int = 8) -> dict:
+    """定时任务与编排器最近几次运行 —— 回答「该跑的都跑了吗、什么时候跑」。"""
+    try:
+        st, u1 = get("/agent/state")
+        au, u2 = get("/auto/status")
+        sched = st.get("scheduler") or {}
+        org = st.get("orchestrator") or {}
+        recent = [_digest_run(r) for r in (st.get("recent_runs") or [])[:limit]]
+        jobs = [
+            {"job": "orchestrator", "cron": sched.get("run_at"),
+             "next": sched.get("next_run"), "last_run_date": sched.get("last_run_date"),
+             "last": _digest_run(st.get("latest_run")), "last_error": sched.get("last_error")},
+            {"job": "mining", "next": au.get("mining_next"),
+             "last": _digest_run(au.get("last_mining"))},
+            {"job": "review", "next": au.get("review_next"),
+             "last": _digest_run(au.get("last_review"))},
+        ]
+        missing = []
+        if not sched.get("next_run"):
+            missing.append("编排器的下次运行时间（scheduler.next_run 为空）")
+        if not recent:
+            missing.append("编排器历史运行记录（recent_runs 为空）")
+        return ok(
+            {
+                "orchestrator": {
+                    "enabled": sched.get("enabled"),
+                    "cron": sched.get("run_at"),
+                    "next_run": sched.get("next_run"),
+                    "last_run_date": sched.get("last_run_date"),
+                    "running": org.get("running"),
+                    "current_step": org.get("step"),
+                },
+                "jobs": jobs,
+                "recent_orchestrator_runs": recent,
+                "total_auto_runs": au.get("total_runs"),
+                "last_auto_error": au.get("last_error"),
+            },
+            f"GET {u1} + {u2}",
+            missing=missing,
+            note="status=SKIPPED 表示按策略跳过（看 error/summary.reason 的原因），"
+                 "不等于失败。last_run_date 是编排器最后一次『成功记账』的日期。",
+        )
+    except Exception as e:  # noqa: BLE001
+        return err(e, "GET /agent/state + /auto/status")
+
+
+def _get_table_freshness(limit: int = 25) -> dict:
+    """哪些表滞后了 —— 每张表的最后日期、落后天数、阈值判定。"""
+    try:
+        d, url = get("/monitor/table-freshness")
+        tables = d.get("tables") or []
+        bad = [t for t in tables if t.get("status") in ("FAIL", "EMPTY")]
+        bad.sort(key=lambda t: -(t.get("days_ago") or 0))
+        slim = [
+            {"table": t.get("table"), "status": t.get("status"),
+             "latest": t.get("latest"), "days_ago": t.get("days_ago"),
+             "rows": t.get("rows"), "why": t.get("note")}
+            for t in bad[:max(1, min(int(limit), 60))]
+        ]
+        return ok(
+            {"as_of": d.get("as_of"), "worst": d.get("worst"),
+             "grace_days": d.get("grace_days"), "total_tables": d.get("total"),
+             "counts": d.get("counts"), "bad_tables": slim,
+             "bad_total": len(bad), "truncated": len(bad) > len(slim)},
+            f"GET {url}",
+            note="只列 FAIL/EMPTY 的表，正常表只进 counts。EMPTY 可能是「本来就没数据」"
+                 "（如未启用的模块），要结合 why 字段判断，不要一律当成故障。",
+        )
+    except Exception as e:  # noqa: BLE001
+        return err(e, "GET /monitor/table-freshness")
+
+
+def _get_alert_log(days: int = 3, level: str = "", limit: int = 20) -> dict:
+    """告警发送记录（邮件/渠道），回答「出过什么事、通知发出去没有」。"""
+    try:
+        d, url = get("/monitor/alert-log", {"days": int(days)})
+        items = d.get("items") or []
+        if level:
+            items = [it for it in items if str(it.get("level", "")).upper() == level.upper()]
+        slim = [
+            {"at": it.get("at"), "level": it.get("level"), "status": it.get("status"),
+             "title": it.get("title"), "error": (str(it.get("error"))[:120] or None)
+             if it.get("error") else None}
+            for it in items[:max(1, min(int(limit), 100))]
+        ]
+        return ok(
+            {"days": days, "total": d.get("total"), "counts": d.get("counts"),
+             "items": slim, "truncated": len(items) > len(slim)},
+            f"GET {url}",
+            note="status 是「这条通知有没有发出去」，不是平台状态；"
+                 "platform 是否异常要看 level 与 title。",
+        )
+    except Exception as e:  # noqa: BLE001
+        return err(e, "GET /monitor/alert-log")
+
+
 # ─────────────────────────── 写操作（两段式） ───────────────────────────
 # 这两个工具是全局唯一的写入口，都走「提议 → 人批准 → 执行」：
 # 第一次调用只写 pending，返回 action_id；用户在审批中心通过后，
@@ -527,6 +648,42 @@ def get_latest_digest() -> str:
 
 
 @mcp.tool()
+def get_task_runs(limit: int = 8) -> str:
+    """定时任务与编排器最近几次运行：下次什么时候跑、上次跑成没跑成、为什么跳过。
+
+    什么时候用：回答「任务按时跑了吗」「今天该跑的都跑了吗」「为什么没跑」。
+    覆盖三块：编排器（每日 17:30 的 8 步 DAG）、GP 挖矿、每周复盘。
+    参数：limit 默认 8，上限 20（编排器历史条数）。
+    注意：status=SKIPPED 是「按策略跳过」，看 error 或 summary.reason 的原因；
+    它跟 FAIL 不是一回事，别混着说。
+    """
+    return _wrap(_get_task_runs, limit)
+
+
+@mcp.tool()
+def get_table_freshness(limit: int = 25) -> str:
+    """表新鲜度：哪些表滞后、最后有数据的日期是哪天、落后几天、阈值判定。
+
+    什么时候用：回答「哪些表滞后了」「数据能不能用」「某张表更到哪天」。
+    只返回 FAIL/EMPTY 的表（短板优先），正常表只给计数。
+    参数：limit 默认 25，上限 60。
+    注意：EMPTY 可能是「这个模块本来就没启用」，要结合 why 判断，别一律当故障。
+    """
+    return _wrap(_get_table_freshness, limit)
+
+
+@mcp.tool()
+def get_alert_log(days: int = 3, level: str = "", limit: int = 20) -> str:
+    """告警发送记录：什么时候报过警、级别、通知有没有发出去。
+
+    什么时候用：回答「最近出过什么问题」「有没有漏发通知」「何时恢复的」。
+    参数：days 默认 3；level 可填 FAIL / WARN / INFO 过滤；limit 默认 20。
+    注意：status 指「通知发送状态」，不是平台状态；平台状态看 level 和 title。
+    """
+    return _wrap(_get_alert_log, days, level, limit)
+
+
+@mcp.tool()
 def create_paper_task(strategy_key: str, name: str = "", kind: str = "single",
                       symbols: str = "", index_code: str = "",
                       initial_cash: float = 2000000.0, commission: float = 0.0001,
@@ -557,7 +714,7 @@ def propose_card_transition(card_id: int, to_state: str, reason: str) -> str:
 
 
 # ─────────────────────────── 自检 ───────────────────────────
-# 第 1 步验收：9 个工具逐个调通 + 路径与 /openapi.json 一致。
+# 每个工具逐个调通 + 路径与 /openapi.json 一致（条数以 _SELFTEST 为准）。
 # 不用人眼看，跑这两条命令即可。
 
 _SELFTEST: list[tuple[str, tuple, dict]] = [
@@ -570,6 +727,9 @@ _SELFTEST: list[tuple[str, tuple, dict]] = [
     ("list_paper_tasks", (), {}),
     ("get_framework_health", (), {}),
     ("get_latest_digest", (), {}),
+    ("get_task_runs", (), {"limit": 3}),
+    ("get_table_freshness", (), {"limit": 5}),
+    ("get_alert_log", (), {"days": 2, "limit": 3}),
 ]
 
 # 工具 → 平台路径（不含 /api/v1 前缀），用来和 openapi 核对
@@ -583,6 +743,10 @@ _TOOL_PATHS: dict[str, str] = {
     "list_paper_tasks": "/paper/tasks",
     "get_framework_health": "/monitor/framework-health",
     "get_latest_digest": "/factor/brief-digest/latest",
+    # 复合来源：agent/state + auto/status 两张表一起读
+    "get_task_runs": "/agent/state",
+    "get_table_freshness": "/monitor/table-freshness",
+    "get_alert_log": "/monitor/alert-log",
 }
 
 
@@ -645,7 +809,7 @@ def selftest() -> int:
         print("\n⚠️ 整列为 None 的字段（多半是字段名与接口不符，去核对一下）：")
         for w in warns:
             print(f"   · {w}")
-    print(f"\n{9 - failed}/9 通过")
+    print(f"\n{len(_SELFTEST) - failed}/{len(_SELFTEST)} 通过")
     return 1 if failed else 0
 
 
