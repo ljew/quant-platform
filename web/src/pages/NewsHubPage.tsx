@@ -1,17 +1,17 @@
 /**
- * 资讯库（今日观点 · Tab）：原先 4 个资讯 tab 合为一个入口、四个子页签。
+ * 资讯库（今日观点 · Tab）：从「4 个子页签收口」升级成「一条流 + 来源筛选」。
  *
- * 为什么合并：全部 / 境外 / 报告 / 公众号 的差别只是「来源」和「加工深度」，
- * 不是用法。查一条消息不该先做分类题（设计文档 08 节）。
+ * 2026-11-11 补：设计文档 08 节要的是「一条时间倒序的流 + 顶部来源筛选器」，
+ * 之前先用子页签收口是权宜。现在后端有了 /news/stream（news_feed 的国内+境外、
+ * market_reports 的时段报告、knowledge.db 的公众号全文，三路合流），
+ * 默认落点就是那条流。
  *
- * ⚠️ 与设计的偏差：文档要的是「一条时间倒序的流 + 顶部来源筛选器」，
- * 这里先用子页签收口。做真正的合流需要把国内 / 境外 / 报告 / 公众号
- * 四个数据源并成一条流（后端要加统一 feed 接口），是下一步的事。
- * 现在至少入口从 4 个降到 1 个，四个原页面一行未改，可以无损拆开。
+ * 只保留两个子页：它们不只是「另一个来源」，还带各自的操作面 ——
+ * 公众号那页有采集链路和凭证管理（Cookie 过期要在这里换），
+ * 时段报告那页能看单份报告的完整正文。
  */
 import { MergedTabs } from "../components/MergedTabs";
-import NewsFeedPage from "./NewsFeedPage";
-import ForeignNewsPage from "./ForeignNewsPage";
+import NewsStreamPage from "./NewsStreamPage";
 import ReportsPage from "./ReportsPage";
 import WechatPage from "./WechatPage";
 
@@ -19,10 +19,9 @@ export default function NewsHubPage() {
   return (
     <MergedTabs
       tabs={[
-        { key: "all", label: "全部（国内源）", node: <NewsFeedPage /> },
-        { key: "foreign", label: "境外", node: <ForeignNewsPage /> },
-        { key: "reports", label: "四时段报告", node: <ReportsPage /> },
+        { key: "stream", label: "资讯流", node: <NewsStreamPage /> },
         { key: "wechat", label: "公众号", node: <WechatPage /> },
+        { key: "reports", label: "时段报告", node: <ReportsPage /> },
       ]}
     />
   );

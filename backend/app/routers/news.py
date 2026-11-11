@@ -91,6 +91,122 @@ def feed(refresh: bool = Query(False, description="忽略缓存强制刷新")):
     return payload
 
 
+# 资讯合流：设计文档 08 节要的是「一条时间倒序的流 + 顶部来源筛选器」。
+# 原来四个 tab 的差别只是来源和加工深度，不是用法 —— 查一条消息不该先做分类题。
+#
+# 三个物理来源，四类语义分组：
+#   news_feed      → domestic（cls/sina/guba/eastmoney/tushare/research/deepseek）
+#                    foreign （fn_* 境外源）
+#   market_reports → report  （四时段报告，是「加工过的观点」，不是原始快讯）
+#   knowledge.db   → wechat  （公众号全文，news_feed 里那 567 条只是摘要）
+_GROUP_CN = {"domestic": "国内快讯", "foreign": "境外", "wechat": "公众号", "report": "时段报告"}
+
+
+def _group_of(source: str) -> str:
+    if source.startswith("fn_"):
+        return "foreign"
+    if source == "wechat":
+        return "wechat"
+    return "domestic"
+
+
+@router.get("/stream")
+def stream(days: int = 2, groups: str = "", limit: int = 200, db=Depends(get_db)):
+    """统一资讯流：一条时间倒序的流，来源用 groups 过滤。
+
+    groups 逗号分隔（domestic,foreign,wechat,report），留空 = 全要。
+    返回的每一条都带 group —— 前端筛选器靠它，不靠猜来源名。
+    """
+    import sqlite3
+    from datetime import datetime, timedelta
+    from pathlib import Path
+
+    from sqlalchemy import text as _sql
+
+    from app.config import BASE_DIR
+
+    want = {g.strip() for g in (groups or "").split(",") if g.strip()}
+    days = max(1, min(days, 30))
+    limit = max(1, min(limit, 500))
+    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+
+    items: list[dict] = []
+    counts = {"domestic": 0, "foreign": 0, "wechat": 0, "report": 0}
+
+    # ① news_feed：国内 + 境外快讯
+    if not want or want & {"domestic", "foreign"}:
+        rows = db.execute(
+            _sql("select id, source, source_label, title, summary, url, published_at "
+                 "from news_feed where published_at >= :since "
+                 "order by published_at desc limit :lim"),
+            {"since": since, "lim": limit * 2},
+        ).mappings().all()
+        for r in rows:
+            g = _group_of(r["source"] or "")
+            if want and g not in want:
+                continue
+            counts[g] += 1
+            items.append({
+                "id": f"nf{r['id']}", "group": g,
+                "source": r["source"] or "", "source_cn": r["source_label"] or r["source"] or "",
+                "title": r["title"] or "", "summary": (r["summary"] or "")[:300],
+                "url": r["url"] or "", "at": (r["published_at"] or "")[:16],
+            })
+
+    # ② 四时段报告
+    if not want or "report" in want:
+        for r in db.execute(
+            _sql("select report_id, report_date, slot, title, data_asof, generated_at "
+                 "from market_reports where report_date >= :since "
+                 "order by generated_at desc limit 20"),
+            {"since": since[:10]},
+        ).mappings().all():
+            counts["report"] += 1
+            items.append({
+                "id": f"rp{r['report_id']}", "group": "report",
+                "source": "report", "source_cn": f"四时段报告 · {r['slot']}",
+                "title": r["title"] or "", "summary": f"数据截至 {r['data_asof'] or '—'}",
+                "url": f"/api/v1/reports/{r['report_id']}/html",
+                "at": (r["generated_at"] or "")[:16],
+            })
+
+    # ③ 公众号全文（knowledge.db 只读；它是另一个库，用独立连接）
+    if not want or "wechat" in want:
+        kdb = Path(BASE_DIR) / "data" / "wechat" / "knowledge.db"
+        if kdb.exists():
+            since_ts = int((datetime.now() - timedelta(days=days)).timestamp())
+            try:
+                c = sqlite3.connect(f"file:{kdb}?mode=ro", uri=True, timeout=5)
+                try:
+                    for r in c.execute(
+                        "select id, mp_name, title, content_text, url, publish_time "
+                        "from articles where publish_time >= ? order by publish_time desc limit ?",
+                        (since_ts, limit),
+                    ):
+                        counts["wechat"] += 1
+                        items.append({
+                            "id": f"wx{r[0]}", "group": "wechat",
+                            "source": "wechat", "source_cn": r[1] or "公众号",
+                            "title": r[2] or "",
+                            "summary": (r[3] or "").strip().replace("\n", " ")[:300],
+                            "url": r[4] or "",
+                            "at": datetime.fromtimestamp(r[5] or 0).strftime("%Y-%m-%d %H:%M"),
+                        })
+                finally:
+                    c.close()
+            except sqlite3.Error:
+                pass  # 公众号库打不开不影响另外两类
+
+    items.sort(key=lambda x: x["at"], reverse=True)
+    return {
+        "count": len(items[:limit]), "total": len(items),
+        "since": since[:16], "days": days,
+        "groups": {k: v for k, v in counts.items() if v},
+        "group_cn": _GROUP_CN,
+        "items": items[:limit],
+    }
+
+
 @router.get("/stock")
 def stock(symbol: str = Query(..., description="平台符号 sh600519 / 纯 6 位 600519"),
           num: int = Query(12, ge=1, le=30)):
