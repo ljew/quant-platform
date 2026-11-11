@@ -4,7 +4,11 @@
 - 建仓价 = 信号日**次一交易日开盘价**（T+1 开盘，绝不用信号日收盘）
 - 收益 = 持有 T+1/3/5/10/20 个交易日后的收盘价相对建仓价
 - 超额 = 个股收益 − 同期**全市场等权**收益（同窗口、同起止日）
-- 六维切分：按策略 / 连续天数(streak) / 共振数 / 质量分级 / 按月 / 综合
+- 切分维度：按策略 / 连续天数(streak) / 共振数 / 质量分级 / 按月 / **市场环境** / 综合
+- 市场环境（2026-11-11 补）：用面板构造**全市场等权净值**，按「过去 60 个交易日
+  涨跌幅」分 上涨(>+5%) / 震荡(-5%~+5%) / 下跌(<-5%)。
+  为什么要这一维：同一个策略在单边下跌里失效、在震荡里有效，是常态；
+  只看全窗口平均会把两段完全不同的事实混成一个数。
 
 数据源：signal_daily（信号事实）+ signal_actions（streak/共振/分级）+ DuckDB 面板。
 计算在内存向量化完成，约 7000 信号日 × 5 视口秒级出数；结果带 TTL 缓存。
@@ -13,7 +17,6 @@
 from __future__ import annotations
 
 import time
-from datetime import date
 
 import pandas as pd
 
@@ -134,6 +137,19 @@ def compute_stats(db, duckdb_path: str, days: int = 90, force: bool = False,
         sig["resonance"], [0, 1, 2, 99], labels=["1策略", "2策略", "3+策略"]
     ).astype(str)
 
+    # 市场环境：从面板自己造等权净值，再去分类信号日所处的环境。
+    # 不用 index_kline_daily 的原因 —— 那要额外读一次库，而等权口径
+    # 与上面算超额用的基准本来就是同一个（全市场等权），自洽。
+    close_all = panel.df.pivot_table(index="date", columns="symbol", values="c_hfq")
+    mkt_ret = close_all.pct_change().mean(axis=1).fillna(0.0)
+    mkt_nav = (1.0 + mkt_ret).cumprod()
+    chg60 = mkt_nav / mkt_nav.shift(60) - 1.0
+    regime_map = pd.Series(
+        pd.cut(chg60, [-9, -0.05, 0.05, 9], labels=["下跌", "震荡", "上涨"]).astype(str),
+        index=chg60.index,
+    )
+    sig["regime"] = sig["date"].map(regime_map).fillna("未分类")
+
     def _agg(g: pd.DataFrame, keys: list[str]) -> list[dict]:
         out_rows = []
         for k, grp in g.groupby(keys, observed=True):
@@ -161,6 +177,7 @@ def compute_stats(db, duckdb_path: str, days: int = 90, force: bool = False,
     by_resonance = _agg(sig, ["reso_bucket"])
     by_tier = _agg(sig, ["tier"])
     by_month = _agg(sig, ["month"])
+    by_regime = _agg(sig, ["regime"])
 
     result = {
         "ok": True,
@@ -173,6 +190,8 @@ def compute_stats(db, duckdb_path: str, days: int = 90, force: bool = False,
         "by_resonance": by_resonance,
         "by_tier": by_tier,
         "by_month": sorted(by_month, key=lambda r: r["month"]),
+        "by_regime": by_regime,
+        "strategy": strategy,
     }
     _CACHE[cache_key] = {"ts": time.time(), "data": result}
     return result

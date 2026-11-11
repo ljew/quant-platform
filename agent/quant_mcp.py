@@ -85,32 +85,79 @@ def _get_backtests(strategy_key: str | None = None, limit: int = 5) -> dict:
         return err(e, "GET /strategy/backtests")
 
 
-def _get_signal_stats(window_days: int = 90) -> dict:
+_HORIZONS = (1, 3, 5, 10, 20)
+
+
+def _slim_rows(rows, keys):
+    """把统计行压成「每档一行、每个持有期一组数」，避免把 20 个字段摊平。"""
+    out = []
+    for r in rows or []:
+        item = {k: r.get(k) for k in keys}
+        per = {}
+        for n in _HORIZONS:
+            if r.get(f"n_{n}") is None:
+                continue
+            per[f"{n}d"] = {
+                "n": r.get(f"n_{n}"),
+                "exc": r.get(f"exc_{n}"),
+                "win": r.get(f"win_{n}"),
+                "t": r.get(f"t_{n}"),
+            }
+        item["by_horizon"] = per
+        out.append(item)
+    return out
+
+
+def _get_signal_stats(window_days: int = 90, strategy: str = "") -> dict:
+    """信号有效性统计。
+
+    `strategy` 是 2026-11-11 补的关键参数：不传时 by_streak / by_tier / by_regime
+    是**全信号聚合**（所有选股器混在一起），回答不了「chan_buy 的超额集中在
+    连榜第几档」这类单策略问题 —— 上一版智能体只能回「没查到」。传了 strategy
+    之后所有切分维度都只统计该策略。
+
+    同时补上 1/3/10/20 日的 t 值：底层一直算着，只是这里原来只挑了 5 日。
+    """
     try:
         window_days = max(5, min(int(window_days or 90), 365))
-        d, url = get("/signal/stats", {"window_days": window_days})
-        by_st = [
-            {
-                "strategy": r.get("strategy"),
-                "n": r.get("n_5"),
-                "exc_5d": r.get("exc_5"),
-                "win_5d": r.get("win_5"),
-                "t_5d": r.get("t_5"),
-            }
-            for r in (d.get("by_strategy") or [])
-        ]
-        missing = [] if by_st else ["窗口内没有任何策略的信号统计"]
+        params = {"window_days": window_days}
+        if strategy:
+            params["strategy"] = strategy
+        d, url = get("/signal/stats", params)
+        if not d.get("ok"):
+            return ok({"error": d.get("error")}, f"GET {url}",
+                      missing=[d.get("error") or "统计不可用"])
+
+        by_st = _slim_rows(d.get("by_strategy"), ["strategy"])
+        streak = _slim_rows(d.get("by_streak"), ["streak_bucket"])
+        tier = _slim_rows(d.get("by_tier"), ["tier"])
+        regime = _slim_rows(d.get("by_regime"), ["regime"])
+
+        missing = []
+        if not by_st:
+            missing.append("窗口内没有任何策略的信号统计")
+        if strategy and not streak:
+            missing.append(f"{strategy} 在窗口内没有可切分的连榜样本")
+        if strategy and not regime:
+            missing.append(f"{strategy} 在窗口内没有可切分的市场环境样本")
+
+        scope = f"（只统计 {strategy}）" if strategy else "（全信号聚合，未按策略拆分）"
         return ok(
             {
                 "window_days": d.get("window_days"),
+                "scope": scope.strip("（）"),
                 "n_signals": d.get("n_signals"),
                 "by_strategy": by_st,
-                "by_streak": d.get("by_streak"),
-                "by_tier": d.get("by_tier"),
+                "by_streak": streak,
+                "by_tier": tier,
+                "by_regime": regime,
             },
             f"GET {url}",
             missing=missing,
-            note="exc_5d 是 5 日持有超额（%），t_5d 是显著性；|t|<2 不要下结论。",
+            note=("exc 是相对全市场等权的超额（%），t 是显著性；|t|<2 不要下结论。"
+                  "市场环境按「过去 60 个交易日等权全市场涨跌幅」分："
+                  ">+5% 上涨 / ±5% 内震荡 / <-5% 下跌。"
+                  "要判断单个策略，必须带 strategy 参数，否则分档数据是全信号混算的。"),
         )
     except Exception as e:  # noqa: BLE001
         return err(e, "GET /signal/stats")
@@ -374,14 +421,19 @@ def get_backtests(strategy_key: str | None = None, limit: int = 5) -> str:
 
 
 @mcp.tool()
-def get_signal_stats(window_days: int = 90) -> str:
-    """信号有效性统计：各策略 5 日持有超额、胜率、t 值，以及连榜/分级切分。
+def get_signal_stats(window_days: int = 90, strategy: str = "") -> str:
+    """信号有效性统计：多持有期（1/3/5/10/20 日）超额、胜率、t 值，
+    以及按连榜档位 / 质量分级 / 市场环境（上涨/震荡/下跌）的切分。
 
     什么时候用：判断「信号本身有没有效」，与回测表现分开看。
+
+    ⚠️ 判断某个策略（如 chan_buy）时**必须传 strategy** —— 不传时
+    by_streak / by_tier / by_regime 是所有选股器混算的聚合口径，
+    回答不了「它的超额集中在哪一档」。
     注意：|t|<2 时只能说「无法判别」，不能下结论。
-    参数：window_days 默认 90，上限 365。
+    参数：window_days 默认 90，上限 365；strategy 例 chan_buy（强烈建议传）。
     """
-    return _wrap(_get_signal_stats, window_days)
+    return _wrap(_get_signal_stats, window_days, strategy)
 
 
 @mcp.tool()

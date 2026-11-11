@@ -1,4 +1,4 @@
-"""智能体门户：把 dsh web（宿主 :3080）反代到平台同域 /agent/ 下。
+"""智能体门户：把量化智能体（宿主 :3081）反代到平台同域 /agent/ 下。
 
 为什么必须同域，而不是前端直接 <a href=":3080">：
 1. dsh 的登录态是 HttpOnly cookie；:8000 → :3080 是跨**端口**，浏览器里
@@ -31,8 +31,12 @@ from app.config import BASE_DIR
 
 logger = logging.getLogger(__name__)
 
-# dsh 跑在宿主上，容器里访问宿主要用 host.docker.internal
-DSH_UPSTREAM = "http://host.docker.internal:3080"
+# 量化智能体跑在宿主上，容器里访问宿主要用 host.docker.internal。
+#
+# 端口 3081 而不是 3080：智能体是**独立的一套 dsh**（DSH_HOME=~/quant-agent，
+# profile=quant），不跟日常用的标准 dsh 共服务。改前端、改 preset 白名单、
+# 加 MCP 都只影响这一套；标准 dsh 的 profile 保持原样，他打开还是熟悉的样子。
+DSH_UPSTREAM = "http://host.docker.internal:3081"
 # dsh 每次启动都会打印带 token 的 URL，由 dsh-web.sh 落到这个文件
 TOKEN_LOG = BASE_DIR / "data" / "agent_portal.log"
 
@@ -170,7 +174,7 @@ async def agent_ws(websocket: WebSocket, path: str = "") -> None:
     if not sub.startswith("/"):
         sub = "/" + sub
     qs = websocket.scope.get("query_string", b"").decode("latin-1")
-    url = f"ws://host.docker.internal:3080{sub}" + (f"?{qs}" if qs else "")
+    url = f"ws://host.docker.internal:3081{sub}" + (f"?{qs}" if qs else "")
 
     hdrs = {"Host": "localhost:8000"}
     cookie = websocket.headers.get("cookie")

@@ -376,11 +376,17 @@ def events(run_id: int = 0, limit: int = 200, db: Session = Depends(get_db)):
 
 
 @router.get("/stats")
-def stats(days: int = 90, db: Session = Depends(get_db)):
-    """信号有效性六维统计（归因分析页数据源；10 分钟缓存）。"""
+def stats(days: int = 90, strategy: str = "", db: Session = Depends(get_db)):
+    """信号有效性统计（归因分析页数据源；10 分钟缓存）。
+
+    `strategy` 非空时**所有切分维度都只统计该策略** —— 这是「chan_buy 的超额
+    到底集中在连榜第几档 / 哪种市场环境」这类问题的唯一正确口径。
+    不带参数时 by_streak / by_tier 是全信号聚合，回答不了单策略问题
+    （2026-11-11 智能体报「没查到」就是因为这个）。
+    """
     from app.services.xq import stats as xq_stats
 
-    return xq_stats.compute_stats(db, DUCKDB_PATH, days=days)
+    return xq_stats.compute_stats(db, DUCKDB_PATH, days=days, strategy=strategy or None)
 
 
 @router.get("/report", response_class=PlainTextResponse)
