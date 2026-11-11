@@ -537,6 +537,57 @@ def registry_toggle(rid: int, db: Session = Depends(get_db)):
     db.commit()
     return {"ok": True, "id": rid, "status": row.status}
 
+
+# ============ 少而正交工作集（W48-1 / M3-5）============
+class WorksetPreviewPayload(BaseModel):
+    registry_id: int
+
+
+class WorksetAdmitPayload(BaseModel):
+    registry_id: int
+    confirm: bool = False
+    replace_registry_id: int | None = None
+    note: str = ""
+
+
+@router.get("/workset")
+def workset_get(db: Session = Depends(get_db)):
+    from app.services.factor_workset import list_workset
+    return list_workset(db)
+
+
+@router.post("/workset/preview")
+def workset_preview(payload: WorksetPreviewPayload, db: Session = Depends(get_db)):
+    from app.services.factor_workset import RegistryNotFound, preview_admit
+    try:
+        return preview_admit(db, payload.registry_id)
+    except RegistryNotFound:
+        raise HTTPException(status_code=404, detail="不存在") from None
+
+
+@router.post("/workset/admit")
+def workset_admit(payload: WorksetAdmitPayload, db: Session = Depends(get_db)):
+    from app.services.factor_workset import CapReachedError, RegistryNotFound, admit
+    try:
+        return admit(
+            db,
+            payload.registry_id,
+            confirm=payload.confirm,
+            replace_registry_id=payload.replace_registry_id,
+            note=payload.note or "",
+        )
+    except RegistryNotFound:
+        raise HTTPException(status_code=404, detail="不存在") from None
+    except CapReachedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/workset/{registry_id}/remove")
+def workset_remove(registry_id: int, db: Session = Depends(get_db)):
+    from app.services.factor_workset import remove_member
+    return remove_member(db, registry_id)
+
+
 # ───────── 非结构化（新闻情绪）─────────
 # 2026-09-18 随链路下线删除，2026-11-07 恢复市场级部分（数据已够）。
 class NewsTestPayload(BaseModel):

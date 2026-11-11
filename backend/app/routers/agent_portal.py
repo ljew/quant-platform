@@ -18,11 +18,13 @@ bundle，路径都相对 <base href="./">，前缀剥掉后天然对得上。
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
+import aiohttp
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 
 from app.config import BASE_DIR
@@ -149,6 +151,78 @@ async def agent_root(request: Request) -> Response:
 @proxy_router.api_route("/agent/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
 async def agent_any(request: Request, path: str) -> Response:
     return await _proxy(request, path)
+
+
+@proxy_router.websocket("/agent/{path:path}")
+@proxy_router.websocket("/agent")
+async def agent_ws(websocket: WebSocket, path: str = "") -> None:
+    """WebSocket 反代。dsh 的实时通道全走 WS —— 不接这个，页面能开但不会动。
+
+    2026-11-11 实测发现的：HTTP 反代做完后，容器日志里持续出现
+    `StaticFiles ... AssertionError`，那是 WS 握手落到了 `/` 的静态挂载上。
+    dsh 前端确实用 WS（24 条失败记录），只补 HTTP 等于半个入口。
+
+    Host 必须跟着 HTTP 那条一起改写成 localhost:8000：dsh 用 authority
+    给 cookie 签名，WS 握手也要过同一道校验。
+    """
+    raw = websocket.scope.get("raw_path", b"").decode("latin-1")
+    sub = raw[len("/agent"):] or "/"
+    if not sub.startswith("/"):
+        sub = "/" + sub
+    qs = websocket.scope.get("query_string", b"").decode("latin-1")
+    url = f"ws://host.docker.internal:3080{sub}" + (f"?{qs}" if qs else "")
+
+    hdrs = {"Host": "localhost:8000"}
+    cookie = websocket.headers.get("cookie")
+    if cookie:
+        hdrs["Cookie"] = cookie
+    proto = websocket.headers.get("sec-websocket-protocol")
+    if proto:
+        hdrs["Sec-WebSocket-Protocol"] = proto
+    sub_proto = proto.split(",")[0].strip() if proto else None
+
+    await websocket.accept(subprotocol=sub_proto)
+    session = aiohttp.ClientSession(trust_env=False)
+    try:
+        async with session.ws_connect(
+            url, headers=hdrs, timeout=aiohttp.ClientWSTimeout(ws_close=10),
+            max_msg_size=0, autoping=True,
+        ) as up:
+            async def c2s() -> None:
+                while True:
+                    msg = await websocket.receive()
+                    if msg.get("type") == "websocket.disconnect":
+                        return
+                    if msg.get("text") is not None:
+                        await up.send_str(msg["text"])
+                    elif msg.get("bytes") is not None:
+                        await up.send_bytes(msg["bytes"])
+
+            async def s2c() -> None:
+                async for m in up:
+                    if m.type == aiohttp.WSMsgType.TEXT:
+                        await websocket.send_text(m.data)
+                    elif m.type == aiohttp.WSMsgType.BINARY:
+                        await websocket.send_bytes(m.data)
+                    else:
+                        return
+
+            _, pending = await asyncio.wait(
+                {asyncio.create_task(c2s()), asyncio.create_task(s2c())},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+    except aiohttp.ClientError as exc:
+        logger.warning("dsh WS 连不上（dsh 没起？）：%s", exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("dsh WS 反代中断：%s", exc)
+    finally:
+        await session.close()
+        try:
+            await websocket.close()
+        except RuntimeError:
+            pass
 
 
 @api_router.get("/status")

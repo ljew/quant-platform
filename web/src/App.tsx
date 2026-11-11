@@ -19,6 +19,7 @@ const FundResearchPage = lazy(() => import("./pages/FundResearchPage"));
 const NewsHubPage = lazy(() => import("./pages/NewsHubPage"));
 const MarketHubPage = lazy(() => import("./pages/MarketHubPage"));
 const AgentPortalPage = lazy(() => import("./pages/AgentPortalPage"));
+const ApprovalsPage = lazy(() => import("./pages/ApprovalsPage"));
 
 /**
  * 重构 v2.1：13 个二级 Tab → 9 个（2026-10-08 精简）。
@@ -71,6 +72,9 @@ const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; lab
   // 单 tab，用同域反代把 dsh 嵌进来 —— 补上「两个平台一个入口」的最后一块。
   { key: "agent", label: "智能体", icon: "◎", tabs: [
     { key: "agent", label: "智能体" },
+    // 审批中心：状态机早就跑通了，但批准只能走 CLI —— 人不在终端就没法批，
+    // 「提议 → 人批 → 带令牌执行」这条链就断在中间。
+    { key: "approvals", label: "审批" },
   ] },
 ];
 
@@ -143,6 +147,7 @@ function HubContent({ sub, id, inner }: { sub: string; id?: number; inner?: stri
     case "monitor": return <MonitorPage />;
     case "auto": return <AutoResearchHubPage />;
     case "agent": return <AgentPortalPage />;
+    case "approvals": return <ApprovalsPage />;
     default: return null;
   }
 }

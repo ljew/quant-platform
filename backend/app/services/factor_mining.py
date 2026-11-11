@@ -15,6 +15,7 @@ from __future__ import annotations
 from app.core.eval_profile import build_eval_profile_for_mining
 
 import math
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from sqlalchemy import select, and_
@@ -1155,6 +1156,235 @@ def mine_factor(db: Session, expr: str, name: str = "自定义因子",
     }
 
 
+# ===== BEGIN W48-1 INSERT (placed immediately above _corr_with_existing) =====
+@dataclass
+class CsContext:
+    """最新截面求值上下文（供 14 列相关与工作集两两相关共用）。"""
+
+    asof: date | None
+    snap: date | None
+    idx: int
+    syms: list[str]
+    attrs: dict
+    es_map: dict
+    aligned: dict
+    axis_dates: list
+    bench_aligned: list
+    vol_aligned: dict
+    amt_aligned: dict
+    fin_hist: dict
+    news_lookup: object | None = None
+    fund_tl: dict | None = None
+    pit_timeline: dict | None = None
+    lifecycle: dict | None = None
+
+
+def _cs_context_from_args(
+    *,
+    asof,
+    snap,
+    idx: int,
+    syms: list[str],
+    attrs: dict,
+    es_map: dict,
+    aligned: dict,
+    axis_dates: list,
+    bench_aligned: list,
+    vol_aligned: dict | None,
+    amt_aligned: dict | None,
+    fin_hist: dict | None,
+    news_lookup=None,
+    fund_tl=None,
+    pit_timeline=None,
+    lifecycle=None,
+) -> CsContext:
+    return CsContext(
+        asof=asof,
+        snap=snap,
+        idx=idx,
+        syms=list(syms or []),
+        attrs=attrs or {},
+        es_map=es_map or {},
+        aligned=aligned or {},
+        axis_dates=list(axis_dates or []),
+        bench_aligned=list(bench_aligned or []),
+        vol_aligned=vol_aligned or {},
+        amt_aligned=amt_aligned or {},
+        fin_hist=fin_hist or {},
+        news_lookup=news_lookup,
+        fund_tl=fund_tl,
+        pit_timeline=pit_timeline,
+        lifecycle=lifecycle or {},
+    )
+
+
+def eval_raw_values_on_cs(ctx: CsContext, expr: str) -> dict[str, float]:
+    """在上下文的最新截面上评估 raw 表达式，返回 {symbol: value}。
+
+    口径与 `_corr_with_existing` 原循环一致：PIT ∩ 生命周期、对齐价、
+    len(seg)<60 跳过、eval_factor 异常 / 非有限跳过。不走残差化。
+    """
+    new_vals: dict[str, float] = {}
+    if ctx is None or not ctx.axis_dates or ctx.snap is None:
+        return new_vals
+    snap = ctx.snap
+    idx = ctx.idx
+    axis_dates = ctx.axis_dates
+    aligned = ctx.aligned
+    vol_aligned = ctx.vol_aligned or {}
+    amt_aligned = ctx.amt_aligned or {}
+    fin_hist = ctx.fin_hist or {}
+    lifecycle = ctx.lifecycle or {}
+    pit_timeline = ctx.pit_timeline
+    active = _pit_symbols(pit_timeline, snap) if pit_timeline else set(ctx.syms)
+    news_lookup = ctx.news_lookup
+    for sym in ctx.syms:
+        if sym not in active or not _eligible_symbol(lifecycle, sym, snap):
+            continue
+        amap = aligned.get(sym)
+        if not amap or snap not in amap:
+            continue
+        i0 = max(0, idx - 130)
+        seg, vseg, aseg = _collect_seg(
+            amap, vol_aligned.get(sym) or {}, amt_aligned.get(sym) or {},
+            axis_dates[i0: idx + 1],
+        )
+        if len(seg) < 60:
+            continue
+        mkt_b = ctx.bench_aligned[i0: idx + 1][-len(seg):]
+        if len(mkt_b) != len(seg):
+            continue
+        a = dict((ctx.attrs or {}).get(sym, {}) or {})
+        if ctx.fund_tl is not None:
+            _apply_fund_asof(a, ctx.fund_tl, sym, snap)
+        ns = make_ns(
+            seg, ctx.bench_aligned[i0: idx + 1], a,
+            news=news_lookup(sym, snap) if news_lookup else None,
+            esv=_es_asof(ctx.es_map, sym, snap), vols=vseg, amts=aseg,
+            fin=fin_asof(fin_hist, sym, snap),
+        )
+        try:
+            v = eval_factor(expr, ns)
+        except Exception:  # noqa: BLE001
+            v = None
+        if v is not None and math.isfinite(v):
+            new_vals[sym] = v
+    return new_vals
+
+
+def pairwise_raw_spearman(
+    a: dict[str, float], b: dict[str, float],
+) -> tuple[float | None, int]:
+    """两边均有有限值的配对 Spearman；n<20 返回 (None, n)，避免把不足样本当成 ρ=0。"""
+    pairs = [
+        (a[s], b[s]) for s in a
+        if s in b and math.isfinite(a[s]) and math.isfinite(b[s])
+    ]
+    n = len(pairs)
+    if n < 20:
+        return None, n
+    return round(_spearman([p[0] for p in pairs], [p[1] for p in pairs]), 4), n
+
+
+def load_latest_cs_context(db) -> CsContext | None:
+    """工作集用：as-of = max(factor_daily.trade_date)，窗口为 as-of 前约 300 自然日。
+
+    无 as-of 时返回 None（有对端则无法判定）。空股票池仍返回上下文，求值结果为空。
+    """
+    latest = db.execute(
+        select(FactorDaily.trade_date).order_by(FactorDaily.trade_date.desc()).limit(1)
+    ).scalar()
+    if not latest:
+        return None
+    asof = latest
+    sd, ed = asof - timedelta(days=300), asof
+    syms, pit_timeline = _core_universe_pit(db, asof, asof)
+    lifecycle = _lifecycle_map(db, syms) if syms else {}
+    attrs = _attrs_map(db, syms) if syms else {}
+    es_map = _es_map(db, syms) if syms else {}
+    fund_tl = _fund_timeline(db, syms) if syms else {}
+    fin_hist = fin_hist_map(db.execute(
+        select(FinancialsRaw.symbol, FinancialsRaw.ann_date,
+               FinancialsRaw.n_cashflow_act, FinancialsRaw.capex,
+               FinancialsRaw.total_assets)
+    ).all()) if syms else {}
+
+    from app.models import NewsStockDaily
+
+    news_hist: dict[str, dict] = {}
+    if syms:
+        for ns_sym, ns_d, ns_v in db.execute(
+            select(NewsStockDaily.symbol, NewsStockDaily.date, NewsStockDaily.net_sentiment)
+        ).all():
+            if ns_v is not None:
+                news_hist.setdefault(ns_sym, {})[ns_d] = float(ns_v)
+
+    def news_lookup(sym: str, asof_d: date):
+        hist = news_hist.get(sym)
+        if not hist:
+            return None
+        vals = [hist[d2] for d2 in hist if 0 <= (asof_d - d2).days <= 3]
+        return _mean(vals) if vals else None
+
+    from app.models import AdjFactorDaily, KlineDaily
+
+    aligned: dict[str, dict[date, float]] = {}
+    vol_aligned: dict[str, dict[date, float]] = {}
+    amt_aligned: dict[str, dict[date, float]] = {}
+    if syms:
+        rows = db.execute(
+            select(KlineDaily.symbol, KlineDaily.trade_date, KlineDaily.close,
+                   KlineDaily.volume, KlineDaily.amount, AdjFactorDaily.adj_factor)
+            .outerjoin(AdjFactorDaily, and_(
+                AdjFactorDaily.symbol == KlineDaily.symbol,
+                AdjFactorDaily.trade_date == KlineDaily.trade_date))
+            .where(KlineDaily.symbol.in_(syms), KlineDaily.adj == "none",
+                   KlineDaily.trade_date >= sd, KlineDaily.trade_date <= ed)
+            .order_by(KlineDaily.symbol, KlineDaily.trade_date)
+        ).all()
+        _raw: dict[str, list[float]] = {}
+        _fac: dict[str, list] = {}
+        _meta: dict[str, list] = {}
+        for sym, td, close, vol, amt, f in rows:
+            _raw.setdefault(sym, []).append(float(close))
+            _fac.setdefault(sym, []).append(f)
+            _meta.setdefault(sym, []).append((td, vol, amt))
+        for sym, seq in _raw.items():
+            for (td, vol, amt), c in zip(_meta[sym],
+                                         apply_adjust_series(seq, _fac[sym], "hfq")):
+                aligned.setdefault(sym, {})[td] = float(c)
+                if vol is not None:
+                    vol_aligned.setdefault(sym, {})[td] = float(vol)
+                if amt is not None:
+                    amt_aligned.setdefault(sym, {})[td] = float(amt)
+
+    axis_dates = _dates_in_range(db, sd, ed)
+    bench_map = {d: c for d, c in zip(
+        axis_dates,
+        _bench_closes(db, sd, ed),
+    )}
+    bench_aligned = [bench_map.get(d) for d in axis_dates]
+    if axis_dates and asof not in set(axis_dates):
+        idx = len(axis_dates) - 1
+        snap = axis_dates[idx]
+    elif axis_dates:
+        idx = axis_dates.index(asof)
+        snap = asof
+    else:
+        idx = 0
+        snap = asof
+    return _cs_context_from_args(
+        asof=asof, snap=snap, idx=idx, syms=syms, attrs=attrs, es_map=es_map,
+        aligned=aligned, axis_dates=axis_dates, bench_aligned=bench_aligned,
+        vol_aligned=vol_aligned, amt_aligned=amt_aligned, fin_hist=fin_hist,
+        news_lookup=news_lookup, fund_tl=fund_tl,
+        pit_timeline=pit_timeline, lifecycle=lifecycle,
+    )
+
+
+# ===== END W48-1 INSERT =====
+
+
 def _corr_with_existing(db, expr, syms, attrs, es_map, aligned, axis_dates, bench_aligned,
                         vol_aligned=None, amt_aligned=None, fin_hist=None,
                         news_lookup=None, fund_tl=None, pit_timeline=None,
@@ -1172,50 +1402,25 @@ def _corr_with_existing(db, expr, syms, attrs, es_map, aligned, axis_dates, benc
     existing: dict[str, dict[str, float | None]] = {}
     for r in rows:
         existing[r[0]] = {c: r[i + 1] for i, c in enumerate(FACTOR_COLUMNS)}
-    # 新因子值（最新截面）
+    # 新因子值（最新截面）——抽出为 eval_raw_values_on_cs，行为保持
     if latest not in set(axis_dates):
         idx = len(axis_dates) - 1
         snap = axis_dates[idx]
     else:
         idx = axis_dates.index(latest)
         snap = latest
-    new_vals: dict[str, float] = {}
     vol_aligned = vol_aligned or {}
     amt_aligned = amt_aligned or {}
     fin_hist = fin_hist or {}
-    active = _pit_symbols(pit_timeline, snap) if pit_timeline else set(syms)
     lifecycle = lifecycle or {}
-    for sym in syms:
-        if sym not in active or not _eligible_symbol(lifecycle, sym, snap):
-            continue
-        amap = aligned.get(sym)
-        if not amap or snap not in amap:
-            continue
-        i0 = max(0, idx - 130)
-        seg, vseg, aseg = _collect_seg(
-            amap, vol_aligned.get(sym) or {}, amt_aligned.get(sym) or {},
-            axis_dates[i0: idx + 1],
-        )
-        if len(seg) < 60:
-            continue
-        mkt_b = bench_aligned[i0: idx + 1][-len(seg):]
-        if len(mkt_b) != len(seg):
-            continue
-        a = dict(attrs.get(sym, {}) or {})
-        if fund_tl is not None:
-            _apply_fund_asof(a, fund_tl, sym, snap)
-        ns = make_ns(
-            seg, bench_aligned[i0: idx + 1], a,
-            news=news_lookup(sym, snap) if news_lookup else None,
-            esv=_es_asof(es_map, sym, snap), vols=vseg, amts=aseg,
-            fin=fin_asof(fin_hist, sym, snap),
-        )
-        try:
-            v = eval_factor(expr, ns)
-        except Exception:  # noqa: BLE001
-            v = None
-        if v is not None and math.isfinite(v):
-            new_vals[sym] = v
+    ctx = _cs_context_from_args(
+        asof=latest, snap=snap, idx=idx, syms=syms, attrs=attrs, es_map=es_map,
+        aligned=aligned, axis_dates=axis_dates, bench_aligned=bench_aligned,
+        vol_aligned=vol_aligned, amt_aligned=amt_aligned, fin_hist=fin_hist,
+        news_lookup=news_lookup, fund_tl=fund_tl,
+        pit_timeline=pit_timeline, lifecycle=lifecycle,
+    )
+    new_vals = eval_raw_values_on_cs(ctx, expr)
     corr: dict[str, float] = {}
     for col in FACTOR_COLUMNS:
         pairs = [(new_vals[s], existing[s][col]) for s in new_vals

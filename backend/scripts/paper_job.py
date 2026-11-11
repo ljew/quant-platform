@@ -23,11 +23,28 @@ import time
 
 
 def _limit_memory() -> None:
-    """给子进程设地址空间上限。容器 5.5G，留 1G 给主进程与 SQLite 缓存。"""
+    """地址空间上限 —— **默认不设**，需要时用 PAPER_MEM_LIMIT_GB 显式打开。
+
+    为什么改掉默认值（2026-11-11）：
+    依赖链里间接加载了 py_mini_racer（带 V8）。V8 启动时要预留一大块**虚拟**
+    地址空间，RLIMIT_AS=4.5G 直接把它掐死 —— 进程在 import 阶段就被 SIGTRAP
+    打掉，日志里是 "Failed to reserve memory for new V8 Isolate"，
+    连 paper_job 自己的 except MemoryError 都进不去，任务状态停在
+    「成功但没有净值」，两次排查才定位到（RSS 当时才 2.4G，看着完全不像 OOM）。
+
+    真正的兜底是容器的 cgroup（mem_limit 5.5g）：子进程吃爆时 OOM killer
+    按 oom_score 优先杀它，主进程和 SQLite 缓存能活下来 ——
+    这才是不拖死平台的正确机制，而不是一把按虚拟地址算的软锁。
+    """
+    raw = (os.getenv("PAPER_MEM_LIMIT_GB") or "").strip()
+    if not raw:
+        return
     try:
-        gb = float(os.getenv("PAPER_MEM_LIMIT_GB", "4.5"))
+        gb = float(raw)
     except ValueError:
-        gb = 4.5
+        return
+    if gb <= 0:
+        return
     limit = int(gb * 1024 ** 3)
     try:
         resource.setrlimit(resource.RLIMIT_AS, (limit, limit))

@@ -6,7 +6,9 @@ import { Badge, Btn, Card, KpiCard, PageHeader, inputStyle } from "../components
 import EvalBadges from "../components/EvalBadges";
 import {
   api, AiExplainResult, AiGenerateResult, AiStatus,
-  FactorHorizonRow, FactorMineReport, FactorMineSummary, GpMineResult, NewsEventReport,
+  FactorHorizonRow, FactorMineReport, FactorMineSummary,
+  FactorWorksetCorrPair, FactorWorksetMember, FactorWorksetPayload, FactorWorksetPreview,
+  GpMineResult, NewsEventReport,
   researchApi,
 } from "../api/client";
 import { useTheme, ThemeColors } from "../theme";
@@ -69,10 +71,27 @@ export default function FactorMinePage() {
   const [gpOrtho, setGpOrtho] = useState(false);
   const [gpCrisis, setGpCrisis] = useState(false);
   const [gpResult, setGpResult] = useState<GpMineResult | null>(null);
+  const [workset, setWorkset] = useState<FactorWorksetPayload | null>(null);
+  const [wsRemoving, setWsRemoving] = useState<number | null>(null);
 
   const loadHistory = useCallback(() => {
     api.factorMineResults(15).then(setHistory).catch(() => {});
   }, []);
+  const loadWorkset = useCallback(() => {
+    api.factorWorksetGet().then(setWorkset).catch(() => setWorkset({ n: 0, members: [] }));
+  }, []);
+  const removeFromWorkset = async (rid: number) => {
+    setWsRemoving(rid);
+    try {
+      const out = await api.factorWorksetRemove(rid);
+      if (out.workset) setWorkset(out.workset);
+      else loadWorkset();
+    } catch {
+      /* 列表移出失败时保持当前卡，不打断页面 */
+    } finally {
+      setWsRemoving(null);
+    }
+  };
 
   // 单独抽出来：配好 key 并重启后端后，页面上点「重新检测」即可生效，无需刷新
   const loadAiStatus = useCallback(() => {
@@ -84,7 +103,11 @@ export default function FactorMinePage() {
     api.factorGpDirections().then(setGpDirs).catch(() => {});
     loadAiStatus();
     loadHistory();
-  }, [loadAiStatus, loadHistory]);
+    loadWorkset();
+  }, [loadAiStatus, loadHistory, loadWorkset]);
+  useEffect(() => {
+    if (view === "list") loadWorkset();
+  }, [view, loadWorkset]);
 
   const runAiGenerate = async () => {
     const text = aiText.trim();
@@ -207,6 +230,14 @@ export default function FactorMinePage() {
               }}>
               挖掘历史（{history.length}）
             </Btn>
+            <Btn kind="ghost" small
+              onClick={() => {
+                setView("list");
+                setTimeout(() => document.getElementById("factor-workset")
+                  ?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+              }}>
+              工作集（{workset?.n ?? 0}/5）
+            </Btn>
             <Btn onClick={() => setShowFns(!showFns)} kind="ghost" small>函数参考</Btn>
           </div>
         }
@@ -219,6 +250,7 @@ export default function FactorMinePage() {
       </div>
 
       {view === "list" && (<>
+      <WorksetCard workset={workset} colors={colors} onRemove={removeFromWorkset} removingId={wsRemoving} />
       {/* —— 新闻情绪择时（市场级 · 非结构化数据）—— */}
       <div style={{ marginBottom: 16 }}>
         <Card
@@ -1284,6 +1316,15 @@ function MineReport({ report, colors, start, end, onForce }: { report: FactorMin
           卡片离开这份上下文，t=3 会被当成 t=3 那么简单。
         </div>
       </Card>
+
+      <WorksetApplySection
+        report={report}
+        colors={colors}
+        regId={regId}
+        regStatus={regStatus}
+        lifeMsg={lifeMsg}
+        onRegistered={(id, status, m) => { setRegId(id); setRegStatus(status); setLifeMsg(m); }}
+      />
     </div>
   );
 }
@@ -1332,6 +1373,332 @@ function HorizonHeat({ rows, colors }: { rows: FactorHorizonRow[]; colors: Theme
     </div>
   );
 }
+
+
+/* ===== W48-1 workset widgets (inlined into FactorMinePage.tsx) ===== */
+
+const WORKSET_NOTE =
+  "少而正交工作集：最多保留 3–5 个低相关因子。质量看残差评级（正交开启时），相关看 raw；不是风险平价，也不改变多重检验计数。";
+
+function WorksetCard({
+  workset, colors, onRemove, removingId,
+}: {
+  workset: FactorWorksetPayload | null;
+  colors: ThemeColors;
+  onRemove: (registryId: number) => void;
+  removingId: number | null;
+}) {
+  const n = workset?.n ?? 0;
+  const cap = workset?.cap ?? 5;
+  const members = workset?.members ?? [];
+  const matrix = workset?.corr_matrix ?? [];
+  return (
+    <div style={{ marginBottom: 16 }} id="factor-workset">
+      <Card
+        title={`少而正交工作集（${n}/${cap}）`}
+        colors={colors}
+        extra={<span style={{ fontSize: 11.5, color: colors.muted }}>最多 5 个 · 相关看 raw</span>}
+      >
+        {n === 0 ? (
+          <div style={{ fontSize: 12.5, color: colors.muted, lineHeight: 1.8 }}>
+            工作集为空。从一份优秀/可用且 OOS 通过的报告申请加入，目标 3–5 个低相关因子。
+          </div>
+        ) : (
+          <>
+            {n < 3 && (
+              <div style={{ fontSize: 12, color: colors.muted, marginBottom: 8 }}>尚未达到目标 3–5</div>
+            )}
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                <thead>
+                  <tr style={{ color: colors.muted, textAlign: "left" }}>
+                    <th style={{ padding: "6px 8px", fontWeight: 500 }}>名称</th>
+                    <th style={{ padding: "6px 8px", fontWeight: 500 }}>表达式</th>
+                    <th style={{ padding: "6px 8px", fontWeight: 500 }}>主路评级</th>
+                    <th style={{ padding: "6px 8px", fontWeight: 500 }}>主路 t</th>
+                    <th style={{ padding: "6px 8px", fontWeight: 500 }}>入集时间</th>
+                    <th style={{ padding: "6px 8px", fontWeight: 500 }}>14 列 |ρ|（非入集门）</th>
+                    <th style={{ padding: "6px 8px", fontWeight: 500 }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {members.map((m) => (
+                    <tr key={m.registry_id} style={{ borderTop: `1px solid ${colors.border}` }}>
+                      <td style={{ padding: "7px 8px" }}>{m.name || `#${m.registry_id}`}</td>
+                      <td style={{ padding: "7px 8px" }}>
+                        <code style={{ fontSize: 11 }}>{m.expr_excerpt || m.expr || "—"}</code>
+                      </td>
+                      <td style={{ padding: "7px 8px" }}>{m.rating ?? "—"}</td>
+                      <td style={{ padding: "7px 8px", fontVariantNumeric: "tabular-nums" }}>
+                        {m.t_stat == null ? "—" : m.t_stat.toFixed(2)}
+                      </td>
+                      <td style={{ padding: "7px 8px", color: colors.muted, fontSize: 12 }}>
+                        {(m.added_at || "").replace("T", " ") || "—"}
+                      </td>
+                      <td style={{ padding: "7px 8px", fontVariantNumeric: "tabular-nums" }}>
+                        {m.max_abs_corr == null ? "—" : m.max_abs_corr.toFixed(2)}
+                      </td>
+                      <td style={{ padding: "7px 8px", textAlign: "right" }}>
+                        <Btn small kind="ghost"
+                          disabled={removingId === m.registry_id}
+                          onClick={() => onRemove(m.registry_id)}>
+                          {removingId === m.registry_id ? "移出中…" : "移出"}
+                        </Btn>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <WorksetHeat members={members} matrix={matrix} colors={colors} />
+            {workset?.corr_undetermined && (
+              <div style={{ marginTop: 8, fontSize: 12, color: colors.up }}>
+                部分成员对相关无法判定（配对不足或缺少最新截面）。
+              </div>
+            )}
+          </>
+        )}
+        <div style={{ marginTop: 10, fontSize: 11.5, color: colors.muted, lineHeight: 1.8 }}>
+          {workset?.note || WORKSET_NOTE}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function WorksetHeat({
+  members, matrix, colors,
+}: {
+  members: FactorWorksetMember[];
+  matrix: FactorWorksetCorrPair[];
+  colors: ThemeColors;
+}) {
+  if (members.length < 2) return null;
+  const rhoOf = (a: number, b: number): number | null | undefined => {
+    if (a === b) return 1;
+    const hit = matrix.find((p) => (p.a === a && p.b === b) || (p.a === b && p.b === a));
+    return hit ? (hit.rho ?? null) : null;
+  };
+  const cell = (a: number, b: number) => {
+    const v = rhoOf(a, b);
+    const intensity = v == null ? 0 : Math.min(1, Math.abs(v));
+    const bg = v == null
+      ? colors.tableStripe
+      : v >= 0
+        ? `rgba(217,44,44,${0.08 + 0.5 * intensity})`
+        : `rgba(26,138,72,${0.08 + 0.5 * intensity})`;
+    const strong = v != null && Math.abs(v) >= 0.5;
+    return (
+      <div key={`${a}-${b}`} style={{
+        textAlign: "center", padding: "6px 4px", borderRadius: 6,
+        background: bg,
+        border: `1px solid ${strong ? colors.up : colors.border}`,
+        fontSize: 11.5, fontVariantNumeric: "tabular-nums",
+        color: strong ? colors.up : colors.text,
+      }}>
+        {v == null ? "—" : v.toFixed(2)}
+      </div>
+    );
+  };
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontSize: 12, color: colors.muted, marginBottom: 6 }}>成员间 raw 相关</div>
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: `72px repeat(${members.length}, minmax(56px, 1fr))`,
+        gap: 6, alignItems: "center",
+      }}>
+        <div />
+        {members.map((m) => (
+          <div key={`h-${m.registry_id}`} style={{ fontSize: 11, color: colors.muted, textAlign: "center" }}>
+            {m.name || `#${m.registry_id}`}
+          </div>
+        ))}
+        {members.map((row) => (
+          <div key={`r-${row.registry_id}`} style={{ display: "contents" }}>
+            <div style={{ fontSize: 11, color: colors.muted }}>{row.name || `#${row.registry_id}`}</div>
+            {members.map((col) => cell(row.registry_id, col.registry_id))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function WorksetApplySection({
+  report, colors, regId, regStatus, lifeMsg, onRegistered,
+}: {
+  report: FactorMineReport;
+  colors: ThemeColors;
+  regId: number | null;
+  regStatus: string | null;
+  lifeMsg: string;
+  onRegistered: (id: number, status: string, msg: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState<FactorWorksetPreview | null>(null);
+  const [msg, setMsg] = useState("");
+  const [doneNote, setDoneNote] = useState("");
+
+  const runPreview = async (id: number) => {
+    const p = await api.factorWorksetPreview(id);
+    setPreview(p);
+    return p;
+  };
+
+  const apply = async () => {
+    setBusy(true);
+    setMsg("");
+    setDoneNote("");
+    try {
+      let id = regId;
+      if (id == null) {
+        try {
+          const r = await api.factorRegistryRegister({
+            name: report.name, expr: report.expr, category: "mined",
+            source_id: report.id, ic_mean: report.ic_mean,
+          });
+          id = r.id;
+          onRegistered(r.id, r.status, r.existed
+            ? `已在注册表 (#${r.id}, ${r.status})`
+            : `已登记 (#${r.id}, ${r.status})`);
+        } catch (e) {
+          setMsg(`登记失败: ${(e as Error).message}`);
+          return;
+        }
+      }
+      if (id == null) {
+        setMsg("登记失败：未获得注册表 id");
+        return;
+      }
+      const p = await runPreview(id);
+      if (p.decision === "in_set") return;
+      if (p.decision === "reject" || p.ok === false) return;
+    } catch (e) {
+      setMsg(`预览失败: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmAdmit = async () => {
+    if (regId == null) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      const replaceId = preview?.decision === "replace"
+        ? preview.suggestion?.replace_registry_id
+        : undefined;
+      const out = await api.factorWorksetAdmit({
+        registry_id: regId,
+        confirm: true,
+        replace_registry_id: replaceId ?? null,
+      });
+      if (out.ok) {
+        setPreview({ ...out, decision: "in_set", in_set: true });
+        setDoneNote("已写入工作集。入集不会自动启用。");
+      } else {
+        setPreview(out);
+      }
+    } catch (e) {
+      setMsg(`写入失败: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeMe = async () => {
+    if (regId == null) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      const out = await api.factorWorksetRemove(regId);
+      if (out.ok) {
+        setPreview({ decision: "admit", ok: true, in_set: false });
+        setDoneNote("已从工作集移出。");
+      }
+    } catch (e) {
+      setMsg(`移出失败: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const decision = preview?.decision;
+  const reasons = preview?.reasons ?? preview?.quality?.reasons ?? [];
+  const sug = preview?.suggestion;
+
+  return (
+    <Card title="⑦ 申请加入工作集" colors={colors}>
+      <div style={{ fontSize: 12.5, color: colors.muted, lineHeight: 1.8, marginBottom: 10 }}>
+        须先登记。质量门与启用门禁相同；相关看与工作集成员的最新截面 raw Spearman，
+        |ρ|&lt;0.50 才可直接入集。入集不会自动启用，也不改变多重检验计数。
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        {decision === "in_set" ? (
+          <>
+            <Badge text="已在工作集" color="#3ba272" />
+            <Btn small kind="ghost" onClick={removeMe} disabled={busy}>
+              {busy ? "处理中…" : "移出工作集"}
+            </Btn>
+          </>
+        ) : (
+          <Btn small kind="primary" onClick={apply} disabled={busy}>
+            {busy ? "处理中…" : "申请加入工作集"}
+          </Btn>
+        )}
+        {decision === "admit" && preview?.ok !== false && preview?.in_set !== true && (
+          <Btn small onClick={confirmAdmit} disabled={busy}>确认入集</Btn>
+        )}
+        {decision === "replace" && sug && (
+          <Btn small onClick={confirmAdmit} disabled={busy}>
+            确认替换「{sug.replace_name || `#${sug.replace_registry_id}`}」
+          </Btn>
+        )}
+      </div>
+
+      {decision === "admit" && preview?.in_set !== true && (
+        <div style={{ marginTop: 10, fontSize: 12.5, color: colors.muted }}>
+          可以加入工作集。主路 t={preview?.t_stat != null ? preview.t_stat.toFixed(2) : "—"}
+          {preview?.corr?.max_abs_corr_ws != null
+            ? ` · 与成员最大 |ρ|=${preview.corr.max_abs_corr_ws.toFixed(2)}`
+            : ""}
+          。请确认后写入。
+        </div>
+      )}
+      {decision === "replace" && sug && (
+        <div style={{ marginTop: 10, fontSize: 12.5, lineHeight: 1.8 }}>
+          建议替换 <b>{sug.replace_name || `#${sug.replace_registry_id}`}</b>
+          {sug.reason ? `：${sug.reason}` : ""}
+          <br />
+          raw |ρ|={sug.rho == null ? "—" : Math.abs(sug.rho).toFixed(2)}
+          {" · "}候选 t={sug.t_candidate == null ? "—" : sug.t_candidate.toFixed(2)}
+          {" · "}成员 t={sug.t_member == null ? "—" : sug.t_member.toFixed(2)}
+        </div>
+      )}
+      {(decision === "reject" || preview?.ok === false) && decision !== "in_set" && (
+        <div style={{ marginTop: 10, fontSize: 12.5, color: colors.up, lineHeight: 1.8 }}>
+          不能加入{preview?.error_code ? `（${preview.error_code}）` : ""}
+          {reasons.length > 0 ? `：${reasons.join("；")}` : ""}
+          {sug?.conflict_members && sug.conflict_members.length > 0 && (
+            <div style={{ marginTop: 4, color: colors.muted }}>
+              替换后仍冲突：{sug.conflict_members.map((c) => c.name || `#${c.registry_id}`).join("、")}
+            </div>
+          )}
+        </div>
+      )}
+      {(msg || lifeMsg.includes("失败")) && decision !== "in_set" && (
+        <div style={{ marginTop: 10, fontSize: 12.5, color: colors.up, lineHeight: 1.8 }}>
+          {msg}
+        </div>
+      )}
+      {doneNote && (
+        <div style={{ marginTop: 10, fontSize: 12.5, color: colors.muted }}>{doneNote}</div>
+      )}
+    </Card>
+  );
+}
+
 
 function CorrHeat({ corr, colors }: { corr: Record<string, number>; colors: ThemeColors }) {
   const entries = Object.entries(corr).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));

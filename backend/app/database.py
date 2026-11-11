@@ -176,6 +176,8 @@ def _migrate_sqlite() -> None:
             # W47-3：多重检验累计表 + 种子
             from app.services.factor_mt import migrate_factor_mt_state
             migrate_factor_mt_state(conn)
+            from app.services.factor_workset import migrate_factor_workset
+            migrate_factor_workset(conn)
             conn.commit()
     except Exception as exc:
         # 实盘账本结构不明时宁可拒绝启动，不能带着半套迁移继续记账。
