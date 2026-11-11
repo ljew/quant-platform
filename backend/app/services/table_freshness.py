@@ -79,6 +79,11 @@ def _classify(table: str, col: str, rows: int) -> tuple[str, int, int]:
     `fund_hold_coverage` 292 天也是正常（基金半年报）。
     误报多了就没人看这个页面了 —— 所以宁可分档，不要一片红。
     """
+    if table == "paper_trades":
+        # 只在有成交时插入行。按日频判会把「这周没触发调仓」误报成数据故障 ——
+        # 2026-11-12 早上就红了一次（最新 11-06，判 6 天前）。
+        # 模拟盘是否还活着看 paper_snapshots（每天必写），不看成交。
+        return "event", 0, 0
     if col == "ann_date":
         return "财报类（半年/年度）", 400, 800
     if table == "index_membership":
@@ -142,10 +147,12 @@ def table_freshness(db, use_cache: bool = True) -> dict:
             continue
 
         kind, warn_d, fail_d = _classify(name, col, cnt)
-        if kind == "config":
+        if kind in ("config", "event"):
+            note = ("成交事件表：有成交才写，没成交不代表异常"
+                    if kind == "event" else "配置/登记表，不按数据新鲜度判断")
             rows.append({"table": name, "date_col": col, "rows": cnt,
                          "latest": latest, "days_ago": days, "status": "n/a",
-                         "note": "配置/登记表，不按数据新鲜度判断"})
+                         "note": note})
             continue
         eff = days - grace
         if eff <= warn_d:
