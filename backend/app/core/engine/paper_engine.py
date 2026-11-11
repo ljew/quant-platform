@@ -104,7 +104,13 @@ def _load_portfolio(db, task: PaperTask) -> dict:
     """组合模拟盘：跑『到今天』的 PortfolioBacktestEngine（日频 rebalance）。"""
     meta = get_strategy(task.strategy_key)
     index_code = task.index_code or meta.get("index_code") or "000906"
-    index_symbol = meta.get("index_symbol") or ("sh" + index_code)
+    # 399 开头是深证（国证A指 sz399317 是平台统一基准）。原来一刀切 "sh"+code，
+    # 对 399317 会拼成 sh399317 → 基准取空 → 任务直接挂。与 routers/paper.py
+    # 的 _index_symbol 保持同一口径。
+    index_symbol = meta.get("index_symbol") or (
+        index_code if index_code[:2] in ("sh", "sz", "bj")
+        else ("sz" if str(index_code).startswith("399") else "sh") + str(index_code)
+    )
     params = _merge_params(meta, task.params_json)
     end = date.today()
     # 回测起点 = 账户建账日，不是「5 年前」。
