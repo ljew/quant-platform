@@ -248,9 +248,14 @@ window.__ModuleLoader__.load({
 				read();
 				document.addEventListener("input", read, true);
 				document.addEventListener("keyup", read, true);
+				// ⚠️ 发送后 Lexical 会清空内容，但**不派发 input 事件** ——
+				// 只靠事件监听的话，「→ 推荐：X」会一直挂在那儿（实测踩到）。
+				// 800ms 轮询一次 innerText 最省事，读文本本身几乎无开销。
+				const timer = window.setInterval(read, 800);
 				return () => {
 					document.removeEventListener("input", read, true);
 					document.removeEventListener("keyup", read, true);
+					window.clearInterval(timer);
 				};
 			}, []);
 
@@ -466,6 +471,18 @@ window.__ModuleLoader__.load({
 			create_paper_task: "建模拟盘",
 		};
 
+		/** 子智能体 id → 中文名。`ask` 工具靠这个把 agent_preset 翻成人话。 */
+		const AGENT_CN = {
+			"strategy-researcher": "策略研究员",
+			factor: "因子研究员",
+			risk: "风控",
+			"data-eng": "数据工程师",
+			ops: "运维",
+			news: "资讯研究员",
+			portfolio: "组合经理",
+			trader: "交易员",
+		};
+
 		/** `mcp__quant__get_backtests` → `get_backtests`；不是 quant 工具返回 null。 */
 		function quantToolName(name) {
 			if (typeof name !== "string") return null;
@@ -539,7 +556,12 @@ window.__ModuleLoader__.load({
 		function QuantToolCard({ toolName, block }) {
 			const [open, setOpen] = react.useState(false);
 			const short = quantToolName(toolName) || toolName;
-			const title = TOOL_CN[short] || short;
+			// `ask` 是子智能体派发（P1 的并行取证）。它不走 mcp__quant__ 前缀，
+			// 但结构一样（tool/call + tool/result），所以复用同一张卡。
+			// 不处理的话 3 个并行子任务会显示成 3 条原始 JSON —— 正好把
+			// 「谁去查了什么」这个最关键的信息埋掉。
+			const isAsk = toolName === "ask";
+			const title = isAsk ? "派子智能体" : TOOL_CN[short] || short;
 
 			const done = block && "kind" in block;
 			const rawArgs = done
@@ -553,6 +575,15 @@ window.__ModuleLoader__.load({
 				.filter(([, v]) => v !== null && v !== undefined && v !== "")
 				.map(([k, v]) => `${k}=${flat(v)}`)
 				.join(" · ");
+
+			// ask 的一行摘要：角色 + 任务标题。prompt 动辄几百字，只进展开区，
+			// 否则三个并行子任务排下来会变成三坨糊在一起的字。
+			const askRole = isAsk
+				? AGENT_CN[args.agent_preset] || args.agent_preset || "子任务"
+				: "";
+			const summary = isAsk
+				? ["「" + askRole + "」", args.description].filter(Boolean).join(" · ")
+				: argLine;
 
 			const text = done && Array.isArray(block.content) && block.content[0]
 				? block.content[0].text || ""
@@ -584,7 +615,7 @@ window.__ModuleLoader__.load({
 					{ style: { opacity: 0.5, fontSize: 11 } },
 					done ? (failed ? "失败" : missing.length ? "有缺口" : "完成") : "运行中…"
 				),
-				argLine
+				summary
 					? react.createElement(
 							"span",
 							{
@@ -592,9 +623,9 @@ window.__ModuleLoader__.load({
 									opacity: 0.55, fontSize: 11, flex: 1, minWidth: 0,
 									overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
 								},
-								title: argLine,
+								title: summary,
 							},
-							argLine
+							summary
 					  )
 					: react.createElement("span", { style: { flex: 1 } }),
 				react.createElement("span", { style: { opacity: 0.4, fontSize: 11 } },
@@ -604,6 +635,31 @@ window.__ModuleLoader__.load({
 			if (!open) return head;
 
 			const body = [];
+			// ask 展开：任务书 + 子智能体交回来的结论。
+			// 它的结果是自然语言不是 JSON（payload 为 null），所以下面那段
+			// payload.data 的渲染对它不生效，这里单独给。
+			if (isAsk) {
+				if (args.prompt) {
+					body.push(react.createElement("div", {
+						key: "ask-task",
+						style: {
+							marginTop: 6, fontSize: 11.5, lineHeight: 1.75, opacity: 0.8,
+							whiteSpace: "pre-wrap", maxHeight: 110, overflow: "auto",
+						},
+					}, "任务：" + String(args.prompt).slice(0, 600)));
+				}
+				if (text) {
+					body.push(react.createElement("div", {
+						key: "ask-out",
+						style: {
+							marginTop: 6, fontSize: 12, lineHeight: 1.8,
+							padding: "6px 9px", borderRadius: 6,
+							background: "rgba(128,128,128,.07)",
+							maxHeight: 260, overflow: "auto", whiteSpace: "pre-wrap",
+						},
+					}, String(text).slice(0, 1500)));
+				}
+			}
 			if (failed) {
 				body.push(react.createElement("div", {
 					key: "err",
@@ -669,6 +725,9 @@ window.__ModuleLoader__.load({
 				keys.push("mcp__quant__" + k);
 				keys.push(k);
 			}
+			// 子智能体派发（P1）：并行取证时会连着出现 2~3 次，
+			// 用同一张卡渲染「派给谁 / 查了什么 / 交回什么」。
+			keys.push("ask");
 			return keys;
 		}
 
