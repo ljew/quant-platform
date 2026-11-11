@@ -146,7 +146,7 @@ function HubContent({ sub, id, inner }: { sub: string; id?: number; inner?: stri
     case "pipeline": return <DataPipelinePage />;
     case "monitor": return <MonitorPage />;
     case "auto": return <AutoResearchHubPage />;
-    case "agent": return <AgentPortalPage />;
+    case "agent": return <AgentPortalPage cardId={id} />;
     case "approvals": return <ApprovalsPage />;
     default: return null;
   }

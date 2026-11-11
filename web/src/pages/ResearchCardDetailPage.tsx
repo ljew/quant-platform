@@ -788,6 +788,19 @@ export default function ResearchCardDetailPage({ cardId, onBack, initialTab }: {
         <Badge text={isFactor ? "因子卡" : "策略卡"} color="#6c5ce7" soft />
         <Badge text={meta.label} color={meta.color} soft />
         <span style={{ fontSize: 12, color: colors.muted }}>{meta.desc}</span>
+        {/* 设计 08 节「跳出去 / 跳回来」的入口那半：带着卡号去问，不用重述上下文。
+            智能体页收到 #384 会显示「📎 研究卡 #384」，点一下就能把问题填好。 */}
+        <a
+          href={`#agent/${card.id}`}
+          title="带着这张卡的上下文去问智能体（会带一个「📎 研究卡 #N」的小标签）"
+          style={{
+            marginLeft: "auto", fontSize: 12.5, color: colors.accent,
+            textDecoration: "none", border: `1px solid ${colors.accent}55`,
+            borderRadius: 8, padding: "4px 11px", whiteSpace: "nowrap",
+          }}
+        >
+          问智能体 ↗
+        </a>
       </div>
 
       {/* 页签：概览=原有档案；其余四页是设计文档 09 节要求的「枢纽」 */}

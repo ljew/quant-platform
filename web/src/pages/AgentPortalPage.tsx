@@ -17,7 +17,7 @@
  * 产物栏刻意**不**猜「它刚才引用了哪几条」：那要解析消息流，猜错会误导。
  * 这里给的是「最近发生的事实」，按时间排，你自己对号入座；点一下跳回平台核对。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { agentPortalApi, type AgentPortalStatus } from "../api/client";
 import { useTheme } from "../theme";
 
@@ -36,13 +36,28 @@ const KIND_COLOR: Record<string, string> = {
   报告: "#16a34a",
 };
 
-export default function AgentPortalPage() {
+export default function AgentPortalPage({ cardId }: { cardId?: number } = {}) {
   const { colors } = useTheme();
   const [st, setSt] = useState<AgentPortalStatus | null>(null);
   const [probing, setProbing] = useState(true);
   const [nonce, setNonce] = useState(0);
   const [items, setItems] = useState<Deliverable[]>([]);
   const [railOpen, setRailOpen] = useState(true);
+  // 从策略页跳进来时带的 card_id（设计文档 08 节「跳出去 / 跳回来」）。
+  // 用 postMessage 递进去而不是拼 URL：dsh 那边 401→307 会重写 Location，
+  // 带 query 容易被 token 引导吃掉；同源 iframe 直接递消息最稳，且可重复触发。
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const sendCard = useCallback(() => {
+    if (!cardId) return;
+    // iframe 的 onLoad 早于 SPA 里插件挂载：只发一次会丢（监听器还没注册）。
+    // 重发三次覆盖初始化窗口，插件那边 setCtxCard 是幂等的。
+    [0, 1500, 4000].forEach((ms) =>
+      window.setTimeout(() => {
+        const w = frameRef.current?.contentWindow;
+        if (w) w.postMessage({ type: "quant-agent-context", cardId }, window.location.origin);
+      }, ms)
+    );
+  }, [cardId]);
 
   const probe = useCallback(async () => {
     setProbing(true);
@@ -89,6 +104,18 @@ export default function AgentPortalPage() {
       >
         <span style={{ width: 7, height: 7, borderRadius: 99, background: dot, flexShrink: 0 }} />
         <span style={{ color: colors.text, fontWeight: 600 }}>智能体</span>
+        {cardId ? (
+          <span
+            title="从策略页带进来的上下文，已递给智能体"
+            style={{
+              fontSize: 11, padding: "1px 7px", borderRadius: 99,
+              border: `1px solid ${colors.accent}55`, color: colors.accent,
+              whiteSpace: "nowrap",
+            }}
+          >
+            研究卡 #{cardId}
+          </span>
+        ) : null}
         <span>
           {probing
             ? "探测中…"
@@ -158,8 +185,10 @@ export default function AgentPortalPage() {
         <div style={{ display: "flex", gap: 12, flex: 1, minHeight: 0 }}>
           <iframe
             key={nonce}
+            ref={frameRef}
             title="智能体"
             src={st?.entry || "/agent/"}
+            onLoad={sendCard}
             style={{
               flex: 1, minWidth: 0, height: "calc(100vh - 152px)",
               border: `1px solid ${colors.border}`, borderRadius: 12, background: colors.card,

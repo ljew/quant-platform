@@ -236,6 +236,11 @@ window.__ModuleLoader__.load({
 			const [note, setNote] = react.useState("");
 			// 8 个角色默认收起：默认形态是「给第一句」（见下面 head 的注释）
 			const [open, setOpen] = react.useState(false);
+			// 平台递进来的上下文（研究卡 id）。设计 08 节「跳出去 / 跳回来」：
+			// 从策略页点「问智能体」进来时，问题里要能自动带上 #384。
+			// 走 postMessage 而不是 URL 参数：dsh 的 401→307 会重写 Location，
+			// 带 query 容易被 token 引导吃掉。
+			const [ctxCard, setCtxCard] = react.useState(null);
 			// 输入框里的草稿（用于实时推荐角色）——dsh 的 composer 是 Lexical，
 			// 只能从 DOM 读；input 和 keyup 都挂，Lexical 有时只发其中一个。
 			const [draft, setDraft] = react.useState("");
@@ -260,6 +265,17 @@ window.__ModuleLoader__.load({
 			}, []);
 
 			const suggest = picked ? null : routeText(draft);
+
+			// 平台页在 iframe onLoad 后用 postMessage 递 card_id 进来（同源）。
+			react.useEffect(() => {
+				const onMsg = (ev) => {
+					if (ev.origin !== window.location.origin) return;
+					const d = ev.data || {};
+					if (d.type === "quant-agent-context" && d.cardId) setCtxCard(d.cardId);
+				};
+				window.addEventListener("message", onMsg);
+				return () => window.removeEventListener("message", onMsg);
+			}, []);
 
 			const base = {
 				border: "1px solid var(--dsh-border, rgba(128,128,128,.28))",
@@ -392,6 +408,26 @@ window.__ModuleLoader__.load({
 				},
 				h("span", { key: "__lb", style: { opacity: 0.55, marginRight: 2 } },
 					picked ? "已选：" + picked.name : body.length && suggest ? "判断：" : "试试："),
+				// 平台带进来的上下文：点一下把带 #id 的问题填进输入框
+				ctxCard
+					? h(
+							"button",
+							{
+								key: "__ctx",
+								title: "点一下：把「#" + ctxCard + " 这条策略还值不值得跟？」填进输入框",
+								onClick: () => {
+									void fillComposer(
+										"#" + ctxCard + " 这条策略还值不值得跟？给我证据、区间和失效条件。"
+									);
+								},
+								style: Object.assign({}, base, {
+									borderColor: "var(--dsh-accent, #4c7dff)",
+									color: "var(--dsh-accent, #4c7dff)",
+								}),
+							},
+							"📎 研究卡 #" + ctxCard
+					  )
+					: null,
 				body,
 				h(
 					"button",
