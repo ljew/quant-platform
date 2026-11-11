@@ -50,7 +50,11 @@ FOREIGN_SOURCES: list[dict[str, Any]] = [
         "label": "BBC Business",
         "kind": "rss",
         "url": "https://feeds.bbci.co.uk/news/business/rss.xml",
-        "enabled_default": True,
+        # 2026-11-12 实测：这条 feed 从本网络彻底不可达 —— 容器内 20s 超时、
+        # 宿主走代理 10s 断、直连 25s 断，http/rsshub 镜像也全 502/000。
+        # 留着只会每槽（07:00/12:30/21:00）刷一条「异常」，且拖慢整批。
+        # 网络恢复后把它改回 True 即可，采集逻辑不用动。
+        "enabled_default": False,
         "tags": ["media"],
     },
     {
