@@ -321,6 +321,26 @@ def _today_run(stage: str) -> dict | None:
     return dict(zip(keys, row))
 
 
+def _done_after_slot(prev: dict | None, hour: int, minute: int) -> bool:
+    """今天这个环节是否已经在**槽位时间之后**成功跑过。
+
+    不能只看「今天有没有一条 ok 记录」：白天手动跑一次会写
+    run_date=今天 + status=ok，晚上到点就被跳过 —— 而基金净值要到晚间才更新，
+    白天那次拿到的是昨天的数据，于是当天净值永远不进来。
+    2026-11-12 编排侧出过一模一样的问题（白天的信号回填把 17:30 挡掉了，
+    结果当天行情一条都没入库）。
+
+    finished_at 是 isoformat(timespec="seconds")，如 2026-11-12T22:43:27，
+    与 f"{date}T{HH:MM}" 同格式前缀，字符串比较即时间比较。
+    """
+    if not prev or prev.get("status") != "ok":
+        return False
+    fin = str(prev.get("finished_at") or "")
+    if len(fin) < 16:
+        return False
+    return fin >= f"{_today()}T{hour:02d}:{minute:02d}"
+
+
 def _pid_alive(pid: int | None) -> bool:
     """容器内判断子进程是否还在（容器重启后 PID 空间重置，配合心跳使用）。"""
     if not pid:
@@ -681,8 +701,9 @@ def run_stage(key: str, force: bool = False, trigger: str = "manual",
 
     if not force:
         prev = _today_run(key)
-        if prev and prev["status"] == "ok":
-            return {"ok": True, "skipped": True, "reason": "今天已成功，跳过"}
+        if _done_after_slot(prev, st["hour"], st["minute"]):
+            return {"ok": True, "skipped": True,
+                    "reason": f"今天 {st['hour']:02d}:{st['minute']:02d} 之后已成功，跳过"}
 
     if not _claim(key, trigger):
         return {"ok": False, "error": "该环节正在运行（或抢占失败）"}
@@ -910,8 +931,10 @@ def tick() -> list[str]:
         if not _passed_today(st["hour"], st["minute"]):
             continue
         prev = _today_run(key)
-        if prev and prev["status"] == "ok":
+        if _done_after_slot(prev, st["hour"], st["minute"]):
             continue
+        # 到这里说明「今天没有在槽位后成功过」。注意 prev 可能是白天手动跑的
+        # ok 记录 —— 那是旧数据，不能挡住晚间这次，继续往下触发。
         # —— 僵尸 running 自愈（2026-11-09）——
         # 容器重启/进程被杀后，库里留着 running 而内存里 _running 早空了。
         # 这里靠心跳判断死活：真死了就作废并当失败处理，继续往下走重试逻辑；
