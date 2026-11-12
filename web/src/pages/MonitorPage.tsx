@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, AlertLogItem, CredentialsReport, DataflowReport, FrameworkHealth, HealthReport, MonitorStatus } from "../api/client";
+import { api, AlertLogItem, CredentialsReport, DataflowReport, FrameworkHealth, HealthReport, MonitorStatus, SelfCheckReport } from "../api/client";
 import { Badge, Card } from "../components/ui";
 import { Arrow, FlowCol, LayerRow } from "../components/flow";
 import type { ThemeColors } from "../theme";
@@ -62,6 +62,62 @@ function FrameworkCard({ fw, colors, style }: {
   );
 }
 
+/** 启动自检卡：六项「能不能真的干活」。
+ *
+ * 和框架体检的分工：框架体检看**数据链路**（调度/编排/数据/研究/运行时五层），
+ * 自检看**这个进程自己**（schema 可生成 / 能拿写锁 / 分析库可读 / 核心表非空 /
+ * 调度线程存活 / 行情不落后）。
+ *
+ * 为什么要单独一张：过去每个故障都发生在「接口全 200」的时候 —— DuckDB 冻结
+ * 26 小时、WAL 坏掉全站 500 但 openapi 照样 200、信号停在两天前。进程 healthcheck
+ * 探的是 /openapi.json，它分不出「活着」和「能干活」。
+ */
+function SelfCheckCard({ sc, colors, style }: {
+  sc: SelfCheckReport; colors: ThemeColors; style?: React.CSSProperties;
+}) {
+  const bad = sc.checks.filter((c) => c.status !== "OK");
+  return (
+    <Card title="启动自检" colors={colors} style={style}>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", fontSize: 12.5 }}>
+        <span style={{ color: FW_COLOR[sc.worst] ?? colors.muted, fontWeight: 600 }}>{sc.worst}</span>
+        <span style={{ color: colors.muted }}>
+          {sc.checks.length} 项 · {sc.elapsed_ms}ms · {sc.at.slice(11, 19)} · 悬停看期望值
+        </span>
+      </div>
+      <div style={{
+        marginTop: 8, display: "grid", gap: "4px 14px",
+        gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+      }}>
+        {sc.checks.map((c) => {
+          const col = FW_COLOR[c.status] ?? colors.muted;
+          return (
+            <div key={c.name} title={`期望：${c.expect}`}
+              style={{ fontSize: 11.5, display: "flex", gap: 6, alignItems: "baseline", minWidth: 0 }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: col, flex: "none" }} />
+              <span style={{ color: colors.muted, flex: "none" }}>{c.name}</span>
+              <span style={{
+                color: c.status === "OK" ? colors.text : col, overflow: "hidden",
+                textOverflow: "ellipsis", whiteSpace: "nowrap",
+              }}>{c.value}</span>
+            </div>
+          );
+        })}
+      </div>
+      {bad.length > 0 && (
+        <div style={{ marginTop: 8, borderTop: `1px solid ${colors.border}`, paddingTop: 6, fontSize: 11.5, color: colors.muted }}>
+          {bad.map((c) => (
+            <div key={c.name} style={{ padding: "2px 0", lineHeight: 1.7 }}>
+              <span style={{ color: FW_COLOR[c.status], fontWeight: 600 }}>[{c.status}]</span>{" "}
+              {c.name}：{c.value}（期望 {c.expect}）
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+
 export default function MonitorPage() {
   const [data, setData] = useState<MonitorStatus | null>(null);
   const [error, setError] = useState("");
@@ -70,6 +126,7 @@ export default function MonitorPage() {
   const [lastRefresh, setLastRefresh] = useState("");
   const [showDetail, setShowDetail] = useState(false);
   const [fw, setFw] = useState<FrameworkHealth | null>(null);
+  const [sc, setSc] = useState<SelfCheckReport | null>(null);
   const [running, setRunning] = useState(false);
   const alarmRef = useRef<HTMLDivElement>(null);
   const { colors } = useTheme();
@@ -94,7 +151,10 @@ export default function MonitorPage() {
 
   // 框架体检：调度 / 编排 / 数据 / 研究 / 运行时 五层，每分钟刷新
   useEffect(() => {
-    const load = () => api.frameworkHealth().then(setFw).catch(() => {});
+    const load = () => {
+      api.frameworkHealth().then(setFw).catch(() => {});
+      api.selfcheck().then(setSc).catch(() => {});
+    };
     load();
     const t = setInterval(load, 60000);
     return () => clearInterval(t);
@@ -106,6 +166,7 @@ export default function MonitorPage() {
     return (
       <div style={{ maxWidth: 1280, margin: "0 auto" }}>
         {fw && <FrameworkCard fw={fw} colors={colors} style={{ marginBottom: 14 }} />}
+        {sc && <SelfCheckCard sc={sc} colors={colors} style={{ marginBottom: 14 }} />}
         <div style={{ padding: 24, color: "#888" }}>加载监控数据…{error}</div>
       </div>
     );
@@ -217,6 +278,7 @@ export default function MonitorPage() {
       )}
 
       {fw && <FrameworkCard fw={fw} colors={colors} style={{ marginBottom: 14 }} />}
+      {sc && <SelfCheckCard sc={sc} colors={colors} style={{ marginBottom: 14 }} />}
 
       {/* 凭证集中：五把钥匙一屏看齐。放这里而不是最后 —— 简报没发出去时，
           第一个该怀疑的就是 SMTP / Cookie / 大模型 Key，不是先看数据表。 */}
