@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -156,18 +156,42 @@ def _step_data(db: Session, run_id: int) -> None:
     # 子进程炸了也只是 warn、流水线照常往下跑 —— 数据没更新却发布信号，
     # 这是无人值守系统里最坏的失效方式（静默陈旧）。
     if proc.returncode != 0:
-        tail = ((proc.stderr or proc.stdout or "").strip().splitlines() or [""])[-1]
+        tail = _err_digest(proc.stderr or "", proc.stdout or "")
         _event(db, run_id, "data",
-               f"数据管道失败（rc={proc.returncode}）：{tail[:200]}",
+               f"数据管道失败（rc={proc.returncode}）：{tail}",
                step="data", status="fail", level="error",
                duration_ms=int((time.time() - t0) * 1000))
         db.commit()
-        raise RuntimeError(f"数据管道失败 rc={proc.returncode}: {tail[:200]}")
+        raise RuntimeError(f"数据管道失败 rc={proc.returncode}: {tail}")
     _event(db, run_id, "data",
            f"数据管道完成（{time.time()-t0:.0f}s，{rid_line or '无 run 记录'}）",
            step="data", status="ok",
            duration_ms=int((time.time() - t0) * 1000))
     db.commit()
+
+
+def _err_digest(stderr: str, stdout: str = "", lines: int = 12) -> str:
+    """从子进程输出里挑出真正有诊断价值的那几行。
+
+    原来只取**最后一行**，而 traceback 的最后一行恰好是
+    "(Background on this error at: https://sqlalche.me/e/20/xxx)" ——
+    2026-11-12 run 322 就是这样，日志里只留下两个文档链接，
+    完全看不出是锁冲突还是字段错误。
+    """
+    raw = (stderr or "").strip() or (stdout or "").strip()
+    if not raw:
+        return "无输出"
+    ls = [ln.rstrip() for ln in raw.splitlines() if ln.strip()]
+    keys = ("Error:", "Exception:", "Traceback", "sqlite3.OperationalError",
+            "sqlalchemy.exc", "RuntimeError")
+    picked = [ln for ln in ls if any(k in ln for k in keys)][-3:] + ls[-lines:]
+    seen: set[str] = set()
+    out: list[str] = []
+    for ln in picked:
+        if ln not in seen:
+            seen.add(ln)
+            out.append(ln)
+    return " ⏎ ".join(out)[:600]
 
 
 class _QualityBlocked(Exception):
@@ -200,7 +224,69 @@ def _step_research_signal(db: Session, run_id: int) -> None:
     from app.config import DATA_DIR
     from app.services.xq import runner as xq_runner
 
-    xq_runner.run_signal_scan(db, str(DATA_DIR / "quant.duckdb"), run_id=run_id)
+    duck = str(DATA_DIR / "quant.duckdb")
+    xq_runner.run_signal_scan(db, duck, run_id=run_id)
+    _backfill_signal_gaps(db, run_id, duck)
+
+
+def _backfill_signal_gaps(db: Session, run_id: int, duck_path: str,
+                          max_days: int = 5) -> None:
+    """补算「行情已有、但 signal_daily 没有」的交易日。
+
+    2026-11-12 事故：11-11 的信号**整天缺失**，今日观点一直显示 11-10。
+    `run_signal_scan` 只算「面板最新一天」，而 11-11 那天编排跑的时候分析库
+    （DuckDB）还冻结在 11-10（sync_duckdb 因缺 sqlite 扩展在静默跳过），
+    于是它算的是 11-10、把 11-10 又写了一遍；11-11 从此没人算 ——
+    而且**不会自愈**：第二天只算 11-12，缺口永远留着。
+
+    口径用 SQLite 的 kline 最新日作「应算到哪天」（DuckDB 可能滞后），
+    只补 signal_daily 最新日之后的日子，最多 max_days 天，避免一次回填太久。
+    任何异常都只发 warning 事件，绝不能拖垮整条编排。
+    """
+    from app.models import KlineDaily, SignalDaily
+    from app.services.xq.data import load_panel
+    from app.services.xq.runner import panel_asof, run_from_panel
+
+    try:
+        from sqlalchemy import func
+
+        latest_sig = db.execute(select(func.max(SignalDaily.date))).scalar()
+        latest_bar = db.execute(select(func.max(KlineDaily.trade_date))).scalar()
+        if not latest_sig or not latest_bar or latest_bar <= latest_sig:
+            return
+        panel = load_panel(duck_path, lookback=320)
+        days = sorted({
+            (x if isinstance(x, date) else x.date()) for x in panel.df["date"]
+        } - {latest_sig})
+        days = [d for d in days if latest_sig < d <= latest_bar][-max_days:]
+        if not days:
+            _event(db, run_id, "research",
+                   f"信号缺口检测：行情已到 {latest_bar}、信号停在 {latest_sig}，"
+                   "但面板里找不到中间交易日（DuckDB 可能还没同步）",
+                   step="signal", status="warn", level="warn")
+            db.commit()
+            return
+        _event(db, run_id, "research",
+               f"信号缺口：行情已到 {latest_bar}、信号停在 {latest_sig}，"
+               f"补算 {len(days)} 天（{days[0]} ~ {days[-1]}）",
+               step="signal", status="running")
+        db.commit()
+        done = 0
+        for d in days:
+            r = run_from_panel(db, panel_asof(panel, d, keep_days=260), run_id=run_id)
+            if r.get("ok"):
+                done += 1
+            else:
+                _event(db, run_id, "research", f"{d} 补算失败：{r.get('error')}",
+                       step="signal", status="fail", level="warn")
+                db.commit()
+        _event(db, run_id, "research", f"信号补算完成：{done}/{len(days)} 天",
+               step="signal", status="ok")
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        _event(db, run_id, "research", f"信号缺口补算异常（已跳过）：{exc}"[:200],
+               step="signal", status="fail", level="warn")
+        db.commit()
 
 
 def _step_backtest(db: Session, run_id: int) -> None:
@@ -638,11 +724,17 @@ def start_daily_scheduler() -> None:
                         from app.models import ResearchRun as _RR
 
                         with _SL() as _db:
+                            # 只认**定时槽之后**跑完的。白天的普通手动运行（信号回填、
+                            # 缺口补算等）不算「今天日更做完了」—— 2026-11-12 事故：
+                            # 15:34/15:38 两次手动 run 让这里判「已跑」，
+                            # 17:30 编排直接不触发，当天行情一条没入库。
+                            _slot = datetime.combine(
+                                now.date(), datetime.min.time()
+                            ).replace(hour=DAILY_HOUR, minute=DAILY_MINUTE)
                             done = _db.execute(
                                 _select(_RR.id).where(
                                     _RR.status == "SUCCESS",
-                                    _RR.finished_at >= datetime.combine(
-                                        now.date(), datetime.min.time()),
+                                    _RR.finished_at >= _slot,
                                 ).limit(1)
                             ).first()
                         if done:

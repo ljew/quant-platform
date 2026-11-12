@@ -3,10 +3,9 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.config import settings, BASE_DIR
+from app.config import settings
 from app.database import init_db
 from app.routers import data, market, strategy, paper, hedge, monitor, factor, llm, signal, agent, news, auto, research, live_ops, wechat, etf_flow, reports, fund, agent_portal, approvals
 from app.schemas import HealthResponse
@@ -92,7 +91,7 @@ def on_startup():
                   "news_feed_scheduler", "news_feed",
                   "foreign_news_scheduler", "foreign_news",
                   "quote_scheduler", "quote_snapshot",
-                  "fund_scheduler"):
+                  "fund_scheduler", "app.services.selfcheck"):
         _lg = logging.getLogger(_name)
         if not _lg.handlers:
             _lg.addHandler(_h)
@@ -103,6 +102,16 @@ def on_startup():
     # 之后配置统一在页面上维护，改完即时生效无需重启。
     from app.services.llm_config import ensure_env_provider
     ensure_env_provider()
+
+    # 调度器总开关（2026-11-12）：影子容器 / 冒烟测试必须能起一个「只提供 HTTP、
+    # 不跑任何定时任务」的实例。否则影子容器会在空的临时库上启动看门狗（发邮件）、
+    # orchestrator（17:30 可能触发）、各资讯采集（拉外部数据）—— 副作用比收益大。
+    # 关掉只影响本进程，主容器的 QUANT_SCHEDULERS 默认 1，行为不变。
+    if os.getenv("QUANT_SCHEDULERS", "1") == "0":
+        logging.getLogger(__name__).warning(
+            "QUANT_SCHEDULERS=0：跳过全部调度器（影子容器/冒烟测试模式）")
+        return
+
     from app.core.engine.paper_scheduler import start_paper_scheduler
     start_paper_scheduler()
     # 研究流水线每日定时（17:30 交易日，含补跑；与 data_scheduler 并存，均幂等）
@@ -185,6 +194,13 @@ def on_startup():
         start_fund_scheduler(os.getenv("QUANT_FUND_SCHEDULE", "1") == "1")
     except Exception as _e:  # noqa: BLE001
         logging.getLogger(__name__).warning("基金管道调度器启动失败：%s", _e)
+
+    # 启动自检（2026-11-12）：六项「能不能真的干活」—— schema 可生成、能拿写锁、
+    # 分析库可读、核心表非空、关键调度线程存活、行情不落后。
+    # 过去每个故障都发生在「HTTP 200 但活没干成」的状态下，healthcheck 看不出来。
+    # 自检本身失败只记日志，绝不影响服务启动。
+    from app.services.selfcheck import log_selfcheck
+    log_selfcheck()
 
 
 @app.get("/health", response_model=HealthResponse, tags=["meta"])

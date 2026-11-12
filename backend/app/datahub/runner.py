@@ -815,6 +815,71 @@ STEPS = [
 ]
 
 
+# ─────────────────── 步骤后置断言（数据不变量）───────────────────
+#
+# 为什么不是「0 行就告警」：实测 run 2433/2434/2435，compute_factors 连续三次
+# 0 行，而 factor_daily 每天都在正常更新 1808 行 —— 它返回 0 只表示「没有需要
+# 补的日子」，是正常 no-op。按 0 行告警会造出一屏噪音，正好把这个页面废掉。
+#
+# 真正该问的是：**这一步跑完之后，数据事实成立吗？**
+# 下面两条是绝对不变量，任何时刻都该成立，且各自对应一个真实发生过的故障：
+#
+#   · sync_duckdb   → 分析库与 SQLite 的最新日必须一致
+#     2026-11-11 分析库冻结 26 小时，步骤照样「完成 0 行」绿色通过
+#   · compute_factors → 因子最新日必须追上行情
+#     因子落后一天不报任何错，只会让信号/今日观点/回测全部基于旧截面
+
+def _post_duckdb_synced(db) -> tuple[bool, str]:
+    """不变量：DuckDB 的 kline 最新日 == SQLite 的。
+
+    行数一致不代表搬的是最新数据，所以要比日期，不比行数。
+    """
+    from app.config import DATA_DIR
+
+    sqlite_latest = db.execute(select(func.max(KlineDaily.trade_date))).scalar()
+    if not sqlite_latest:
+        return False, "SQLite 的 kline_daily 为空"
+    try:
+        import duckdb
+
+        con = duckdb.connect(str(DATA_DIR / "quant.duckdb"), read_only=True)
+        try:
+            duck_latest = con.execute(
+                "select max(trade_date) from kline_daily").fetchone()[0]
+        finally:
+            con.close()
+    except Exception as e:  # noqa: BLE001
+        return False, f"分析库打不开（{type(e).__name__}）"
+
+    if str(duck_latest) < str(sqlite_latest):
+        return False, f"分析库停在 {duck_latest}，SQLite 已到 {sqlite_latest}"
+    return True, ""
+
+
+def _post_factor_fresh(db) -> tuple[bool, str]:
+    """不变量：factor_daily 的最新日 >= kline_daily 的最新日。
+
+    compute_factors 是「补齐所有缺失日」，正常跑完时因子必须已经追上行情；
+    追不上只有两种可能 —— 判据算错（覆盖度基准）或写库失败，两种都不能算绿。
+    """
+    k = db.execute(select(func.max(KlineDaily.trade_date))).scalar()
+    f = db.execute(select(func.max(FactorDaily.trade_date))).scalar()
+    if not k:
+        return False, "行情表为空"
+    if not f:
+        return False, "因子表为空"
+    if str(f) < str(k):
+        return False, f"因子停在 {f}，行情已到 {k}"
+    return True, ""
+
+
+# 步骤 → 后置断言。只给「有绝对不变量可验」的步骤挂，不乱加。
+_POSTCHECK = {
+    "compute_factors": _post_factor_fresh,
+    "sync_duckdb": _post_duckdb_synced,
+}
+
+
 def init_models():
     """确保管道记录表存在。"""
     from app.database import Base, engine
@@ -844,7 +909,7 @@ def run_pipeline(trigger: str = "manual", only: list[str] | None = None,
         db.commit()
         db.refresh(run_row)
         run_id = run_row.id
-        steps_ok = steps_fail = 0
+        steps_ok = steps_fail = steps_warn = 0
         first_error = None
         for name, fn in STEPS:
             if only and name not in only:
@@ -881,6 +946,19 @@ def run_pipeline(trigger: str = "manual", only: list[str] | None = None,
                         extra = f"（{st['note']}）"
                     log.message = f"{name} 完成 {rows} 行{extra}"
                     steps_ok += 1
+
+                # 后置断言：不看返回行数，看数据事实（见 _POSTCHECK 的注释）
+                check = _POSTCHECK.get(name)
+                if check is not None:
+                    try:
+                        passed, why = check(db)
+                    except Exception as e:  # noqa: BLE001
+                        passed, why = False, f"断言本身出错 {type(e).__name__}: {e}"
+                    if not passed:
+                        log.status = "WARN"
+                        log.message = f"{log.message} ⚠ 数据不一致：{why}"
+                        steps_ok -= 1
+                        steps_warn += 1
             except Exception as e:  # noqa: BLE001
                 log.status = "FAIL"
                 log.message = f"{type(e).__name__}: {e} {traceback.format_exc()[-300:]}"

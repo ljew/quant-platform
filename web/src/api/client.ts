@@ -597,6 +597,8 @@ export const api = {
   monitorHealth: () => get<HealthReport>(`/monitor/health-report`),
   monitorCredentials: () => get<CredentialsReport>(`/monitor/credentials`),
   frameworkHealth: () => get<FrameworkHealth>(`/monitor/framework-health`),
+  /** 启动自检：六项「能不能真的干活」（schema/写锁/分析库/核心表/线程/新鲜度）。 */
+  selfcheck: (fresh = false) => get<SelfCheckReport>(`/monitor/selfcheck?fresh=${fresh}`),
   holidayMode: () => get<HolidayMode>(`/monitor/holiday-mode`),
   setHolidayMode: (mode: "auto" | "on" | "off") =>
     put<HolidayMode>(`/monitor/holiday-mode`, { mode }),
@@ -1056,6 +1058,18 @@ export interface HolidayMode {
   next_trading_day: string | null;
 }
 /** 框架四层体检（调度/编排/数据/研究）—— /monitor/framework-health */
+export interface SelfCheckItem {
+  name: string;
+  status: "OK" | "WARN" | "FAIL";
+  value: string;
+  expect: string;
+}
+export interface SelfCheckReport {
+  at: string;
+  worst: "OK" | "WARN" | "FAIL";
+  elapsed_ms: number;
+  checks: SelfCheckItem[];
+}
 export interface FrameworkHealthItem {
   label: string;
   status: "OK" | "WARN" | "FAIL";
