@@ -156,18 +156,42 @@ def _step_data(db: Session, run_id: int) -> None:
     # 子进程炸了也只是 warn、流水线照常往下跑 —— 数据没更新却发布信号，
     # 这是无人值守系统里最坏的失效方式（静默陈旧）。
     if proc.returncode != 0:
-        tail = ((proc.stderr or proc.stdout or "").strip().splitlines() or [""])[-1]
+        tail = _err_digest(proc.stderr or "", proc.stdout or "")
         _event(db, run_id, "data",
-               f"数据管道失败（rc={proc.returncode}）：{tail[:200]}",
+               f"数据管道失败（rc={proc.returncode}）：{tail}",
                step="data", status="fail", level="error",
                duration_ms=int((time.time() - t0) * 1000))
         db.commit()
-        raise RuntimeError(f"数据管道失败 rc={proc.returncode}: {tail[:200]}")
+        raise RuntimeError(f"数据管道失败 rc={proc.returncode}: {tail}")
     _event(db, run_id, "data",
            f"数据管道完成（{time.time()-t0:.0f}s，{rid_line or '无 run 记录'}）",
            step="data", status="ok",
            duration_ms=int((time.time() - t0) * 1000))
     db.commit()
+
+
+def _err_digest(stderr: str, stdout: str = "", lines: int = 12) -> str:
+    """从子进程输出里挑出真正有诊断价值的那几行。
+
+    原来只取**最后一行**，而 traceback 的最后一行恰好是
+    "(Background on this error at: https://sqlalche.me/e/20/xxx)" ——
+    2026-11-12 run 322 就是这样，日志里只留下两个文档链接，
+    完全看不出是锁冲突还是字段错误。
+    """
+    raw = (stderr or "").strip() or (stdout or "").strip()
+    if not raw:
+        return "无输出"
+    ls = [ln.rstrip() for ln in raw.splitlines() if ln.strip()]
+    keys = ("Error:", "Exception:", "Traceback", "sqlite3.OperationalError",
+            "sqlalchemy.exc", "RuntimeError")
+    picked = [ln for ln in ls if any(k in ln for k in keys)][-3:] + ls[-lines:]
+    seen: set[str] = set()
+    out: list[str] = []
+    for ln in picked:
+        if ln not in seen:
+            seen.add(ln)
+            out.append(ln)
+    return " ⏎ ".join(out)[:600]
 
 
 class _QualityBlocked(Exception):
