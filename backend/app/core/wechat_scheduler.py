@@ -179,6 +179,34 @@ def _crawl_script() -> Path | None:
     return None
 
 
+# 采集脚本里「[i/N] 正常态」的四种开头（其余带编号的都是异常）
+_NORMAL_BODY = ("已最新", "空", "OK ", "DRY ")
+
+
+def _is_fail_line(line: str) -> bool:
+    """判断采集输出里的某一行是不是「某个号失败了」。
+
+    ⚠️ 不能靠「失败」二字：脚本的失败措辞有五种，其中三种根本不含这个词 ——
+    「[3/111] 仍无正文 xxx，跳过」「[5/111] 正文过短(12字) xxx，跳过」
+    「[7/111] 网络不可用 xxx」。2026-11-13 早上就是这样：汇总写着「失败 17」，
+    fails 却是空列表，报告文件因此没写（旧逻辑只在 fails 非空时落盘），
+    17 个失败的原因彻底查不到。
+
+    规则改成：带 `[i/N]` 编号、且不属于四种正常态 → 失败。
+    """
+    t = line.strip()
+    if not t:
+        return False
+    if t.startswith("完成："):
+        return False          # 汇总行本身带「失败 N」，不算一条明细
+    if "❌" in t:             # 凭证失效（无编号前缀）
+        return True
+    if not t.startswith("[") or "]" not in t:
+        return False
+    body = t.split("]", 1)[1].strip()
+    return not body.startswith(_NORMAL_BODY)
+
+
 def _run_crawl() -> tuple[bool, str]:
     script = _crawl_script()
     if script is None:
@@ -210,23 +238,33 @@ def _run_crawl() -> tuple[bool, str]:
     # 2026-11-12 连着两轮都是「失败 15」，只能靠猜。把明细留一份：
     # 日志里打前 5 条（方便 docker logs 直接看），完整清单落盘给页面/排查用。
     # ⚠️ 必须在退出码判断**之前**写：凭证失效（退出码 2）恰恰是最需要明细的场景。
-    fails = [ln.strip() for ln in out.splitlines()
-             if ("失败" in ln or "❌" in ln) and not ln.strip().startswith("完成：")]
-    if fails or r.returncode != 0:
-        if fails:
-            logger.warning("公众号抓取失败明细 %d 条，前 5 条：%s",
-                           len(fails), " ｜ ".join(fails[:5]))
-        try:
-            import json as _json
-            import time as _time
+    fails = [ln.strip() for ln in out.splitlines() if _is_fail_line(ln)]
+    if fails:
+        logger.warning("公众号抓取失败明细 %d 条，前 5 条：%s",
+                       len(fails), " ｜ ".join(fails[:5]))
 
-            _REPORT_FILE.parent.mkdir(parents=True, exist_ok=True)
-            _REPORT_FILE.write_text(_json.dumps(
-                {"at": _time.strftime("%Y-%m-%d %H:%M:%S"), "rc": r.returncode,
-                 "summary": summary, "failures": fails},
-                ensure_ascii=False, indent=1), encoding="utf-8")
-        except Exception:  # noqa: BLE001
-            pass
+    # 🔴 无论成败都落盘。只在失败时写，页面就会**永远挂着上一次失败** ——
+    # 2026-11-13 早上就是这样：06:20 那轮从 06:20:24 正常跑到 06:31:11（11 分钟、
+    # 111 个号），而 /wechat/schedule 的 last_report 还写着 11-12 22:06 的
+    # 「凭证失效 -2012」，白白让人以为又挂了。失败的明细要留，成功的事实也要留。
+    try:
+        import json as _json
+        import time as _time
+
+        _REPORT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _REPORT_FILE.write_text(_json.dumps(
+            {"at": _time.strftime("%Y-%m-%d %H:%M:%S"), "rc": r.returncode,
+             "summary": summary or "完成", "failures": fails,
+             # 原始输出尾部：fails 的提取规则只认「失败 / ❌」两种写法，一旦脚本
+             # 换了措辞就什么都抓不到（2026-11-13 早上：汇总写着「失败 17」，
+             # 明细却是空的，因为汇总行自身被 startswith("完成：") 排除了）。
+             # 留一份原始输出，比任何提取规则都可靠。
+             "tail": "\n".join(
+                 [ln for ln in out.splitlines() if ln.strip()][-40:])},
+            ensure_ascii=False, indent=1), encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        # 不能吞：写不了报告 = 这一轮的失败明细彻底丢失（11-13 就是这样丢的）
+        logger.warning("公众号抓取报告写入失败：%s: %s", type(e).__name__, e)
 
     if r.returncode != 0:
         return False, f"退出码 {r.returncode}：{out.strip()[-300:]}"
