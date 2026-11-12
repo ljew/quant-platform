@@ -1,4 +1,4 @@
-import { ReactNode, useState } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import { HubTabs } from "./Hub";
 
 /**
@@ -9,14 +9,22 @@ import { HubTabs } from "./Hub";
 export function MergedTabs({
   tabs,
   defaultKey,
+  forceKey,
 }: {
   tabs: { key: string; label: string; node: ReactNode }[];
   /** 初始子页签（来自地址栏 #hub/id/inner）；不传或匹配不上就用第一个。 */
   defaultKey?: string;
+  /** 深链变化时强制切到该子页（例如 #btopt/0/workset-accept → backtest）。 */
+  forceKey?: string;
 }) {
   const [active, setActive] = useState(
-    () => tabs.find((t) => t.key === defaultKey)?.key ?? tabs[0].key,
+    () => tabs.find((t) => t.key === (forceKey || defaultKey))?.key ?? tabs[0].key,
   );
+  useEffect(() => {
+    if (!forceKey) return;
+    const hit = tabs.find((t) => t.key === forceKey)?.key;
+    if (hit) setActive(hit);
+  }, [forceKey]);
   return (
     <div>
       <HubTabs tabs={tabs} active={active} onChange={setActive} />

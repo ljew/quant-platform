@@ -6,6 +6,7 @@ import { Card, KpiCard, PageHeader, inputStyle } from "../components/ui";
 import EvalBadges from "../components/EvalBadges";
 import CostSensitivityPanel from "../components/CostSensitivityPanel";
 import WalkForwardPanel from "../components/WalkForwardPanel";
+import WorksetAcceptPanel from "../components/WorksetAcceptPanel";
 import { signalLabel } from "../signalLabel";
 import ParamPanel, { ParamMap, changedKeys, defaultParams } from "../components/ParamPanel";
 
@@ -41,7 +42,7 @@ const snap = (p: ParamMap) =>
   JSON.stringify(Object.keys(p).sort().map((k) => [k, p[k]]));
 
 /** 策略回测（React 版：异步任务 + WebSocket 进度 + 分组参数面板 + 历史列表 + 成交标记）。 */
-export default function BacktestPage() {
+export default function BacktestPage({ inner }: { inner?: string } = {}) {
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
   // 回测历史沉淀了 100+ 条，大量是已停用/改名的策略（turtle / rsi_reversal /
   // bollinger / ma_alignment）留下的孤儿记录，把当前能用的挤没了。
@@ -228,6 +229,14 @@ export default function BacktestPage() {
     color: colors.muted, borderRadius: 6, padding: "2px 8px",
     fontSize: 11, cursor: "pointer" as const,
   };
+
+  useEffect(() => {
+    if (inner !== "workset-accept") return;
+    const t = window.setTimeout(() => {
+      document.getElementById("workset-accept")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [inner]);
 
   const calmar = result && result.max_drawdown
     ? result.total_return / Math.abs(result.max_drawdown)
@@ -518,6 +527,8 @@ export default function BacktestPage() {
               )}
             </Card>
           )}
+
+          <WorksetAcceptPanel start={start} end={end} colors={colors} />
 
           {history.length > 0 && (
             <Card
