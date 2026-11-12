@@ -134,6 +134,23 @@ def data_health_endpoint():
     return run_rules(SessionLocal())
 
 
+@router.get("/selfcheck")
+def selfcheck_endpoint(fresh: bool = False):
+    """启动自检：六项「能不能真的干活」（详见 services/selfcheck.py）。
+
+    和 /monitor/framework-health 的分工：
+    · framework-health 看**数据管道链路**（调度/编排/数据/研究/运行时五层）
+    · selfcheck 看**这个进程自己**（schema 能不能生成、能不能拿写锁、
+      分析库能不能读、调度线程还在不在）
+
+    两者都 200 不代表健康，但 selfcheck 有 FAIL 时**一定是本进程有问题**，
+    不需要再猜。
+    """
+    from app.services.selfcheck import run_selfcheck
+
+    return run_selfcheck(fresh=fresh)
+
+
 @router.get("/alert-log")
 def alert_log_endpoint(limit: int = 50, level: str | None = None):
     """告警/通知历史。

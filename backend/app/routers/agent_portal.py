@@ -147,12 +147,19 @@ async def _proxy(request: Request, path: str) -> Response:
     )
 
 
-@proxy_router.api_route("/agent", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+# include_in_schema=False：这两条是 dsh 的反代透传入口，不是平台 API。
+# 更要紧的是 —— 一个 api_route 挂多个 method 时，FastAPI 按**函数名**生成
+# operationId，于是 /agent 的 GET/POST/... 会生成一串同名 id，
+# openapi() 每次都刷 "Duplicate Operation ID agent_root_agent_options" 警告。
+# 代码生成器遇到重复 operationId 会直接报错，所以必须排掉。
+@proxy_router.api_route("/agent", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
+                        include_in_schema=False)
 async def agent_root(request: Request) -> Response:
     return await _proxy(request, "")
 
 
-@proxy_router.api_route("/agent/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@proxy_router.api_route("/agent/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
+                        include_in_schema=False)
 async def agent_any(request: Request, path: str) -> Response:
     return await _proxy(request, path)
 
