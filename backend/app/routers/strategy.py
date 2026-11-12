@@ -38,6 +38,13 @@ from fastapi import APIRouter, Body, Depends, HTTPException, WebSocket, WebSocke
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+# ⚠️ 必须放在**模块级**：这个类被当成路由参数的类型注解用（见 workset_accept_start 的
+# `req: "WorksetAcceptRequest | None"`），FastAPI 生成 openapi 时要按模块 globals 解析
+# 这个前向引用。原来它只在函数体内 import，进程里 openapi schema 缓存过一次就看不出来，
+# 但**每次重启（缓存冷）都会让 /openapi.json 直接 500**，连带容器健康检查挂掉。
+# 2026-11-12 13:02 的提交埋的，当天 15:45 重启才暴露。
+from app.services.workset_backtest_accept import WorksetAcceptRequest
+
 from app.config import DATA_DIR, settings
 from app.database import get_db
 logger = logging.getLogger("quant.strategy")
