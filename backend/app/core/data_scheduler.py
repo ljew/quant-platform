@@ -341,7 +341,21 @@ def _run_fund_update() -> None:
 
 
 def _mark_zombie_runs_failed() -> None:
-    """把超时遗留的 RUNNING 管道 run 标为 FAILED（子进程已被杀，不会自行收尾）。"""
+    """把超时遗留的 RUNNING 管道 run 标为 FAILED（子进程已被杀，不会自行收尾）。
+
+    ⚠️ 只在**确认没有在跑的编排**时调用：2026-11-12 晚上，编排 #324 正跑到
+    回测，一次进程内重启触发这里，把它的记录标成「进程重启，run 未收尾」，
+    而线程还在跑 —— 结果是 run 记录 FAILED、内存里 STATE 仍 running=True，
+    调度器从此不敢再触发（永久半停摆）。所以这里加一道本地状态保护。
+    """
+    try:
+        from app.services.orchestrator import STATE as _OST
+
+        if _OST.get("running"):
+            logger.info("跳过僵尸清理：编排 #%s 正在运行", _OST.get("run_id"))
+            return
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from sqlalchemy import text
 
