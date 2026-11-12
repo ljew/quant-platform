@@ -700,11 +700,17 @@ def start_daily_scheduler() -> None:
                         from app.models import ResearchRun as _RR
 
                         with _SL() as _db:
+                            # 只认**定时槽之后**跑完的。白天的普通手动运行（信号回填、
+                            # 缺口补算等）不算「今天日更做完了」—— 2026-11-12 事故：
+                            # 15:34/15:38 两次手动 run 让这里判「已跑」，
+                            # 17:30 编排直接不触发，当天行情一条没入库。
+                            _slot = datetime.combine(
+                                now.date(), datetime.min.time()
+                            ).replace(hour=DAILY_HOUR, minute=DAILY_MINUTE)
                             done = _db.execute(
                                 _select(_RR.id).where(
                                     _RR.status == "SUCCESS",
-                                    _RR.finished_at >= datetime.combine(
-                                        now.date(), datetime.min.time()),
+                                    _RR.finished_at >= _slot,
                                 ).limit(1)
                             ).first()
                         if done:

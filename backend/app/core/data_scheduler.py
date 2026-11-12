@@ -21,6 +21,10 @@ from app.core.netguard import TUSHARE, explain as net_explain, network_ready
 
 # 每个交易日 19:00 后执行一次数据管道（tushare 收盘数据就绪 + 因子计算）
 RUN_HOUR, RUN_MIN = 19, 0  # tushare 日线晚间就绪，19:00 保证当日数据可得
+# 编排器（Orchestrator）的定时槽，与 orchestrator.DAILY_HOUR/MINUTE 同源同默认值。
+# 用来判断「今天那次**定时**编排有没有跑过」——白天的手动跑不算。
+_ORCH_HOUR = int(os.getenv("QUANT_ORCHESTRATOR_HOUR", "17"))
+_ORCH_MIN = int(os.getenv("QUANT_ORCHESTRATOR_MINUTE", "30"))
 _CHECK_INTERVAL = 60  # 秒
 # 失败重试策略：不要把「瞬时故障」升级成「当天不再跑」。
 # 2026-09~11 这个模式在采集/编排/验证上各踩过：记账写在成功之前 = 一次抖动吃掉一整天。
@@ -602,16 +606,21 @@ def _orchestrator_ran_today() -> bool:
             from sqlalchemy import and_, or_
 
             day0 = datetime.combine(_date.today(), datetime.min.time())
+            # 只认**定时槽之后**跑完的：白天的普通手动跑（信号回填、补算等）
+            # 不算「今天的日更已经做了」。2026-11-12 事故：15:34/15:38 两次手动
+            # 运行让这里判「已跑」，17:30 编排和 19:00 ETL 双双跳过，
+            # **当天 11-12 的行情一条都没入库**。
+            slot = day0.replace(hour=_ORCH_HOUR, minute=_ORCH_MIN)
             # RUNNING 也算「在跑」：编排 17:30 启动后，调度器同一分钟就可能来问
             # 「今天跑过没有」。只认 SUCCESS 的话会判「没跑过」→ 再起一轮 ETL，
             # 两份管道同时写同一批表（2026-11-10 20:01 就是这么撞的）。
             # 加 2 小时窗口兜住「进程被杀留下的永久 RUNNING」。
-            fresh = datetime.now() - timedelta(hours=2)
+            fresh = max(datetime.now() - timedelta(hours=2), slot)
             row = db.execute(
                 select(ResearchRun).where(
                     or_(
                         and_(ResearchRun.status == "SUCCESS",
-                             ResearchRun.finished_at >= day0),
+                             ResearchRun.finished_at >= slot),
                         and_(ResearchRun.status == "RUNNING",
                              ResearchRun.started_at >= fresh),
                     )
