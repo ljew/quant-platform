@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -200,7 +200,69 @@ def _step_research_signal(db: Session, run_id: int) -> None:
     from app.config import DATA_DIR
     from app.services.xq import runner as xq_runner
 
-    xq_runner.run_signal_scan(db, str(DATA_DIR / "quant.duckdb"), run_id=run_id)
+    duck = str(DATA_DIR / "quant.duckdb")
+    xq_runner.run_signal_scan(db, duck, run_id=run_id)
+    _backfill_signal_gaps(db, run_id, duck)
+
+
+def _backfill_signal_gaps(db: Session, run_id: int, duck_path: str,
+                          max_days: int = 5) -> None:
+    """补算「行情已有、但 signal_daily 没有」的交易日。
+
+    2026-11-12 事故：11-11 的信号**整天缺失**，今日观点一直显示 11-10。
+    `run_signal_scan` 只算「面板最新一天」，而 11-11 那天编排跑的时候分析库
+    （DuckDB）还冻结在 11-10（sync_duckdb 因缺 sqlite 扩展在静默跳过），
+    于是它算的是 11-10、把 11-10 又写了一遍；11-11 从此没人算 ——
+    而且**不会自愈**：第二天只算 11-12，缺口永远留着。
+
+    口径用 SQLite 的 kline 最新日作「应算到哪天」（DuckDB 可能滞后），
+    只补 signal_daily 最新日之后的日子，最多 max_days 天，避免一次回填太久。
+    任何异常都只发 warning 事件，绝不能拖垮整条编排。
+    """
+    from app.models import KlineDaily, SignalDaily
+    from app.services.xq.data import load_panel
+    from app.services.xq.runner import panel_asof, run_from_panel
+
+    try:
+        from sqlalchemy import func
+
+        latest_sig = db.execute(select(func.max(SignalDaily.date))).scalar()
+        latest_bar = db.execute(select(func.max(KlineDaily.trade_date))).scalar()
+        if not latest_sig or not latest_bar or latest_bar <= latest_sig:
+            return
+        panel = load_panel(duck_path, lookback=320)
+        days = sorted({
+            (x if isinstance(x, date) else x.date()) for x in panel.df["date"]
+        } - {latest_sig})
+        days = [d for d in days if latest_sig < d <= latest_bar][-max_days:]
+        if not days:
+            _event(db, run_id, "research",
+                   f"信号缺口检测：行情已到 {latest_bar}、信号停在 {latest_sig}，"
+                   "但面板里找不到中间交易日（DuckDB 可能还没同步）",
+                   step="signal", status="warn", level="warn")
+            db.commit()
+            return
+        _event(db, run_id, "research",
+               f"信号缺口：行情已到 {latest_bar}、信号停在 {latest_sig}，"
+               f"补算 {len(days)} 天（{days[0]} ~ {days[-1]}）",
+               step="signal", status="running")
+        db.commit()
+        done = 0
+        for d in days:
+            r = run_from_panel(db, panel_asof(panel, d, keep_days=260), run_id=run_id)
+            if r.get("ok"):
+                done += 1
+            else:
+                _event(db, run_id, "research", f"{d} 补算失败：{r.get('error')}",
+                       step="signal", status="fail", level="warn")
+                db.commit()
+        _event(db, run_id, "research", f"信号补算完成：{done}/{len(days)} 天",
+               step="signal", status="ok")
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        _event(db, run_id, "research", f"信号缺口补算异常（已跳过）：{exc}"[:200],
+               step="signal", status="fail", level="warn")
+        db.commit()
 
 
 def _step_backtest(db: Session, run_id: int) -> None:
