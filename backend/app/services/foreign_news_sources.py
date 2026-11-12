@@ -50,6 +50,9 @@ FOREIGN_SOURCES: list[dict[str, Any]] = [
         "label": "BBC Business",
         "kind": "rss",
         "url": "https://feeds.bbci.co.uk/news/business/rss.xml",
+        # 2026-11-12 白天一度整条 feed 不可达（容器 20s 超时、宿主代理/直连全断、
+        # http 与 rsshub 镜像 502/000），当时置 False 止血。
+        # 同日下午代理通道恢复后实测：容器内 HTTP 200 / 41KB / 1.0s，已改回 True。
         "enabled_default": True,
         "tags": ["media"],
     },
@@ -58,7 +61,12 @@ FOREIGN_SOURCES: list[dict[str, Any]] = [
         "label": "WSJ Markets",
         "kind": "rss",
         "url": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
-        "enabled_default": True,
+        # 2026-11-12 实测：这条 feed 内容冻结在 2025-01-27（返回的头条是
+        # "Stocks Sink in Broad AI Rout Sparked by China's DeepSeek"），
+        # 官方 wsj.com/xml/rss/3_7031.xml 等新地址一律 401（付费墙）。
+        # 灌进来的是**一年多前的旧闻**，比没有更糟 —— 会污染资讯流与日报素材，
+        # 故停用。哪天 DJ 恢复更新再打开。
+        "enabled_default": False,
         "tags": ["media"],
     },
     {
@@ -85,13 +93,14 @@ FOREIGN_SOURCES: list[dict[str, Any]] = [
         "enabled_default": True,
         "tags": ["central-bank", "eu"],
     },
-    # —— 默认关 ——
+    # —— 代理通道打通后重新启用（2026-11-12）——
     {
         "key": "fn_ft",
         "label": "FT",
         "kind": "rss",
         "url": "https://www.ft.com/?format=rss",
-        "enabled_default": False,
+        # 2026-11-12 代理通道打通后实测 HTTP 200 / 6.5KB / 1.5s，改为默认开。
+        "enabled_default": True,
         "tags": ["media"],
     },
     {
@@ -99,9 +108,12 @@ FOREIGN_SOURCES: list[dict[str, Any]] = [
         "label": "BoE News",
         "kind": "rss",
         "url": "https://www.bankofengland.co.uk/rss/news",
-        "enabled_default": False,
+        # 同上，实测 HTTP 200 / 26KB / 2.3s。
+        "enabled_default": True,
         "tags": ["central-bank", "uk"],
     },
+    # —— 默认关：Google News 镜像，各约 100 条且与 CNBC/MarketWatch 大量重复，
+    #    开着会淹掉一手源。需要时把 enabled_default 改 True 即可（通道已通）。——
     {
         "key": "fn_gnews_reu",
         "label": "GNews·Reuters 镜像",

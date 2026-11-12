@@ -767,6 +767,43 @@ class FactorWorkset(Base):
         return f"<FactorWorkset registry={self.registry_id}>"
 
 
+class FactorWorksetAcceptRun(Base):
+    """工作集短名单回测验收（W48-2）：一次验收一行，绑定成员快照。过期读时计算，不存 stale 列。"""
+
+    __tablename__ = "factor_workset_accept_run"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|done|error
+    job_id: Mapped[str | None] = mapped_column(String(32), unique=True, nullable=True)
+    start: Mapped[str] = mapped_column(String(10))
+    end: Mapped[str] = mapped_column(String(10))
+    adj: Mapped[str] = mapped_column(String(8), default="qfq")
+    initial_cash: Mapped[float] = mapped_column(Float, default=1_000_000.0)
+    rules_version: Mapped[str] = mapped_column(String(32))
+    index_code: Mapped[str] = mapped_column(String(16), default="000906")
+    index_symbol: Mapped[str] = mapped_column(String(16), default="sh000906")
+    top_n: Mapped[int] = mapped_column(Integer, default=50)
+    rebalance_period: Mapped[int] = mapped_column(Integer, default=21)
+    max_weight: Mapped[float] = mapped_column(Float, default=0.05)
+    cost_commission: Mapped[float] = mapped_column(Float)
+    cost_slippage: Mapped[float] = mapped_column(Float)
+    wf_mode: Mapped[str] = mapped_column(String(24), default="walk_forward")
+    wf_n_windows: Mapped[int] = mapped_column(Integer, default=3)
+    wf_oos_ratio: Mapped[float] = mapped_column(Float, default=0.3)
+    wf_scheme: Mapped[str] = mapped_column(String(16), default="expanding")
+    wf_metric: Mapped[str] = mapped_column(String(24), default="sharpe")
+    snapshot_json: Mapped[str] = mapped_column(Text)
+    members_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    collection_verdict: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    def __repr__(self):
+        return f"<FactorWorksetAcceptRun {self.id} {self.status}>"
+
+
 class FactorMinedDaily(Base):
     """启用挖掘因子的日频截面值（长表）。"""
 

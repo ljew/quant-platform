@@ -648,6 +648,20 @@ export const api = {
   }) => post<FactorWorksetAdmitResult>("/factor/workset/admit", payload),
   factorWorksetRemove: (registry_id: number) =>
     post<FactorWorksetAdmitResult>(`/factor/workset/${registry_id}/remove`, {}),
+  /** W48-2 工作集短名单验收（异步：立即返回 job_id，前端 2s 轮询 GET） */
+  worksetAcceptStart: (payload: {
+    start?: string; end?: string; adj?: string; initial_cash?: number;
+  } = {}) => worksetAcceptPost<WorksetAcceptStartResult>(
+    "/strategy/backtest/workset-accept", payload,
+  ),
+  worksetAcceptGet: (query = "") =>
+    worksetAcceptGetJson<WorksetAcceptGet>(
+      `/strategy/backtest/workset-accept${query ? (query.startsWith("?") ? query : `?${query}`) : ""}`,
+    ),
+  worksetAcceptTask: (jobId: string) =>
+    worksetAcceptGetJson<WorksetAcceptGet>(
+      `/strategy/backtest/workset-accept/tasks/${jobId}`,
+    ),
 };
 
 /** 当日全景综述（brief_digest 表）。与 HotBrief 是不同层次：
@@ -764,6 +778,141 @@ export interface FactorWorksetAdmitResult extends FactorWorksetPreview {
   already_absent?: boolean;
   removed_registry_id?: number;
   workset?: FactorWorksetPayload;
+}
+
+
+/** W48-2 工作集短名单验收 */
+export class WorksetAcceptError extends Error {
+  error_code?: string;
+  job_id?: string;
+  status?: number;
+  message: string;
+  constructor(message: string) {
+    super(message);
+    this.name = "WorksetAcceptError";
+    this.message = message;
+  }
+}
+
+async function worksetAcceptGetJson<T>(path: string): Promise<T> {
+  const r = await fetch(`${BASE}${path}`, { headers: { "Content-Type": "application/json" } });
+  const body = await r.json().catch(() => ({ detail: r.statusText }));
+  if (!r.ok) {
+    throw _waError(r.status, body);
+  }
+  return body as T;
+}
+
+async function worksetAcceptPost<T>(path: string, payload: unknown): Promise<T> {
+  const r = await fetch(`${BASE}${path}`, {
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+    body: JSON.stringify(payload ?? {}),
+  });
+  const body = await r.json().catch(() => ({ detail: r.statusText }));
+  if (!r.ok) {
+    throw _waError(r.status, body);
+  }
+  return body as T;
+}
+
+function _waError(status: number, body: { detail?: unknown }): WorksetAcceptError {
+  const d = body?.detail as { error_code?: string; message?: string; job_id?: string } | string | undefined;
+  const msg = typeof d === "object" && d
+    ? (d.message || d.error_code || "请求失败")
+    : (typeof d === "string" ? d : "请求失败");
+  const err = new WorksetAcceptError(msg);
+  err.status = status;
+  if (typeof d === "object" && d) {
+    err.error_code = d.error_code;
+    err.job_id = d.job_id;
+  }
+  return err;
+}
+
+export interface WorksetAcceptWindow {
+  index: number;
+  verdict: string;
+  note?: string;
+  is_start?: string;
+  is_end?: string;
+  oos_start?: string;
+  oos_end?: string;
+}
+
+export interface WorksetAcceptMember {
+  registry_id: number;
+  name?: string;
+  expr?: string;
+  verdict: string;
+  reject_reasons?: string[];
+  reason?: string | null;
+  n_held?: number | null;
+  n_valid?: number | null;
+  wf?: {
+    final?: string | null;
+    agg?: string | null;
+    legacy?: string | null;
+    windows?: WorksetAcceptWindow[];
+    fragile_regime?: boolean | null;
+  };
+  cost?: {
+    fragile?: boolean | null;
+    default_excess?: number | null;
+    double_excess?: number | null;
+    note?: string | null;
+  };
+}
+
+export interface WorksetAcceptCollection {
+  verdict: string;
+  n: number;
+  n_pass: number;
+  n_reject: number;
+  n_insufficient: number;
+  n_unevaluable: number;
+}
+
+export interface WorksetAcceptRun {
+  run_id: number;
+  job_id?: string | null;
+  status: string;
+  stale?: boolean;
+  stale_reason?: string | null;
+  start?: string;
+  end?: string;
+  adj?: string;
+  rules_version?: string;
+  rules?: Record<string, unknown>;
+  snapshot?: { n: number; members: FactorWorksetMember[] };
+  collection?: WorksetAcceptCollection | null;
+  members?: WorksetAcceptMember[];
+  error_message?: string | null;
+  members_done?: number;
+  members_total?: number;
+  message?: string;
+  created_at?: string | null;
+  finished_at?: string | null;
+}
+
+export interface WorksetAcceptStartResult {
+  ok?: boolean;
+  job_id: string;
+  status: string;
+  run_id: number;
+  snapshot?: { n: number; members: FactorWorksetMember[] };
+  start?: string;
+  end?: string;
+  rules_version?: string;
+  collection?: WorksetAcceptCollection | null;
+  members?: WorksetAcceptMember[];
+}
+
+export interface WorksetAcceptGet {
+  ok?: boolean;
+  workset_available?: boolean;
+  workset?: FactorWorksetPayload | null;
+  run?: WorksetAcceptRun | null;
 }
 
 

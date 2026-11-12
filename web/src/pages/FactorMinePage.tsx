@@ -1380,6 +1380,22 @@ function HorizonHeat({ rows, colors }: { rows: FactorHorizonRow[]; colors: Theme
 const WORKSET_NOTE =
   "少而正交工作集：最多保留 3–5 个低相关因子。质量看残差评级（正交开启时），相关看 raw；不是风险平价，也不改变多重检验计数。";
 
+function goWorksetAccept() {
+  window.dispatchEvent(new CustomEvent("quant-nav", { detail: { tab: "btopt", inner: "workset-accept" } }));
+}
+
+function WorksetAcceptLink({ colors }: { colors: ThemeColors }) {
+  return (
+    <a
+      href="#btopt/0/workset-accept"
+      onClick={(e) => { e.preventDefault(); goWorksetAccept(); }}
+      style={{ fontSize: 12.5, color: colors.accent, textDecoration: "none" }}
+    >
+      去回测验收
+    </a>
+  );
+}
+
 function WorksetCard({
   workset, colors, onRemove, removingId,
 }: {
@@ -1460,6 +1476,9 @@ function WorksetCard({
         )}
         <div style={{ marginTop: 10, fontSize: 11.5, color: colors.muted, lineHeight: 1.8 }}>
           {workset?.note || WORKSET_NOTE}
+        </div>
+        <div style={{ marginTop: 10 }}>
+          <Btn small kind="ghost" onClick={goWorksetAccept}>去回测验收</Btn>
         </div>
       </Card>
     </div>
@@ -1693,7 +1712,10 @@ function WorksetApplySection({
         </div>
       )}
       {doneNote && (
-        <div style={{ marginTop: 10, fontSize: 12.5, color: colors.muted }}>{doneNote}</div>
+        <div style={{ marginTop: 10, fontSize: 12.5, color: colors.muted, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <span>{doneNote}</span>
+          {doneNote.startsWith("已写入工作集") && <WorksetAcceptLink colors={colors} />}
+        </div>
       )}
     </Card>
   );

@@ -4,6 +4,9 @@
 - POST /strategy/backtest      运行一次回测（落库并返回结果）
 - POST /strategy/backtest/cost-sensitivity  成本敏感网格（W46-1；同步；长任务限制见路由注释）
 - POST /strategy/backtest/walk-forward  滚动 OOS（W46-2；同步；未做 async）
+- POST /strategy/backtest/workset-accept  工作集短名单验收（W48-2；异步）
+- GET  /strategy/backtest/workset-accept  当前工作集 + 最新验收结论
+- GET  /strategy/backtest/workset-accept/tasks/{job_id}  验收任务查询
 - GET  /strategy/backtests     回测历史列表
 - GET  /strategy/backtests/{id} 回测详情
 - POST /strategy/optimize      网格寻优（同步，≤400 组）
@@ -31,7 +34,7 @@ import time
 import uuid
 from datetime import date, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -192,6 +195,44 @@ def run_walk_forward_api(req: WalkForwardRequest, db: Session = Depends(get_db))
         return _run_single(db, bt, meta, params, start=start, end=end)
 
     return _run_wf(req, bar_dates, runner)
+
+
+@router.post("/backtest/workset-accept")
+def workset_accept_start(
+    req: "WorksetAcceptRequest | None" = Body(default=None),
+    db: Session = Depends(get_db),
+):
+    """W48-2 工作集短名单验收：立即返回 job_id，后台逐成员跑默认成本 + 滚动 OOS。"""
+    from app.services.workset_backtest_accept import (
+        AcceptError,
+        WorksetAcceptRequest,
+        http_error,
+        start_accept,
+    )
+    payload = req if req is not None else WorksetAcceptRequest()
+    try:
+        return start_accept(db, payload=payload, sync=False)
+    except AcceptError as err:
+        raise http_error(err) from err
+
+
+@router.get("/backtest/workset-accept")
+def workset_accept_get(
+    start: str | None = None,
+    end: str | None = None,
+    job_id: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """当前工作集列表 + 最新一次验收结论（无则 run=null；进行中优先）。"""
+    from app.services.workset_backtest_accept import get_latest_accept
+    return get_latest_accept(db, start=start, end=end, job_id=job_id)
+
+
+@router.get("/backtest/workset-accept/tasks/{job_id}")
+def workset_accept_task(job_id: str, db: Session = Depends(get_db)):
+    """与 GET 合并查询：按 job_id 取该次验收（含 running 进度）。"""
+    from app.services.workset_backtest_accept import get_latest_accept
+    return get_latest_accept(db, job_id=job_id)
 
 
 def _do_backtest(req: BacktestRequest, db: Session, progress_cb=None) -> BacktestResult:

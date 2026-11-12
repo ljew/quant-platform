@@ -47,14 +47,17 @@ def _item(label: str, status: str, detail: str) -> dict[str, str]:
     return {"label": label, "status": status, "detail": detail}
 
 
-def _etl_deadline(now: datetime) -> datetime | None:
-    """最近一个「ETL 本该已经跑完」的交易日 19:00。
+def _etl_deadline(now: datetime, hour: int = 19, minute: int = 0) -> datetime | None:
+    """最近一个「数据本该已经更新完」的交易日 hour:minute。
 
-    ETL 只在交易日 19:00 跑，所以不能用「距今多少小时」这种绝对阈值：
+    默认 19:00 —— ETL 只在交易日 19:00 跑，所以不能用「距今多少小时」这种绝对阈值：
     周日上午看到「46 小时前」是**完全正常**的 —— 下一次本来就该是周一 19:00。
     旧逻辑写死 36 小时，导致每个周末「调度层」都挂 WARN。
 
     2026-11-08 老刘就是盯着这个 WARN 问「什么意思」才发现的。
+
+    编排器（17:30）跑的是同一套 12 步管道，且当日 19:00 的 ETL 会因它成功而跳过，
+    所以用编排器作基准时必须传 17:30，否则永远比不过 19:00 那条线。
     """
     from datetime import time as _time
 
@@ -67,22 +70,23 @@ def _etl_deadline(now: datetime) -> datetime | None:
         except Exception:  # noqa: BLE001
             ok = d.weekday() < 5
         if ok:
-            # 该交易日 19:00 起跑，次日 07:00 前必须完成（含降级重试）
-            deadline = datetime.combine(d, _time(19, 0)) + timedelta(hours=12)
-            if deadline <= now:
-                return datetime.combine(d, _time(19, 0))
+            # 该交易日 hour:minute 起跑，次日再给 12 小时宽限（含降级重试）
+            base = datetime.combine(d, _time(hour, minute))
+            if base + timedelta(hours=12) <= now:
+                return base
         d = d - timedelta(days=1)
     return None
 
 
-def _etl_lag_status(fin: datetime | None, now: datetime) -> tuple[str, str]:
-    """ETL 是否落后：跟「最近该跑的那个交易日 19:00」比，而不是跟小时数比。
+def _etl_lag_status(fin: datetime | None, now: datetime,
+                    hour: int = 19, minute: int = 0) -> tuple[str, str]:
+    """ETL 是否落后：跟「最近该跑的那个交易日 hour:minute」比，而不是跟小时数比。
 
     提前一天之后仍无记录才算落后 —— 中间有 12 小时宽限给降级重试。
     """
     if fin is None:
         return OK, ""
-    exp = _etl_deadline(now)
+    exp = _etl_deadline(now, hour, minute)
     if exp is None:
         return OK, ""
     # ⚠️ 时区：fin（PipelineRun.finished_at）是 **UTC naive**（模型默认 utcnow），
@@ -110,9 +114,21 @@ def _check_scheduler(db) -> dict[str, Any]:
                        f"QUANT_DATA_SCHEDULE={env}" if env else "服务进程内注入（CLI 不可见）"))
 
     try:
-        from app.models import PipelineRun
+        from app.models import PipelineRun, ResearchRun
 
         run = db.execute(select(PipelineRun).order_by(PipelineRun.id.desc()).limit(1)).scalar_one_or_none()
+        # 19:00 的 data_scheduler 在「今日编排已 SUCCESS」时会**按设计跳过**数据日更
+        # （避免同一套 12 步管道一天跑两遍），此时 pipeline_runs 当天不再新增记录。
+        # 只看 pipeline_runs 就会天天误报「ETL 停在更早」—— 2026-11-12 早上就是这条
+        # 把整个调度层判成 WARN。编排器跑的是同一套管道，所以取两者较新的那个。
+        orch = db.execute(
+            select(ResearchRun).where(ResearchRun.status == "SUCCESS")
+            .order_by(ResearchRun.id.desc()).limit(1)
+        ).scalar_one_or_none()
+        orch_newer = bool(
+            orch and orch.finished_at and
+            (run is None or run.finished_at is None or orch.finished_at > run.finished_at)
+        )
         if run:
             now = datetime.now()
             started = run.started_at
@@ -139,6 +155,26 @@ def _check_scheduler(db) -> dict[str, Any]:
                 items.append(_item("最近 ETL", WARN, f"#{run.id} {run.status} · 需排查"))
         else:
             items.append(_item("最近 ETL", FAIL, "无运行记录"))
+
+        if orch_newer:
+            now = datetime.now()
+            # ⚠️ 时区地雷：ResearchRun.finished_at 是 `datetime.now()`（**本地 naive**），
+            # 而 PipelineRun.started_at/finished_at 是 utcnow（**UTC naive**），
+            # _etl_lag_status 内部按 UTC 比。直接把本地时间喂进去会凭空多 8 小时、
+            # 让滞后判定永远 OK —— 等于把这个检查废掉。这里显式换算。
+            fin_local = orch.finished_at
+            fin_utc = fin_local.astimezone().astimezone(timezone.utc).replace(tzinfo=None)
+            lag_h = (now - fin_local).total_seconds() / 3600
+            # 编排器的截止线是它自己的开跑时刻（默认 17:30，与 orchestrator 的
+            # QUANT_ORCHESTRATOR_HOUR/MINUTE 同一来源），不是 19:00
+            oh = int(os.getenv("QUANT_ORCHESTRATOR_HOUR", "17"))
+            om = int(os.getenv("QUANT_ORCHESTRATOR_MINUTE", "30"))
+            st, extra = _etl_lag_status(fin_utc, now, oh, om)
+            # 编排器比 ETL 更新 → 用它覆盖上面那条判定（同一套 12 步管道）
+            items = [it for it in items if it.get("label") != "最近 ETL"]
+            items.append(_item("最近 ETL", st,
+                               f"#{orch.id} 编排器完成 · {lag_h:.1f} 小时前{extra}"
+                               f"（当日 19:00 数据日更按设计跳过）"))
     except Exception as e:
         items.append(_item("最近 ETL", FAIL, f"读取失败 {type(e).__name__}"))
 

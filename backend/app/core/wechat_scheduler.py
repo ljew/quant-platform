@@ -51,6 +51,41 @@ _done: set[str] = set()          # 已完成（成功）的时间点（形如 20
 _retry: dict[str, dict] = {}     # 失败重试记账：key -> {attempts, last_ts}
 
 _COOL_FILE = Path(settings.wechat_data_dir) / "state" / "collect_cooldown.json"
+_DONE_FILE = Path(settings.wechat_data_dir) / "state" / "collect_done.json"
+_REPORT_FILE = Path(settings.wechat_data_dir) / "state" / "collect_last.json"
+
+
+def _load_done() -> set[str]:
+    """读「今天哪些 slot 已经成功跑过」的落盘记录。
+
+    为什么必须落盘：_done 原来是纯内存，容器一重启就清空，而 slot 只要还在
+    补跑窗口内（_CATCHUP_HOURS）就会被重新触发。2026-11-12 凌晨连着重启三次，
+    06:20 那轮采集跟着重复跑了三次 —— 每次约 10 分钟，还白撞一轮限流。
+    """
+    import json
+    import time
+
+    try:
+        items = json.loads(_DONE_FILE.read_text(encoding="utf-8")).get("done") or []
+        today = time.strftime("%Y-%m-%d")
+        return {str(k) for k in items if str(k).startswith(today)}
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _save_done() -> None:
+    import json
+    import time
+
+    try:
+        _DONE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _DONE_FILE.write_text(
+            json.dumps({"done": sorted(_done), "saved_at": time.time()},
+                       ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _load_cooldown() -> float:
@@ -95,6 +130,18 @@ _CATCHUP_HOURS = 3               # 错过 slot 后最多补 3 小时（6:20 最�
 _lock = threading.Lock()
 
 
+def _load_report() -> dict:
+    """最近一次采集的失败明细（_run_crawl 落盘）。读不到就返回空。"""
+    import json
+
+    try:
+        d = json.loads(_REPORT_FILE.read_text(encoding="utf-8"))
+        return {"at": d.get("at"), "summary": d.get("summary"),
+                "failures": (d.get("failures") or [])[:30]}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def get_status() -> dict:
     with _lock:
         return {
@@ -103,6 +150,7 @@ def get_status() -> dict:
             "retry_today": {k: v["attempts"] for k, v in _retry.items()
                             if k.startswith(_today())},
             "max_attempts": _MAX_ATTEMPTS,
+            "last_report": _load_report(),
         }
 
 
@@ -158,6 +206,28 @@ def _run_crawl() -> tuple[bool, str]:
         if "已抓正文" in line or "完成：" in line:
             summary = line.strip()
             break
+    # 汇总只有「失败 N」这个数字，谁失败、为什么失败全被丢掉了 ——
+    # 2026-11-12 连着两轮都是「失败 15」，只能靠猜。把明细留一份：
+    # 日志里打前 5 条（方便 docker logs 直接看），完整清单落盘给页面/排查用。
+    # ⚠️ 必须在退出码判断**之前**写：凭证失效（退出码 2）恰恰是最需要明细的场景。
+    fails = [ln.strip() for ln in out.splitlines()
+             if ("失败" in ln or "❌" in ln) and not ln.strip().startswith("完成：")]
+    if fails or r.returncode != 0:
+        if fails:
+            logger.warning("公众号抓取失败明细 %d 条，前 5 条：%s",
+                           len(fails), " ｜ ".join(fails[:5]))
+        try:
+            import json as _json
+            import time as _time
+
+            _REPORT_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _REPORT_FILE.write_text(_json.dumps(
+                {"at": _time.strftime("%Y-%m-%d %H:%M:%S"), "rc": r.returncode,
+                 "summary": summary, "failures": fails},
+                ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+
     if r.returncode != 0:
         return False, f"退出码 {r.returncode}：{out.strip()[-300:]}"
     return True, summary or "完成"
@@ -225,6 +295,7 @@ def _loop(enabled: bool) -> None:
                     with _lock:
                         if ok:
                             _done.add(key)
+                            _save_done()
                             _retry.pop(key, None)
                             _status["last_success"] = datetime.now().isoformat(timespec="seconds")
                             _status["last_summary"] = msg
@@ -265,6 +336,9 @@ def start_wechat_scheduler(enabled: bool | None = None) -> threading.Thread:
         enabled = settings.wechat_schedule
     with _lock:
         _status["enabled"] = enabled
+        # 重启不丢「今天已跑过」——否则只要还在补跑窗口内就会重跑一遍采集
+        # 用 update 而不是 |= ：函数里对模块级 set 用 |= 会被当成局部变量重新绑定
+        _done.update(_load_done())
     t = threading.Thread(target=_loop, args=(enabled,), daemon=True, name="wechat-scheduler")
     t.start()
     _sched_thread = t
