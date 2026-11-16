@@ -201,6 +201,24 @@ def table_freshness_endpoint(fresh: bool = False):
     return table_freshness(SessionLocal(), use_cache=not fresh)
 
 
+@router.get("/timeline")
+def timeline_endpoint(days: int = 1, fresh: bool = False):
+    """数据到达 / 处理时点：每个数据域「源端几点可得、平台计划几点处理、
+    实际几点处理完」，以及今日事件流。
+
+    与 /table-freshness 的区别：那个回答「这张表现在新鲜吗」，这个回答
+    「每天几点该到、实际几点到的、卡在哪一段」——
+    排期早于数据发布（如基金 nav 曾排 19:40 而净值当晚才公布）只有这一页看得出来。
+    """
+    from app.services.timeline_svc import compute_timeline
+
+    db = SessionLocal()
+    try:
+        return compute_timeline(db, days=days, use_cache=not fresh)
+    finally:
+        db.close()
+
+
 @router.get("/framework-health")
 def framework_health_endpoint():
     """框架四层体检（调度 / 编排 / 数据 / 研究）—— 驾驶舱状态带的数据源。

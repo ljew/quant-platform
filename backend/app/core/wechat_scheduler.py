@@ -40,6 +40,7 @@ _SINCE_DAYS = 7                 # 只抓近 7 天，留补抓窗口又不至于�
 _status = {
     "enabled": False,
     "slots": [f"{h:02d}:{m:02d}" for h, m in SLOTS],
+    "running": False,
     "last_run_at": None,
     "last_success": None,
     "last_error": None,
@@ -137,7 +138,10 @@ def _load_report() -> dict:
     try:
         d = json.loads(_REPORT_FILE.read_text(encoding="utf-8"))
         return {"at": d.get("at"), "summary": d.get("summary"),
-                "failures": (d.get("failures") or [])[:30]}
+                "failures": (d.get("failures") or [])[:30],
+                # 原始输出尾部：提取规则再准也可能被脚本改措辞打穿，
+                # 留一份原文是最可靠的后路（存了却不返回等于没存）
+                "tail": (d.get("tail") or "")[-1500:]}
     except Exception:  # noqa: BLE001
         return {}
 
@@ -207,7 +211,7 @@ def _is_fail_line(line: str) -> bool:
     return not body.startswith(_NORMAL_BODY)
 
 
-def _run_crawl() -> tuple[bool, str]:
+def _run_crawl(limit: int = 0) -> tuple[bool, str]:
     script = _crawl_script()
     if script is None:
         return False, "找不到采集脚本（collect_weread.py / crawl_content.py）"
@@ -216,6 +220,8 @@ def _run_crawl() -> tuple[bool, str]:
         # ⚠️ 间隔必须 6s：2026-11-02 实测 3s 跑到第 22 个号就被限流，剩下 89 个全失败，
         # 而失败分支原本不 sleep，259s 就"跑完"并报成功 —— 静默失败。
         cmd = [sys.executable, str(script), "--interval", "6"]
+        if limit:
+            cmd += ["--limit", str(limit)]      # 手动调试用，只跑前 N 个号
     else:
         cmd = [sys.executable, str(script), "--since-days", str(_SINCE_DAYS)]
     logger.info("公众号抓取开始：%s", " ".join(cmd))
@@ -269,6 +275,44 @@ def _run_crawl() -> tuple[bool, str]:
     if r.returncode != 0:
         return False, f"退出码 {r.returncode}：{out.strip()[-300:]}"
     return True, summary or "完成"
+
+
+def run_now(limit: int = 0) -> dict:
+    """手动触发一次采集（后台线程，接口立即返回）。
+
+    ⚠️ 为什么不直接 Popen 采集脚本（原来的做法）：那条路把 stdout/stderr 全丢
+    `DEVNULL`，于是**跑没跑、为什么失败一概看不见** —— 不写 collect_last.json、
+    不更新 _status，页面上 `last_summary` 永远是 None。
+    2026-11-16 就是这样：接口回「已在后台启动」，实际到第 4 个号就
+    「-2012 凭证失效」终止，查了半小时才定位（先怀疑 Popen 没起、又怀疑
+    脚本跑不起来、最后手工跑才发现是 Cookie 的问题）。
+
+    走 `_run_crawl` 才有：失败明细落盘、状态回报、原始输出尾部。
+    """
+    with _lock:
+        if _status.get("running"):
+            return {"ok": False, "note": "已有采集在跑，等它结束（看 running 字段）"}
+        _status["running"] = True
+        _status["last_run_at"] = datetime.now().isoformat(timespec="seconds")
+
+    def _job() -> None:
+        try:
+            ok, msg = _run_crawl(limit=limit)
+        except Exception as e:  # noqa: BLE001
+            ok, msg = False, f"异常：{type(e).__name__}: {e}"
+        with _lock:
+            _status["running"] = False
+            _status["last_summary"] = msg
+            _status["runs_total"] = int(_status.get("runs_total") or 0) + 1
+            if ok:
+                _status["last_success"] = datetime.now().isoformat(timespec="seconds")
+                _status["last_error"] = None
+            else:
+                _status["last_error"] = msg
+        logger.info("手动采集结束：%s %s", "成功" if ok else "失败", msg)
+
+    threading.Thread(target=_job, daemon=True, name="wechat-manual").start()
+    return {"ok": True, "note": "采集已在后台启动，用 /wechat/schedule 看 running 与 last_summary"}
 
 
 def _slots_for(now: datetime) -> list[tuple[int, int]]:

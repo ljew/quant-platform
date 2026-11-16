@@ -729,6 +729,12 @@ class PipelineStepLog(Base):
     duration_sec: Mapped[float] = mapped_column(Float, default=0.0)
     rows: Mapped[int] = mapped_column(Integer, default=0)
     message: Mapped[str] = mapped_column(Text, default="")
+    # 步骤真实起止时刻（本地 naive，与 run.finished_at 同口径）。
+    # 2026-11-16 新增：原来只有 duration_sec，做「数据到达/处理时点」页面时
+    # 只能靠「run 起点 + 累加 duration」反推（实测吻合，但一步断言改耗时就会飘）。
+    # 老记录留 NULL，读取侧仍走累加兜底，不迁移历史数据。
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class FactorRegistry(Base):
