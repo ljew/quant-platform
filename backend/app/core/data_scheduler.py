@@ -28,6 +28,11 @@ _ORCH_MIN = int(os.getenv("QUANT_ORCHESTRATOR_MINUTE", "30"))
 _CHECK_INTERVAL = 60  # 秒
 # 失败重试策略：不要把「瞬时故障」升级成「当天不再跑」。
 # 2026-09~11 这个模式在采集/编排/验证上各踩过：记账写在成功之前 = 一次抖动吃掉一整天。
+# 进程启动时刻（模块导入即记录）。用来区分「上次进程留下的僵尸」和
+# 「本进程刚创建的 run」—— 见 _mark_zombie_runs_failed 的注释。
+_BOOT_LOCAL = datetime.now()
+_BOOT_UTC = datetime.utcnow()
+_BOOT_CLEAN_DONE = False
 _MAX_RETRY = 3        # 同一任务每天最多重试 3 次
 _RETRY_GAP = 900      # 重试最小间隔 15 分钟（ETL 要打 tushare，不能每 60s 重来）
 # 当日日线数据的发布时点（A 股 15:00 收盘，各源通常 16:00 后可得）
@@ -96,6 +101,34 @@ def _is_trading_day(d: datetime) -> bool:
     return _td(d)
 
 
+# ETL 互斥。2026-11-16 19:17 的事故：数据库 WAL 刚修好，19:00 的定时 ETL 和
+# 编排 catch-up 的 data 步骤几乎同时起子进程，两个进程抢同一把 SQLite 写锁，
+# 双双卡在 compute_factors 十几分钟，调度循环看它没返回又起了第三个。
+# 进程内用这把锁挡重入；跨进程（编排的 data 步骤是**同一进程内的另一个线程**起的
+# 子进程，但库里的 RUNNING 记录是共享的）再查一次 pipeline_runs。
+_ETL_LOCK = threading.Lock()
+_ETL_RUNNING_WINDOW_MIN = 40     # 超过这个时长还 RUNNING 的视为僵尸，不挡路
+
+
+def _other_pipeline_running() -> int | None:
+    """库里有没有别的 ETL 正在跑（近 40 分钟内创建的 RUNNING run）。"""
+    from datetime import timedelta
+
+    from sqlalchemy import text
+
+    from app.database import SessionLocal
+
+    try:
+        with SessionLocal() as db:
+            row = db.execute(text(
+                "select id from pipeline_runs where status='RUNNING'"
+                " and started_at > :cut order by id desc limit 1"
+            ), {"cut": datetime.utcnow() - timedelta(minutes=_ETL_RUNNING_WINDOW_MIN)}).first()
+        return int(row[0]) if row else None
+    except Exception:  # noqa: BLE001
+        return None      # 查不出来就不要挡路
+
+
 def _run_update() -> bool:
     """每日数据任务。
 
@@ -108,7 +141,25 @@ def _run_update() -> bool:
     （实测卡 5.7 小时、数据断供一天）。子进程 + 超时 kill 后，无论管道怎么卡，
     调度循环都能继续，下个时点（19:00 / 次日）自动重试。
     """
+    if not _ETL_LOCK.acquire(blocking=False):
+        logger.warning("已有 ETL 在本进程内运行，跳过本次触发")
+        return True
+    try:
+        return _run_update_locked()
+    finally:
+        _ETL_LOCK.release()
+
+
+def _run_update_locked() -> bool:
+    """真正的执行体（调用方已持 _ETL_LOCK）。"""
     from app.database import SessionLocal
+
+    busy = _other_pipeline_running()
+    if busy is not None:
+        # 别的进程（编排的 data 步骤 / 上一轮没退干净的）还在跑：绝不再起一个。
+        # 两个 ETL 并行写同一个 SQLite 只会互相锁死，比「今天晚一点」糟得多。
+        logger.warning("库中已有 ETL run #%s 在跑，跳过本次触发", busy)
+        return True
 
     # 本文件 …/backend/app/core/data_scheduler.py → dirname×3 = backend/
     backend = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -356,6 +407,21 @@ def _mark_zombie_runs_failed() -> None:
             return
     except Exception:  # noqa: BLE001
         pass
+    global _BOOT_CLEAN_DONE
+    # 启动后**第一次**清理只动「本进程启动之前」创建的 run。
+    # 2026-11-16 19:17 的反例：start_daily_scheduler 先起、catch-up 立刻建了
+    # 编排 run #327，紧接着 start_data_scheduler 的这次清理把 0.003 秒前刚
+    # 创建的它当成残留标成 FAILED —— 页面顶部「今日编排 FAILED」，实际还在跑。
+    # 内存 STATE 那道保护挡不住：那时编排线程还没把 running 置 True。
+    # 之后的调用（运行期兜底）仍按「全部 RUNNING」清，靠 STATE 保护。
+    if not _BOOT_CLEAN_DONE:
+        w_p = " AND started_at < :boot_utc"
+        w_r = " AND started_at < :boot_local"
+        boot_params = {"boot_utc": _BOOT_UTC, "boot_local": _BOOT_LOCAL}
+        _BOOT_CLEAN_DONE = True
+    else:
+        w_p = w_r = ""
+        boot_params = {}
     try:
         from sqlalchemy import text
 
@@ -366,8 +432,8 @@ def _mark_zombie_runs_failed() -> None:
                 "UPDATE pipeline_runs SET status='FAILED',"
                 " error=COALESCE(error||' | ','')||'管道超时子进程终止',"
                 " finished_at=COALESCE(finished_at, started_at)"
-                " WHERE status='RUNNING'"
-            ))
+                " WHERE status='RUNNING'" + w_p
+            ), boot_params)
             # research_runs 同理：进程重启后它不可能还活着。不清的话会变成一个
             # 永久误判源 —— 既不是 SUCCESS（`_orchestrator_ran_today` 判「没跑过」），
             # 也不肯收尾（页面上的编排横条永远显示「运行中」）。
@@ -375,8 +441,8 @@ def _mark_zombie_runs_failed() -> None:
                 "UPDATE research_runs SET status='FAILED',"
                 " error=COALESCE(error||' | ','')||'进程重启，run 未收尾',"
                 " finished_at=COALESCE(finished_at, started_at)"
-                " WHERE status='RUNNING'"
-            ))
+                " WHERE status='RUNNING'" + w_r
+            ), boot_params)
             db.commit()
     except Exception as e:  # noqa: BLE001
         logger.warning("超时僵尸 run 清理失败: %s", e)

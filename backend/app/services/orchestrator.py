@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 
@@ -31,6 +32,8 @@ from sqlalchemy.orm import Session
 
 from app.config import BASE_DIR
 from app.models import AgentEvent, ResearchRun, SignalAction
+
+logger = logging.getLogger("orchestrator")
 
 # 人工闸门默认倒计时（秒）；驾驶舱确认后可提前放行/否决
 # 人工闸门倒计时（秒）。默认 **0 = 不挂起**：这是单人自用的平台，没有第二个人
@@ -129,6 +132,31 @@ def _step_data(db: Session, run_id: int) -> None:
     # 宿主机 backend/app/services/orchestrator.py → parents[2]=backend/
     # 容器   /app/app/services/orchestrator.py → parents[2]=/app/
     backend = str(Path(__file__).resolve().parents[2])
+
+    # 别的 ETL 正在跑就别再起一个（2026-11-16 19:17：19:00 定时 ETL 与编排
+    # catch-up 的 data 步骤同时起子进程，两个抢同一把 SQLite 写锁，双双卡在
+    # compute_factors 十几分钟）。等它跑完，本轮直接复用结果 —— 数据是同一份，
+    # 没必要跑两遍；跑两遍只会更慢更脏。
+    try:
+        from app.core.data_scheduler import _other_pipeline_running
+
+        t_wait = time.time()
+        while (busy := _other_pipeline_running()) is not None:
+            if time.time() - t_wait > 900:
+                _event(db, run_id, "data",
+                       f"另一条 ETL run #{busy} 仍在跑（已等 900s），本轮跳过数据步骤",
+                       step="data", status="warn", level="warn")
+                db.commit()
+                return
+            time.sleep(20)
+        if time.time() - t_wait > 21:      # 至少等过一轮才算「复用了别人的」
+            _event(db, run_id, "data",
+                   f"等待另一条 ETL 完成（{(time.time() - t_wait) / 60:.1f} 分钟），复用其结果",
+                   step="data", status="ok")
+            db.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("ETL 互斥检查跳过：%s", e)
+
     code = ("from app.datahub.runner import run_pipeline;"
             "import sys; sys.stdout.flush();"
             "rid = run_pipeline('orchestrator');"
