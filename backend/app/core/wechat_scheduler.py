@@ -138,7 +138,10 @@ def _load_report() -> dict:
     try:
         d = json.loads(_REPORT_FILE.read_text(encoding="utf-8"))
         return {"at": d.get("at"), "summary": d.get("summary"),
-                "failures": (d.get("failures") or [])[:30]}
+                "failures": (d.get("failures") or [])[:30],
+                # 原始输出尾部：提取规则再准也可能被脚本改措辞打穿，
+                # 留一份原文是最可靠的后路（存了却不返回等于没存）
+                "tail": (d.get("tail") or "")[-1500:]}
     except Exception:  # noqa: BLE001
         return {}
 
