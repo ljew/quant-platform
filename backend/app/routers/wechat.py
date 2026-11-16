@@ -220,33 +220,16 @@ def upstream():
 
 @router.post("/collect")
 def collect(limit: int = 0):
-    """手动触发一次采集（子进程执行，接口立即返回）。
+    """手动触发一次采集（后台线程，接口立即返回）。
 
-    ⚠️ 必须子进程：采集要 6-8 分钟且带 3 秒限频，放进 uvicorn 线程会拖垮服务
-    （本项目定过规矩：长任务一律 subprocess + 独立进程）。
+    走 wechat_scheduler.run_now → _run_crawl：失败明细落盘、状态回报、
+    原始输出留档。⚠️ 不要在这里裸 Popen —— 旧实现把 stdout/stderr 全丢
+    DEVNULL，跑没跑、为什么失败一概看不见（2026-11-16 因此查了半小时）。
+    limit>0 时只跑前 N 个号，调试用。
     """
-    import subprocess
-    import sys
-    from pathlib import Path as _P
+    from app.core.wechat_scheduler import run_now
 
-    here = _P(__file__).resolve()
-    script = None
-    for d in (_P("/app/scripts/wechat"), here.parents[2] / "scripts" / "wechat",
-              here.parents[2] / "backend" / "scripts" / "wechat"):
-        if (d / "collect_weread.py").exists():
-            script = d / "collect_weread.py"
-            break
-    if script is None:
-        raise HTTPException(status_code=500, detail="找不到 collect_weread.py")
-
-    # ⚠️ 间隔必须 6s（3s 会被微信读书限流，见 wechat_scheduler._run_crawl 注释）
-    cmd = [sys.executable, str(script), "--interval", "6"]
-    if limit:
-        cmd += ["--limit", str(limit)]
-    subprocess.Popen(cmd, cwd=str(script.parent),
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     start_new_session=True)
-    return {"ok": True, "note": "采集已在后台启动，60 秒后刷新本页看结果"}
+    return run_now(limit=limit)
 
 
 # ───────────────────────── 订阅号管理 ─────────────────────────
