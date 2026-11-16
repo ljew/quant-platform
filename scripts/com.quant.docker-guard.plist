@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Docker Desktop 兜底看门狗（2026-11-16）
+
+  背景：Docker 的 AutoStart 是「登录项」，只有用户登录进桌面才触发。
+  11-16 机器 08:51 开机、14:09 才有人登录 → 后端 5 小时 18 分不可用，
+  06:20 的公众号采集和 17:30 的编排全部错过（11-13 那次也是关机导致）。
+
+  这个 job 每 5 分钟探一次 8000 端口，不通就拉起 Docker Desktop。
+  只在登录后运行（LaunchAgent 本来就是这样），正好补「登录了但 Docker 没起」那段。
+
+  加载（在**自己的终端**里跑一次，沙箱执行会报 Input/output error）：
+      launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.quant.docker-guard.plist
+  卸载：
+      launchctl bootout gui/$(id -u)/com.quant.docker-guard
+  看状态：
+      launchctl print gui/$(id -u)/com.quant.docker-guard
+  日志：
+      ~/quant-platform/data/docker-guard.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.quant.docker-guard</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>/Users/happyljew/quant-platform/scripts/docker-guard.sh</string>
+  </array>
+
+  <!-- 每 5 分钟探一次。不用 KeepAlive：那是「进程挂了就重启」，
+       这里要的是周期巡检，KeepAlive 会让脚本一退出就被拉起来，空转烧 CPU。 -->
+  <key>StartInterval</key>
+  <integer>300</integer>
+
+  <!-- 加载时先跑一次，不必等第一个 5 分钟周期 -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- 标准输出也留一份，脚本自己写 data/docker-guard.log，这里兜住 open/pgrep 的杂音 -->
+  <key>StandardOutPath</key>
+  <string>/Users/happyljew/quant-platform/data/docker-guard.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/happyljew/quant-platform/data/docker-guard.stderr.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <!-- 低优先级：别和量化的实时任务抢 CPU -->
+  <key>Nice</key>
+  <integer>10</integer>
+</dict>
+</plist>
