@@ -6,9 +6,9 @@
   · 本页（timeline）——「每天几点该到、实际几点到的、卡在哪一段」，时钟维度。
 
 为什么必须单开一页（2026-11-16 两个真实问题，前两页都看不出来）：
-  ① 基金 nav 环节排在 19:40，而 tushare 净值当晚 19:00~23:00 才陆续公布，
+  ① 基金 nav 环节原来排在 19:40，而 tushare 净值当晚 20:00~23:00 才陆续公布，
      排在公布之前 → 每天必然差一天。在「新鲜度」里只显示「落后 1 天」，
-     看不出是**时点排错了**。
+     看不出是**时点排错了**。（2026-11-16 已把所有相关环节后移到 21:00 之后）
   ② 11-13 关机、11-16 开机，基金管道一条 run 都没有，state 停在 11-12，
      页面上同样是「落后 N 天」，看不出是「压根没跑」还是「跑了没抓到」。
 
@@ -161,11 +161,11 @@ DOMAINS: list[dict] = [
     # ── 基金（fund_research.db）──
     {"g": "基金", "key": "fund_nav", "name": "基金净值", "db": "fund", "table": "fund_nav_daily",
      "col": "nav_date", "kind": _MARKET, "source": "tushare / 天天基金（当晚陆续公布）",
-     "ready": "19:00~23:00", "plan": "19:40", "owner": "fund_scheduler",
+     "ready": "20:00~23:00（T+1 才全）", "plan": "21:00", "owner": "fund_scheduler",
      "via": ("fund", "nav")},
     {"g": "基金", "key": "fund_nav_import", "name": "净值入库", "db": "fund", "table": "fund_nav_daily",
      "col": "nav_date", "kind": _MARKET, "source": "本地 CSV → 库",
-     "ready": "-", "plan": "20:15", "owner": "fund_scheduler",
+     "ready": "-", "plan": "21:25", "owner": "fund_scheduler",
      "via": ("fund", "nav_import")},
     {"g": "基金", "key": "fund_holdings", "name": "基金持仓", "db": "fund", "table": "fund_hold_coverage",
      "col": "end_date", "kind": _PERIOD, "source": "tushare fund_portfolio（季报）",
@@ -786,8 +786,8 @@ def compute_timeline(db, days: int = 1, use_cache: bool = True) -> dict:
         {"at": "18:30", "label": "收盘快照", "owner": "quote_scheduler", "group": "行情"},
         {"at": "19:00", "label": "ETL 管道（16 步）", "owner": "data_scheduler", "group": "行情"},
         {"at": "19:30", "label": "估值补齐 + ETF 日线", "owner": "data_scheduler / etf_flow", "group": "行情"},
-        {"at": "19:40", "label": "基金净值采集", "owner": "fund_scheduler", "group": "基金"},
-        {"at": "20:15", "label": "净值入库", "owner": "fund_scheduler", "group": "基金"},
+        {"at": "21:00", "label": "基金净值采集", "owner": "fund_scheduler", "group": "基金"},
+        {"at": "21:25", "label": "净值入库", "owner": "fund_scheduler", "group": "基金"},
         {"at": "20:20", "label": "公众号采集（晚）", "owner": "wechat_scheduler", "group": "资讯"},
         {"at": "21:45", "label": "每日简报（LLM）", "owner": "hot_brief_scheduler", "group": "资讯"},
         {"at": "22:00~23:30", "label": "基金穿透 / 风格 / 回归", "owner": "fund_scheduler", "group": "基金"},

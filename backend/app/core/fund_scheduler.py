@@ -112,14 +112,26 @@ STAGES: list[dict] = [
         # 日更模式：起点自动取「库内最新净值次日」，不用人工维护窗口参数。
         # 按日拉全市场（1.6s/天），4 天窗口约 10 秒；--by-code 是回填历史的逐只路径。
         "args": ["--incremental"],
-        "hour": 19, "minute": 40, "timeout": 900,
+        # ⚠️ 时点定在 21:00，不是 19:40（2026-11-16 改）。
+        # 原来排在 19:40 —— 那时 tushare / 天天基金的当日净值**还没公布**
+        # （基金净值当晚 20:00~23:00 陆续出，QDII 更要 T+2），于是每天抓回来
+        # 的最新净值永远是「昨天」，日复一日差一天，而且不报任何错。
+        # 排期早于数据发布，重试多少次都没用，只能把时点挪到发布之后。
+        # 迟到的部分由脚本自带的 LOOKBACK=3 天回看补（existing_pairs 会跳过已有行，
+        # 回看不会重复写），所以 21:00 只拿到 80% 也不会造成永久缺口。
+        # 配合下面的 _postcheck_nav：没追平就判失败并 10 分钟后重试（最多 3 次）。
+        # 如果实测发现净值普遍 21:30 之后才齐，把这个时点再往后挪即可 —— 别反过来
+        # 放宽断言，那就又回到「绿着错了」。
+        "hour": 21, "minute": 0, "timeout": 900,
         "desc": "日净值增量 → nav_raw.csv（按日拉全市场，起点=库内最新净值次日起）",
         "on": "daily",
     },
     {
         "key": "nav_import", "label": "净值入库", "kind": "derived",
         "script": "import_fund_nav.py", "args": [],
-        "hour": 20, "minute": 15, "timeout": 900,
+        # 跟着 nav 一起后移：nav 21:00 起、单次超时 900 秒，给 10 分钟余量到 21:25。
+        # 卡在 20:15 的话会在 nav 还没跑的时候空转一轮（depends 之外还有槽位判定）。
+        "hour": 21, "minute": 25, "timeout": 900,
         "depends": ["nav"],
         "desc": "nav_raw.csv → fund_nav_daily（按字节偏移增量 upsert，幂等可重跑）",
     },
@@ -761,10 +773,19 @@ def run_stage(key: str, force: bool = False, trigger: str = "manual",
                 logger.warning("基金管道 %s 超时 %ss，已终止", key, timeout)
             else:
                 ok = p.returncode == 0
-                _finish(key, ok, tail, _parse_rows(out),
-                        "" if ok else f"exit={p.returncode}", t0)
-                logger.info("基金管道 %s %s，%.1fs", key, "完成" if ok else "失败",
-                            time.time() - t0)
+                err = "" if ok else f"exit={p.returncode}"
+                chk = _POSTCHECK.get(key)
+                if ok and chk is not None:
+                    try:
+                        passed, why = chk()
+                    except Exception as e:  # noqa: BLE001
+                        passed, why = False, f"断言本身出错 {type(e).__name__}: {e}"
+                    if not passed:
+                        ok = False
+                        err = f"数据未就绪：{why}"
+                _finish(key, ok, tail, _parse_rows(out), err, t0)
+                logger.info("基金管道 %s %s，%.1fs%s", key, "完成" if ok else "失败",
+                            time.time() - t0, f"（{err}）" if err else "")
         except Exception as e:  # noqa: BLE001
             _finish(key, False, "", None, repr(e)[:800], t0)
             logger.warning("基金管道 %s 异常：%r", key, e)
@@ -835,6 +856,55 @@ def _is_trading_day(d: date | None = None) -> bool:
 def _passed_today(hour: int, minute: int) -> bool:
     now = datetime.now()
     return (now.hour, now.minute) >= (hour, minute)
+
+
+def _expected_nav_date(now: datetime | None = None) -> date:
+    """此刻「应该已经有的」最新净值日。
+
+    净值当晚 20:00~23:00 陆续公布，20:00 前要求当天就是不合理的。
+    """
+    now = now or datetime.now()
+    d = now.date()
+    if _is_trading_day(d) and now.hour >= 20:
+        return d
+    for _ in range(12):
+        d -= timedelta(days=1)
+        if _is_trading_day(d):
+            return d
+    return d
+
+
+def _postcheck_nav() -> tuple[bool, str]:
+    """nav 环节的后置断言：净值有没有追平「应该有」的那天。
+
+    为什么必须有这条（2026-11-16）：
+      nav 原来排 19:40，那时净值还没公布，脚本抓回来的是前一天的数据 ——
+      **exit code 全是 0**，调度器记 ok，页面上绿了两个月，实际天天差一天。
+      「进程成功」不等于「数据到齐」，这跟 runner 里 sync_duckdb / compute_factors
+      那两条后置断言是同一个道理。
+
+    不追平就判失败 → 10 分钟后自动重试（_MAX_ATTEMPTS=3），三次都不到就等次日的
+    LOOKBACK=3 天回看补。宁可红一次，也不要绿着骗自己。
+    """
+    target = _expected_nav_date()
+    con = _conn(timeout=15)
+    try:
+        v = con.execute("SELECT MAX(nav_date) FROM fund_nav_daily").fetchone()[0]
+    except Exception as e:  # noqa: BLE001
+        return False, f"查净值失败 {type(e).__name__}: {e}"
+    finally:
+        con.close()
+    if not v:
+        return False, "fund_nav_daily 空表"
+    got = str(v)[:10].replace("-", "")
+    want = target.strftime("%Y%m%d")
+    if got >= want:
+        return True, ""
+    return False, f"净值只到 {got}，应为 {want}（源端可能还没全公布）"
+
+
+# 环节跑完的后置断言表（进程 exit=0 之外还要看数据事实）
+_POSTCHECK = {"nav": _postcheck_nav}
 
 
 def _derived_due(st: dict, states: dict[str, dict]) -> bool:

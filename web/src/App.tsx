@@ -60,7 +60,7 @@ const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; lab
     // 健康当门面（设计文档 11 节：第⑦块提到第一位）
     { key: "datahealth", label: "数据健康" },
     // 到达时点：健康回答「新不新」，这里回答「几点该到、实际几点到、卡在哪一段」。
-    // 排期早于数据发布（基金净值 19:40 vs 当晚公布）只有这一页看得出来。
+    // 排期早于数据发布（基金净值曾排 19:40 vs 当晚才公布）只有这一页看得出来。
     { key: "timeline", label: "到达时点" },
     // 血缘 / 步骤 / 运行（原「自动研究 → 流水线实况」并进来了）
     { key: "pipeline", label: "数据管道" },

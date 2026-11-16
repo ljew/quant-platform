@@ -208,7 +208,7 @@ def timeline_endpoint(days: int = 1, fresh: bool = False):
 
     与 /table-freshness 的区别：那个回答「这张表现在新鲜吗」，这个回答
     「每天几点该到、实际几点到的、卡在哪一段」——
-    排期早于数据发布（如基金 nav 排 19:40 而净值当晚才公布）只有这一页看得出来。
+    排期早于数据发布（如基金 nav 曾排 19:40 而净值当晚才公布）只有这一页看得出来。
     """
     from app.services.timeline_svc import compute_timeline
 
