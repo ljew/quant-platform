@@ -112,6 +112,81 @@ export interface TableFreshness {
   tables: TableFreshnessRow[];
 }
 
+/** 数据到达/处理时点（timeline 页）：一类数据一行。 */
+export interface TimelineDomain {
+  group: string;
+  key: string;
+  name: string;
+  table: string;
+  source: string;
+  kind: string;        // market / daily / period / live
+  ready: string;       // 源端经验可获取时点
+  plan: string;        // 平台计划处理时点
+  owner: string;
+  data_date: string | null;
+  landed_at: string | null;
+  landed_by: string | null;
+  lag_days: number | null;
+  status: string;      // OK / WARN / FAIL / n/a
+  note: string;
+  /** 实际落库比计划晚多少分钟（负=提前，null=跨天或没计划） */
+  late_min?: number | null;
+}
+
+export interface TimelineEvent {
+  at: string;
+  group: string;       // ETL / 编排 / 基金 / 调度
+  kind: string;
+  label: string;
+  status: string;
+  detail: string;
+}
+
+export interface TimelineStep {
+  name: string;
+  status: string;
+  rows: number;
+  duration_sec: number;
+  start: string | null;
+  end: string | null;
+  message: string;
+}
+
+export interface TimelineRun {
+  run_id: number;
+  trigger: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+  steps: TimelineStep[];
+}
+
+export interface TimelineFundRun {
+  stage: string;
+  status: string;
+  trigger: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_sec: number | null;
+  rows: number | null;
+  error: string | null;
+}
+
+export interface DataTimeline {
+  now: string;
+  expected_market_date: string;
+  is_trading_day: boolean;
+  counts: Record<string, number>;
+  domains: TimelineDomain[];
+  etl_runs: TimelineRun[];
+  fund_today: TimelineFundRun[];
+  fund_states: Record<string, { last_ok_at: string | null; last_fail_at: string | null; last_error: string | null; runs_total: number; fails_total: number }>;
+  schedulers: Record<string, Record<string, unknown>>;
+  events: TimelineEvent[];
+  schedule: { at: string; label: string; owner: string; group: string }[];
+}
+
 export interface AlertLogItem {
   id: number; level: string; channel: string; status: string;
   title: string; error: string | null; at: string | null;
@@ -591,6 +666,8 @@ export const api = {
   // 数据健康度 + 数据流全景
   tableFreshness: (force = false) =>
     get<TableFreshness>(`/monitor/table-freshness?fresh=${force}`),
+  /** 数据到达/处理时点：每类数据「源端几点可得、计划几点处理、实际几点落库」。 */
+  dataTimeline: (days = 1) => get<DataTimeline>(`/monitor/timeline?days=${days}`),
   alertLog: (limit = 50, level?: string) =>
     get<{ total: number; counts: Record<string, number>; items: AlertLogItem[] }>(
       `/monitor/alert-log?limit=${limit}${level ? `&level=${level}` : ""}`),

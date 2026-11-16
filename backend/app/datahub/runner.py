@@ -882,11 +882,26 @@ _POSTCHECK = {
 
 def init_models():
     """确保管道记录表存在。"""
-    from app.database import Base, engine
+    from sqlalchemy import text
+
+    from app.database import Base, engine, SessionLocal
 
     init_db()
     Base.metadata.create_all(engine, tables=[
         PipelineRun.__table__, PipelineStepLog.__table__])
+    # 老库补列（2026-11-16）：「数据到达/处理时点」页面要每步的起止时刻，
+    # 原来只有 duration_sec。SQLite 没有 ADD COLUMN IF NOT EXISTS，用 PRAGMA 判。
+    try:
+        with SessionLocal() as db:
+            cols = {r[1] for r in db.execute(text(
+                "pragma table_info(pipeline_run_steps)")).fetchall()}
+            for name in ("started_at", "finished_at"):
+                if name not in cols:
+                    db.execute(text(
+                        f"ALTER TABLE pipeline_run_steps ADD COLUMN {name} DATETIME"))
+            db.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("pipeline_run_steps 补列失败（不影响采集）: %s", e)
 
 
 # 步骤执行过程中收集的细粒度统计（失败明细等）。
@@ -916,6 +931,7 @@ def run_pipeline(trigger: str = "manual", only: list[str] | None = None,
                 continue
             log = PipelineStepLog(run_id=run_id, name=name, status="OK")
             t0 = time.time()
+            log.started_at = datetime.now()   # 本地 naive，与 run.finished_at 同口径
             try:
                 _STEP_STATS.pop(name, None)
                 rows = int(fn(db) or 0)
@@ -970,6 +986,7 @@ def run_pipeline(trigger: str = "manual", only: list[str] | None = None,
                     break
             finally:
                 log.duration_sec = round(time.time() - t0, 2)
+                log.finished_at = datetime.now()
                 db.add(log)
                 db.commit()
         run_row.status = "FAILED" if steps_fail else ("SUCCESS" if steps_ok else "SKIPPED")

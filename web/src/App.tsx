@@ -15,6 +15,7 @@ const DataPipelinePage = lazy(() => import("./pages/DataPipelinePage"));
 const MonitorPage = lazy(() => import("./pages/MonitorPage"));
 const AutoResearchHubPage = lazy(() => import("./pages/AutoResearchHubPage"));
 const DataHealthPage = lazy(() => import("./pages/DataHealthPage"));
+const DataTimelinePage = lazy(() => import("./pages/DataTimelinePage"));
 const FundResearchPage = lazy(() => import("./pages/FundResearchPage"));
 const NewsHubPage = lazy(() => import("./pages/NewsHubPage"));
 const MarketHubPage = lazy(() => import("./pages/MarketHubPage"));
@@ -58,6 +59,9 @@ const HUBS: { key: HubKey; label: string; icon: string; tabs: { key: string; lab
   { key: "data", label: "数据中心", icon: "⇉", tabs: [
     // 健康当门面（设计文档 11 节：第⑦块提到第一位）
     { key: "datahealth", label: "数据健康" },
+    // 到达时点：健康回答「新不新」，这里回答「几点该到、实际几点到、卡在哪一段」。
+    // 排期早于数据发布（基金净值 19:40 vs 当晚公布）只有这一页看得出来。
+    { key: "timeline", label: "到达时点" },
     // 血缘 / 步骤 / 运行（原「自动研究 → 流水线实况」并进来了）
     { key: "pipeline", label: "数据管道" },
     // 容器 / 调度 / 告警（原来和管道各存一份运行记录，已去重）
@@ -143,6 +147,7 @@ function HubContent({ sub, id, inner }: { sub: string; id?: number; inner?: stri
     case "signal": return <SignalPage />;
     case "attribution": return <AttributionPage />;
     case "datahealth": return <DataHealthPage />;
+    case "timeline": return <DataTimelinePage />;
     case "pipeline": return <DataPipelinePage />;
     case "monitor": return <MonitorPage />;
     case "auto": return <AutoResearchHubPage />;
