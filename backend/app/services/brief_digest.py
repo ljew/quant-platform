@@ -64,6 +64,9 @@ PROMPT = """下面是 {day} 全天的资讯，分三部分：已提炼要点、�
 【三】盘中各轮的即时判断（按时间，供你参考市场认知的演变，可以推翻）
 {mainlines}
 
+【四】当日行情事实（系统直接从行情库/tushare 取，**权威口径，直接用**，不要去资讯里二次推断）
+{snapshot}
+
 请写一份当日复盘，**800~1100 字**，5 段，依次回答：
 
 ① 今天市场在交易什么 —— 一句话点题，然后说清这个判断的依据。
@@ -75,8 +78,10 @@ PROMPT = """下面是 {day} 全天的资讯，分三部分：已提炼要点、�
 ③ 产业与板块 —— 哪几条线索在共振（互相印证）？哪几条是伪相关？
    驱动的持续性怎么看（一次性事件 / 有持续数据跟踪 / 产能周期）。
 
-④ 资金与筹码 —— 从资讯能看到的资金动向（ETF 申赎、回购、投顾仓位、
-   龙虎榜、北向），以及它们和板块表现是否一致。不一致要指明。
+④ 资金与筹码 —— **必须引用【四】里的具体数字**（成交额、涨跌家数、北向、
+   龙虎榜、回购），说明它们和【四】里的行业涨跌、指数表现是否一致。
+   不一致要指明矛盾在哪。【四】明确标了「没有」的项（如运价、投顾仓位）
+   才可以写「无法验证」，其余一律不许说"看不到"。
 
 ⑤ 接下来盯什么 —— 未来 1~2 周会证伪或证实当前判断的**具体**事件或数据，
    要能落到日期或指标名，不要写「关注政策变化」这种。"""
@@ -176,10 +181,21 @@ def _gather(db: Session, day: str) -> dict:
         f"- {r.created_at:%H:%M} {r.mainline}" for r in rows
         if r.mainline) or "（本日无盘中判断）"
 
+    # 当日行情快照：日报以前只有资讯文本，模型只能写「缺成交额与涨跌家数」
+    # 「看不到北向/龙虎榜」。这些数据平台全都有（见 market_snapshot 的注释）。
+    try:
+        from app.services.market_snapshot import build as build_snap
+        from app.services.market_snapshot import to_prompt_block
+
+        snapshot = to_prompt_block(build_snap(db, day))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("当日行情快照失败（日报继续跑）：%s", str(e)[:120])
+        snapshot = "（当日行情快照不可用）"
+
     return {"items": items, "n_items": len(items), "n_news": n_news,
             "src_stat": src_stat, "hot_stocks": hot_stocks,
             "sector_stat": sector_stat, "items_block": items_block,
-            "mainlines": mainlines, "n_rounds": len(rows)}
+            "mainlines": mainlines, "snapshot": snapshot, "n_rounds": len(rows)}
 
 
 def _items_for_stats(rows: list) -> list[dict]:
@@ -250,10 +266,12 @@ def run(db: Session, day: str | None = None, fast: bool = False) -> dict:
         if exist is not None and "pro" in (exist.model or "").lower():
             return {"ok": False, "skipped": "已有 v4-pro 完整版，盘中不覆盖"}
 
+    # 白名单必须跟 PROMPT 里的占位符一一对应：少一个就 KeyError（加了【四】
+    # snapshot 却忘在这里，日报会直接抛异常）。
     prompt = PROMPT.format(day=day, **{k: v for k, v in data.items()
                                        if k in ("n_items", "items_block", "n_news",
                                                 "src_stat", "hot_stocks", "sector_stat",
-                                                "mainlines")})
+                                                "mainlines", "snapshot")})
     msgs = [{"role": "system", "content": SYSTEM},
             {"role": "user", "content": prompt}]
     t0 = datetime.now()
