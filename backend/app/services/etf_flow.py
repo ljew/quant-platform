@@ -49,6 +49,7 @@ from app.models import (
     EtfMinuteBar,
     EtfQuoteIntraday,
     EtfShareDaily,
+    EtfShareMarket,
     EtfUniverse,
 )
 
@@ -339,6 +340,73 @@ def update_daily(db: Session, codes: list[str], force: bool = False) -> int:
         db.commit()
         n += 1
     return n
+
+
+def _recent_trade_dates(n: int) -> list[str]:
+    """最近 n 个交易日（YYYYMMDD），口径与 update_category 一致：取指数日线。"""
+    idx = _call("index_daily", ts_code=INDEX_CODE,
+                start_date=(date.today() - timedelta(days=n * 2 + 20)).strftime("%Y%m%d"),
+                end_date=date.today().strftime("%Y%m%d"))
+    if idx is None or not len(idx):
+        return []
+    return sorted(idx["trade_date"].astype(str).tolist())[-n:]
+
+
+def update_share_market(db: Session, days: int = 5, force: bool = False) -> int:
+    """全市场 ETF 份额快照（按日拉，一天一次调用）。
+
+    与 `update_share` 的分工：
+      · `update_share`  逐只拉 20 只**看板样本池**，带净值（折算检测要用）
+      · 本函数          按日拉**全市场**，只留份额/收盘/成交额/规模，
+                        给日报和简报算「全市场 ETF 净申赎」
+
+    为什么不能逐只拉全市场：tushare `fund_share` 有频率限制，1000+ 只逐只
+    调用必被限速（记忆里 adj_factor 1 次/小时就是这么废掉的）。
+    按日拉全市场是一次调用返回全部，成本几乎为零。
+
+    份额单位是**万份**，规模 = 万份 × 1e4 × 收盘价 / 1e8 = 亿元。
+    """
+    from sqlalchemy import func
+
+    row = db.scalar(select(func.max(EtfShareMarket.trade_date)))
+    latest = row.strftime("%Y%m%d") if row else None
+    tds = _recent_trade_dates(max(days, 3))
+    if latest and not force:
+        tds = [d for d in tds if d > latest]
+
+    basic = _call("fund_basic", market="E")
+    names = {}
+    if basic is not None and len(basic):
+        names = dict(zip(basic["ts_code"].astype(str), basic["name"].astype(str)))
+
+    written = 0
+    for td in tds:
+        sh = _call("fund_share", trade_date=td)
+        dl = _call("fund_daily", trade_date=td)
+        if not len(sh) or not len(dl):
+            logger.info("全市场 ETF 份额 %s：源端无数据，跳过", td)
+            continue
+        m = sh[["ts_code", "fd_share"]].merge(
+            dl[["ts_code", "close", "amount"]], on="ts_code", how="left")
+        m["fd_share"] = pd.to_numeric(m["fd_share"], errors="coerce")
+        m["close"] = pd.to_numeric(m["close"], errors="coerce")
+        m["amount"] = pd.to_numeric(m["amount"], errors="coerce")
+        m = m[m["fd_share"] > 0]
+        d = _to_date(td)
+        db.execute(delete(EtfShareMarket).where(EtfShareMarket.trade_date == d))
+        db.bulk_insert_mappings(EtfShareMarket, [{
+            "ts_code": str(r.ts_code), "name": names.get(str(r.ts_code)),
+            "trade_date": d,
+            "fd_share": float(r.fd_share),
+            "close": float(r.close) if pd.notna(r.close) else None,
+            "amount": float(r.amount) if pd.notna(r.amount) else None,
+            "scale_yi": (round(float(r.fd_share) * 1e4 * float(r.close) / 1e8, 3)
+                         if pd.notna(r.close) else None),
+        } for r in m.itertuples()])
+        db.commit()
+        written += len(m)
+        logger.info("全市场 ETF 份额 %s：%d 只", td, len(m))
+    return written
 
 
 def update_index(db: Session, force: bool = False) -> int:

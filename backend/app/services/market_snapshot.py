@@ -234,23 +234,47 @@ def _repurchase(day: str, days: int = 5) -> dict | None:
         return None
 
 
-def _etf(db, day: str, prev: str) -> dict:
-    """ETF 份额变化（样本仅 20 只，覆盖不足要说明）。"""
+def _etf(db, day: str, prev: str, top: int = 4) -> dict:
+    """全市场 ETF 净申赎（`etf_share_market`，约 1720 只）。
+
+    以前这里用的是 `etf_share_daily`（20 只看板样本），算出来 0.01 亿份，
+    看着像「没动」，实际全市场根本没看 —— 给一个像结论的残缺数字最糟。
+    现在按日拉了全市场（一次调用），直接算「Δ份额 × 收盘价」。
+
+    ⚠️ **份额折算**是唯一的坑：1:2 合并会让 Δ份额腰斩、算出天量假赎回
+    （2024-09-20 的 510310 就是）。判据：单只份额变动超过 50% 的一律剔除，
+    宁可少算几只，也不要让一个折算把全市场合计数带歪。
+    """
     try:
         rows = db.execute(text(
-            "select a.symbol, a.fd_share s0, b.fd_share s1 from etf_share_daily a"
-            " join etf_share_daily b on b.symbol = a.symbol and b.trade_date = :d"
-            " where a.trade_date = :p"), {"p": prev, "d": day}).fetchall()
-        chg = 0.0
-        n = 0
-        for _sym, s0, s1 in rows:
-            if s0 and s1:
-                chg += float(s1) - float(s0)
-                n += 1
-        return {"n": n, "share_chg_yi": round(chg / 1e8, 2) if n else None,
-                "note": "样本仅 20 只 ETF，不代表全市场申赎"}
-    except Exception:  # noqa: BLE001
+            "select a.ts_code, a.name, a.fd_share, a.close, b.fd_share prev_share"
+            " from etf_share_market a join etf_share_market b"
+            "   on b.ts_code = a.ts_code and b.trade_date = :p"
+            " where a.trade_date = :d and a.close is not null and b.fd_share > 0"
+        ), {"p": prev, "d": day}).fetchall()
+    except Exception as e:  # noqa: BLE001
+        logger.info("ETF 份额读取失败：%s", str(e)[:80])
         return {}
+
+    items = []
+    dropped = 0
+    for code, name, sh, close, psh in rows:
+        try:
+            ratio = float(sh) / float(psh) - 1
+        except (TypeError, ZeroDivisionError):
+            continue
+        if abs(ratio) > 0.5:      # 份额折算，剔除
+            dropped += 1
+            continue
+        items.append({"code": code, "name": name,
+                      "net_yi": round((float(sh) - float(psh)) * 1e4 * float(close) / 1e8, 2),
+                      "chg_pct": round(ratio * 100, 1)})
+    if not items:
+        return {}
+    items.sort(key=lambda x: x["net_yi"], reverse=True)
+    total = round(sum(x["net_yi"] for x in items), 1)
+    return {"n": len(items), "net_yi": total, "dropped": dropped,
+            "top_in": items[:top], "top_out": list(reversed(items[-top:]))}
 
 
 def build(db, day: str | None = None) -> dict:
@@ -271,6 +295,21 @@ def build(db, day: str | None = None) -> dict:
         except Exception as e:  # noqa: BLE001
             logger.info("快照 %s 失败：%s", key, str(e)[:100])
             out[key] = {}
+
+    # 涨跌家数降级：日报 21:45 跑时库里有当天 K 线（19:00 ETL），走库内；
+    # 但盘中手动跑日报、或 ETL 还没跑完时，库里没有当天数据 → 退回东财盘中口径。
+    if not out.get("breadth"):
+        try:
+            from app.services.data_source import intraday_breadth
+
+            br = intraday_breadth()
+            if br:
+                out["breadth"] = {"n": br["up"] + br["down"] + br["flat"],
+                                  "up": br["up"], "down": br["down"],
+                                  "flat": br["flat"], "turnover_yi": None,
+                                  "src": "东财盘中（沪+深，不含北交所）"}
+        except Exception as e:  # noqa: BLE001
+            logger.info("盘中涨跌家数降级失败：%s", str(e)[:80])
 
     lim = _limit_counts(day) or _limit_approx(db, day, prev)
     out["limit"] = lim
@@ -294,8 +333,10 @@ def to_prompt_block(s: dict) -> str:
     b = s.get("breadth") or {}
     if b:
         lines.append(f"涨跌家数：{b['n']} 只交易，涨 {b['up']} / 跌 {b['down']} / 平 {b['flat']}"
-                     f"（涨家占比 {b['up'] / b['n'] * 100:.0f}%）")
-        lines.append(f"两市成交额：{b['turnover_yi']} 亿元")
+                     f"（涨家占比 {b['up'] / b['n'] * 100:.0f}%）"
+                     + (f"［{b['src']}］" if b.get("src") else ""))
+        if b.get("turnover_yi"):
+            lines.append(f"两市成交额：{b['turnover_yi']} 亿元")
 
     lim = s.get("limit") or {}
     if lim:
@@ -327,11 +368,16 @@ def to_prompt_block(s: dict) -> str:
 
     e = s.get("etf") or {}
     if e.get("n"):
-        # ⚠️ 只给 20 只样本的「合计变动」会被读成全市场申赎（0.01 亿份像是「没动」，
-        # 但全市场 1000+ 只 ETF 我们根本没看）。要么补全 `fund_share` 全量，
-        # 要么就明说样本不足 —— 给一个看着像结论的残缺数字最糟。
-        lines.append(f"ETF 份额：**样本不足**（库里只有 {e['n']} 只），"
-                     f"不能代表全市场申赎，本轮不要据此下结论")
+        lines.append(f"ETF 净申赎（全市场 {e['n']} 只）：合计 {e['net_yi']:+.1f} 亿元"
+                     + (f"（{e['dropped']} 只因份额折算剔出）" if e.get("dropped") else ""))
+        if e.get("top_in"):
+            lines.append("  净申购靠前：" + "、".join(
+                f"{x['name']} {x['net_yi']:+.1f} 亿" for x in e["top_in"]))
+        if e.get("top_out"):
+            lines.append("  净赎回靠前：" + "、".join(
+                f"{x['name']} {x['net_yi']:+.1f} 亿" for x in e["top_out"]))
+    else:
+        lines.append("ETF 净申赎：未取到")
 
     lines.append("⚠️ 本快照**没有**的数据（不要推测，也不要写成「看不到」就停）："
                  + "；".join(s.get("missing") or []))

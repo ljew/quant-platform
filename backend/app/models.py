@@ -1306,6 +1306,33 @@ class EtfUniverse(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
+class EtfShareMarket(Base):
+    """全市场 ETF 份额快照（日报/简报的「ETF 申赎」用）。
+
+    为什么不复用 `etf_share_daily`：那张表是**看板样本池**（20 只宽基，按类别
+    配额选的），`flow_panel()` 会全表读去做类别资金流。往里塞 1000+ 只全市场
+    数据会把看板的聚合口径冲掉，两边都不可信。
+
+    写入走「按日拉全市场」（`fund_share(trade_date=)` 一次调用拿全部），
+    不是逐只 —— tushare 逐只拉 1000+ 次要被限速打死。
+    """
+
+    __tablename__ = "etf_share_market"
+    __table_args__ = (
+        UniqueConstraint("ts_code", "trade_date", name="uq_etf_sm_code_date"),
+        Index("ix_etf_sm_date", "trade_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts_code: Mapped[str] = mapped_column(String(16))
+    name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    trade_date: Mapped[date] = mapped_column(Date)
+    fd_share: Mapped[float | None] = mapped_column(Float, nullable=True)   # 万份
+    close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    amount: Mapped[float | None] = mapped_column(Float, nullable=True)    # 千元
+    scale_yi: Mapped[float | None] = mapped_column(Float, nullable=True)  # 亿元
+
+
 class EtfShareDaily(Base):
     """ETF 份额日频（一级申赎数据，T 日盘后 → T+1 盘前可见）。
 

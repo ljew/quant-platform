@@ -839,7 +839,22 @@ def _intraday_block() -> str:
 
     if not lines:
         return ""      # 一个都没拿到就别占篇幅，也别让模型以为「行情是空的」
-    lines.append("（盘中涨跌家数/涨停跌停需要全市场逐只报价，本轮未取，不要臆造）")
+    # 涨跌家数：库里要等 19:00 ETL 才有当天数，盘中只能靠东财。
+    try:
+        from app.services.data_source import intraday_breadth
+
+        br = intraday_breadth()
+        if br:
+            tot = br["up"] + br["down"] + br["flat"]
+            lines.append(
+                f"涨跌家数（盘中，沪+深）：涨 {br['up']} / 跌 {br['down']} / 平 {br['flat']}"
+                + (f"，涨家占比 {br['up'] / tot * 100:.0f}%" if tot else ""))
+        else:
+            lines.append("（涨跌家数：盘前或接口未就绪，本轮不给，不要臆造）")
+    except Exception as e:  # noqa: BLE001
+        logger.info("简报涨跌家数获取失败：%s", str(e)[:80])
+        lines.append("（涨跌家数：本轮未取到，不要臆造）")
+    lines.append("（涨停/跌停家数盘中需要全市场逐只报价，本轮未取，不要臆造）")
     return INTRADAY_BLOCK.format(ts=_dt.now().strftime("%H:%M"), lines="\n".join(lines))
 
 

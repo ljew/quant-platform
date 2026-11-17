@@ -442,6 +442,46 @@ def is_index_symbol(symbol: str) -> bool:
     return False
 
 
+_EM_BREADTH_URL = "https://push2.eastmoney.com/api/qt/stock/get"
+
+
+def intraday_breadth() -> dict | None:
+    """盘中涨跌家数（东财指数行情的 f104/f105/f106，两次请求）。
+
+    为什么要这个：平台自己的涨跌家数来自 `kline_daily`，而 K 线要等 19:00 ETL
+    才入库 —— 盘中的简报问「现在市场在交易什么」，库里根本没有当天的数。
+    东财把「上涨/下跌/平盘家数」直接放在指数行情里，一次请求就能拿到。
+
+    口径：沪市取 `1.000001`、深市取 `0.399001`，两者相加。
+    **北交所不在内**，与平台「剔除北交所」的既有口径一致。
+
+    有效性判据用 `up + dn >= 100`，不用时间窗：盘前这些字段是 0（会是假数据），
+    收盘后仍保留收盘时的统计（这个是对的）。只有当天真实统计过才会有三位数。
+    """
+    import requests
+
+    out = {"up": 0, "down": 0, "flat": 0, "markets": []}
+    got = False
+    for secid, label in (("1.000001", "沪"), ("0.399001", "深")):
+        try:
+            r = requests.get(_EM_BREADTH_URL,
+                             params={"secid": secid, "fields": "f104,f105,f106"},
+                             timeout=6, proxies={"http": None, "https": None})
+            d = (r.json() or {}).get("data") or {}
+            up, dn, fl = d.get("f104"), d.get("f105"), d.get("f106")
+            if isinstance(up, (int, float)) and isinstance(dn, (int, float)):
+                out["up"] += int(up)
+                out["down"] += int(dn)
+                out["flat"] += int(fl or 0)
+                out["markets"].append(label)
+                got = True
+        except Exception:  # noqa: BLE001
+            continue
+    if not got or out["up"] + out["down"] < 100:
+        return None      # 盘前 / 接口半残：宁可没有，也不要给 0 当结论
+    return out
+
+
 def _tx_spot_quotes(symbols: list[str]) -> list[dict]:
     """腾讯实时行情兜底（qt.gtimg.cn）：个股与指数通用，沙箱网络可达，无频率限制。
 
