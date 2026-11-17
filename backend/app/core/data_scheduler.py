@@ -673,6 +673,30 @@ def _run_verify(strategies: str) -> tuple[bool, str]:
     return True, (proc.stdout or "")[-300:]
 
 
+def _pipeline_ok_today() -> bool:
+    """今天有没有**成功**的 ETL run（查库，重启不丢）。
+
+    策略验证要拿「今天的数据」算，否则指标漂移是拿旧数据比出来的假信号。
+    内存里的 `last_run_date` 重启就丢，所以这里直接看库。
+    `pipeline_runs.started_at` 是 UTC naive，按 +8 小时折算成本地日期再比。
+    """
+    try:
+        from sqlalchemy import text
+
+        from app.database import SessionLocal
+
+        with SessionLocal() as db:
+            # 「今天成功过」而不是「最后一条成功」：ETL 一天可能跑好几轮
+            # （定时 + 补跑 + 手动），最后一轮失败不代表数据没就绪。
+            n = db.execute(text(
+                "select count(*) from pipeline_runs"
+                " where date(datetime(started_at, '+8 hours')) = date('now', '+8 hours')"
+                " and status = 'SUCCESS'")).scalar()
+        return bool(n)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _orchestrator_ran_today() -> bool:
     """研究流水线（Orchestrator）今天是否已成功跑过（P4 去重判据）。"""
     try:
@@ -801,17 +825,27 @@ def _loop(enabled: bool) -> None:
                     except Exception as e:  # noqa: BLE001
                         logger.warning("成分快照巡检异常: %s", e)
 
-
-                    # 策略自动验证：数据更新之后、每晚一次（20:30 后）。
-                    # 成功才记 last_run_date；失败按 _RETRY_GAP 重试，最多 _MAX_RETRY 次。
-                    v = _status["verify"]
-                    ver_ready = (
-                        retry["ver_n"] < _MAX_RETRY
-                        and (not retry["ver_ts"]
-                             or now.timestamp() - retry["ver_ts"] >= _RETRY_GAP)
-                    )
-                    if (now.hour, now.minute) >= (VERIFY_HOUR, VERIFY_MIN) \
-                            and v.get("last_run_date") != _today_str() and ver_ready:
+                # ── 策略自动验证：**独立于 ETL 触发分支** ──
+                # 原来这段嵌在 `if (due or stale) and last_run_date != today` 里面，
+                # 于是一旦当天 ETL 成功、last_run_date 被置成今天，这个 if 就永远
+                # False —— 验证再也不会跑。2026-11-13~17 连续 4 天没跑
+                # （strategy_verify_jk001r.json 停在 11-12 23:50）就是这个原因，
+                # 而每天 ETL 都成功，所以体检里只看到一个「105 小时前更新」，
+                # 没人怀疑是调度写错了。
+                #
+                # 现在独立判断：20:05 后、今天还没成功、且**今天的数据管道已成功**
+                # （拿昨天的数据验证，漂移会是假的）。
+                v = _status["verify"]
+                ver_ready = (
+                    retry["ver_n"] < _MAX_RETRY
+                    and (not retry["ver_ts"]
+                         or now.timestamp() - retry["ver_ts"] >= _RETRY_GAP)
+                )
+                if (now.hour, now.minute) >= (VERIFY_HOUR, VERIFY_MIN) \
+                        and v.get("last_run_date") != _today_str() and ver_ready:
+                    if not (last_run_date == _today_str() or _pipeline_ok_today()):
+                        logger.info("策略验证暂缓：今日数据管道尚未成功，等数据就绪")
+                    else:
                         v["last_run_at"] = now.isoformat(timespec="seconds")
                         ok, msg = _run_verify(_VERIFY_STRATEGIES)
                         if ok:
@@ -835,6 +869,8 @@ def _loop(enabled: bool) -> None:
                             else:
                                 logger.warning("策略验证失败（第 %d/%d 次），%s 分钟后重试",
                                                retry["ver_n"], _MAX_RETRY, _RETRY_GAP // 60)
+
+
         except Exception as e:  # noqa: BLE001
             logger.error("数据调度循环异常: %s", e)
         time.sleep(_CHECK_INTERVAL)
