@@ -23,7 +23,10 @@ import duckdb
 
 # .../quant-platform/backend/app/services/duckdb_store.py → 项目根
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-DUCKDB_PATH = os.path.join(_PROJECT_ROOT, "data", "quant.duckdb")
+# 允许用 QUANT_DUCKDB_PATH 覆盖：容器里库放在 named volume(/dbdata) 而不是
+# bind mount(/data)，见 docker-compose.yml 里 QUANT_DATABASE_URL 的注释。
+DUCKDB_PATH = os.getenv("QUANT_DUCKDB_PATH") or os.path.join(
+    _PROJECT_ROOT, "data", "quant.duckdb")
 
 _table_exists_cache: set[str] | None = None
 

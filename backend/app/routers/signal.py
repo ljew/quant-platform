@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.config import DATA_DIR
+from app.config import DUCKDB_PATH
 from app.database import get_db
 from app.models import AgentEvent, ResearchRun, SignalAction, SignalDaily
 from app.services.xq import runner as xq_runner
@@ -30,7 +30,7 @@ router = APIRouter(prefix="/signal", tags=["signal"])
 # 动作展示顺序（雷达分组顺序，与 Sequoia 一致）
 _ACTION_ORDER = {"BUY_STRONG": 0, "WATCH": 1, "NEW": 2, "REDUCE": 3, "SELL": 4, "EXIT": 5}
 
-DUCKDB_PATH = str(DATA_DIR / "quant.duckdb")
+DUCKDB_PATH = str(DUCKDB_PATH)
 
 
 class ScanPayload(BaseModel):

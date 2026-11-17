@@ -238,7 +238,7 @@ def card_signals(card_id: int, date: str | None = None):
 
     from sqlalchemy import func
 
-    from app.config import DATA_DIR
+    from app.config import DUCKDB_PATH
     from app.models import SignalAction, SignalDaily
     from app.services.xq import stats as xq_stats
 
@@ -250,7 +250,7 @@ def card_signals(card_id: int, date: str | None = None):
         if card.card_type != "strategy":
             return {"ok": False, "error": "因子卡没有选股信号（因子分析请去「因子实验室」）"}
 
-        stats = xq_stats.compute_stats(db, str(DATA_DIR / "quant.duckdb"),
+        stats = xq_stats.compute_stats(db, str(DUCKDB_PATH),
                                        strategy=card.key)
         if not stats.get("ok"):
             return {"ok": False, "error": stats.get("error", "统计不可用")}

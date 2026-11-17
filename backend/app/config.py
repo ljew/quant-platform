@@ -6,6 +6,7 @@ Postgres+TimescaleDB 连接串即可，业务代码无需改动。
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,6 +21,12 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # 默认开发数据库：项目内 SQLite 文件（自动创建）
 DEFAULT_SQLITE = f"sqlite:///{DATA_DIR / 'quant_dev.db'}"
+
+# DuckDB 分析库路径。**必须集中在这里**：迁移到 named volume 之前，
+# 全项目有 11 处各写一遍 `DATA_DIR / "quant.duckdb"`，改一处漏十处 ——
+# 库搬走了但某些功能还在读旧文件，且不报错（读到一个空的旧库而已）。
+# 2026-11-17 统一到这一个常量，env `QUANT_DUCKDB_PATH` 优先。
+DUCKDB_PATH = Path(os.getenv("QUANT_DUCKDB_PATH") or (DATA_DIR / "quant.duckdb"))
 
 
 class Settings(BaseSettings):

@@ -834,7 +834,7 @@ def _post_duckdb_synced(db) -> tuple[bool, str]:
 
     行数一致不代表搬的是最新数据，所以要比日期，不比行数。
     """
-    from app.config import DATA_DIR
+    from app.config import DUCKDB_PATH
 
     sqlite_latest = db.execute(select(func.max(KlineDaily.trade_date))).scalar()
     if not sqlite_latest:
@@ -842,7 +842,7 @@ def _post_duckdb_synced(db) -> tuple[bool, str]:
     try:
         import duckdb
 
-        con = duckdb.connect(str(DATA_DIR / "quant.duckdb"), read_only=True)
+        con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
         try:
             duck_latest = con.execute(
                 "select max(trade_date) from kline_daily").fetchone()[0]

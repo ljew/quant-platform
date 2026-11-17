@@ -249,10 +249,10 @@ def _step_quality(db: Session, run_id: int) -> None:
 
 def _step_research_signal(db: Session, run_id: int) -> None:
     """策略选股 + 信号判定：run_signal_scan 内部已按 research/signal 发事件。"""
-    from app.config import DATA_DIR
+    from app.config import DUCKDB_PATH
     from app.services.xq import runner as xq_runner
 
-    duck = str(DATA_DIR / "quant.duckdb")
+    duck = str(DUCKDB_PATH)
     xq_runner.run_signal_scan(db, duck, run_id=run_id)
     _backfill_signal_gaps(db, run_id, duck)
 
@@ -323,11 +323,11 @@ def _step_backtest(db: Session, run_id: int) -> None:
     口径 = Sequoia signal_stats：T+1 开盘建仓、持有 T+N、超额对全市场等权。
     统计结果带缓存，归因页与发布报告共用。
     """
-    from app.config import DATA_DIR
+    from app.config import DUCKDB_PATH
     from app.services.xq import stats as xq_stats
 
     t0 = time.time()
-    result = xq_stats.compute_stats(db, str(DATA_DIR / "quant.duckdb"))
+    result = xq_stats.compute_stats(db, str(DUCKDB_PATH))
     if not result.get("ok"):
         _event(db, run_id, "backtest", f"有效性统计不可用：{result.get('error')}",
                step="backtest", status="warn", level="warn")
@@ -344,7 +344,7 @@ def _step_backtest(db: Session, run_id: int) -> None:
     from app.services.xq import portfolio as xq_portfolio
 
     t1 = time.time()
-    pf = xq_portfolio.run_portfolio(db, str(DATA_DIR / "quant.duckdb"))
+    pf = xq_portfolio.run_portfolio(db, str(DUCKDB_PATH))
     if pf.get("ok"):
         s = pf["summary"]
         _event(db, run_id, "backtest",
@@ -362,7 +362,7 @@ def _step_backtest(db: Session, run_id: int) -> None:
     from app.services.xq import portfolio_fresh as xq_portfolio_fresh
 
     t2 = time.time()
-    ef = xq_portfolio_fresh.run_portfolio_fresh(db, str(DATA_DIR / "quant.duckdb"))
+    ef = xq_portfolio_fresh.run_portfolio_fresh(db, str(DUCKDB_PATH))
     if ef.get("ok"):
         s = ef["summary"]
         _event(db, run_id, "backtest",
@@ -379,10 +379,10 @@ def _step_backtest(db: Session, run_id: int) -> None:
 
 def _step_attribution(db: Session, run_id: int) -> None:
     """AttributionAgent：六维归因速览（明细由归因分析页展示）。"""
-    from app.config import DATA_DIR
+    from app.config import DUCKDB_PATH
     from app.services.xq import stats as xq_stats
 
-    result = xq_stats.compute_stats(db, str(DATA_DIR / "quant.duckdb"))
+    result = xq_stats.compute_stats(db, str(DUCKDB_PATH))
     if not result.get("ok"):
         _event(db, run_id, "attribution", "归因统计不可用（样本不足）",
                step="attribution", status="warn", level="warn")
@@ -463,7 +463,7 @@ def _step_risk_gate(db: Session, run_id: int) -> bool:
 
 def build_report(db: Session) -> tuple[str, str]:
     """渲染正式 HTML 报告，返回 (标题, html)。publish 步骤与 /agent/report 预览共用。"""
-    from app.config import DATA_DIR
+    from app.config import DUCKDB_PATH
     from app.services.news_agg import eastmoney_headlines, global_quotes, xueqiu_hot
     from app.services.xq import stats as xq_stats
 
@@ -476,7 +476,7 @@ def build_report(db: Session) -> tuple[str, str]:
         .order_by(SignalAction.action, SignalAction.streak.desc())
     ).all() if latest else []
 
-    stats = xq_stats.compute_stats(db, str(DATA_DIR / "quant.duckdb"))
+    stats = xq_stats.compute_stats(db, str(DUCKDB_PATH))
     gq = global_quotes()
     xq_hot = xueqiu_hot()
     news = eastmoney_headlines(6)

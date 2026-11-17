@@ -138,9 +138,9 @@ def _check_duckdb() -> dict:
     try:
         import duckdb
 
-        from app.config import DATA_DIR
+        from app.config import DUCKDB_PATH
 
-        path = str(DATA_DIR / "quant.duckdb")
+        path = str(DUCKDB_PATH)
         t0 = time.time()
         con = duckdb.connect(path, read_only=True)
         try:
