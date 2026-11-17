@@ -442,7 +442,12 @@ def is_index_symbol(symbol: str) -> bool:
     return False
 
 
-_EM_BREADTH_URL = "https://push2.eastmoney.com/api/qt/stock/get"
+# ⚠️ 必须用 ulist.np/get（批量），不能用 stock/get（单只）：
+# 2026-11-17 实测，`stock/get?secid=1.000001&fields=f104,f105,f106` 盘中返回
+# **f104=0 / f105=0**，而 `ulist.np/get?secids=1.000001,0.399001` 同字段
+# 返回 296/1978 和 230/2633。单只接口那几个字段是空的，看着像「盘前没数据」，
+# 实际是接口用错了 —— 差点把「接口选错」当成「数据源没有」。
+_EM_BREADTH_URL = "https://push2.eastmoney.com/api/qt/ulist.np/get"
 
 
 def intraday_breadth() -> dict | None:
@@ -462,21 +467,24 @@ def intraday_breadth() -> dict | None:
 
     out = {"up": 0, "down": 0, "flat": 0, "markets": []}
     got = False
-    for secid, label in (("1.000001", "沪"), ("0.399001", "深")):
-        try:
-            r = requests.get(_EM_BREADTH_URL,
-                             params={"secid": secid, "fields": "f104,f105,f106"},
-                             timeout=6, proxies={"http": None, "https": None})
-            d = (r.json() or {}).get("data") or {}
-            up, dn, fl = d.get("f104"), d.get("f105"), d.get("f106")
+    try:
+        r = requests.get(_EM_BREADTH_URL,
+                         params={"secids": "1.000001,0.399001",
+                                 "fields": "f104,f105,f106,f12,f14"},
+                         timeout=8, proxies={"http": None, "https": None})
+        rows = ((r.json() or {}).get("data") or {}).get("diff") or []
+        if isinstance(rows, dict):          # 东财有时给 dict 而不是 list
+            rows = list(rows.values())
+        for row in rows:
+            up, dn, fl = row.get("f104"), row.get("f105"), row.get("f106")
             if isinstance(up, (int, float)) and isinstance(dn, (int, float)):
                 out["up"] += int(up)
                 out["down"] += int(dn)
                 out["flat"] += int(fl or 0)
-                out["markets"].append(label)
+                out["markets"].append(str(row.get("f14") or row.get("f12") or ""))
                 got = True
-        except Exception:  # noqa: BLE001
-            continue
+    except Exception as e:  # noqa: BLE001
+        return None
     if not got or out["up"] + out["down"] < 100:
         return None      # 盘前 / 接口半残：宁可没有，也不要给 0 当结论
     return out
