@@ -403,8 +403,13 @@ def _claim(stage: str, trigger: str) -> bool:
             "attempts,pid,heartbeat_at) VALUES (?,?,'running',?,?,1,NULL,?) "
             "ON CONFLICT(stage,run_date) DO UPDATE SET status='running',trigger=?,"
             "started_at=?,finished_at=NULL,error=NULL,duration_sec=NULL,pid=NULL,"
-            "heartbeat_at=?,attempts=COALESCE(fund_pipeline_runs.attempts,0)+1",
-            (stage, d, trigger, _now(), _now(), trigger, _now(), _now()),
+            # ⚠️ 手动跑不消耗自动重试额度（2026-11-16 踩的）：白天手动跑一次
+            # 会写 attempts=1，晚上 21:00 首跑就是第 2 次、21:12 重试就是第 3 次，
+            # 21:22 该重试时 attempts 已到 _MAX_ATTEMPTS，直接不跑了。
+            # 手动是人在看，重置计数；自动重试才累加。
+            "heartbeat_at=?,attempts=CASE WHEN ?='manual' THEN 1"
+            " ELSE COALESCE(fund_pipeline_runs.attempts,0)+1 END",
+            (stage, d, trigger, _now(), _now(), trigger, _now(), _now(), trigger),
         )
         con.commit()
         return cur.rowcount > 0
@@ -874,16 +879,60 @@ def _expected_nav_date(now: datetime | None = None) -> date:
     return d
 
 
+_NAV_CSV = Path(os.getenv("QUANT_NAV_CSV", "/data/research/nav_raw.csv"))
+
+
+def _csv_last_nav_date(path: Path, tail_bytes: int = 3_000_000) -> str | None:
+    """从 nav_raw.csv 尾部扫出最大 nav_date（YYYYMMDD）。
+
+    文件 1160 万行、按基金分组（不是按日期排序），全量读太贵；
+    尾部 3MB 覆盖最后一批基金的完整历史，取最大值仍是全局最新的那天。
+    """
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - tail_bytes))
+            chunk = f.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    best = ""
+    for line in chunk.splitlines():
+        parts = line.split(",")
+        if len(parts) >= 2:
+            d = parts[1].strip()
+            if len(d) == 8 and d.isdigit() and d > best:
+                best = d
+    return best or None
+
+
 def _postcheck_nav() -> tuple[bool, str]:
-    """nav 环节的后置断言：净值有没有追平「应该有」的那天。
+    """nav 环节的断言：**CSV** 里有没有追平「应该有」的那天。
 
-    为什么必须有这条（2026-11-16）：
-      nav 原来排 19:40，那时净值还没公布，脚本抓回来的是前一天的数据 ——
-      **exit code 全是 0**，调度器记 ok，页面上绿了两个月，实际天天差一天。
-      「进程成功」不等于「数据到齐」，这跟 runner 里 sync_duckdb / compute_factors
-      那两条后置断言是同一个道理。
+    ⚠️ nav 只负责「源端 → CSV」，CSV → 库是 nav_import 那一步（20 分钟后）。
+    第一版这里查的是 fund_nav_daily，于是永远显示「净值只到上周五」——
+    2026-11-16 21:00 首跑明明已采到 6658 行，照样被判失败。
+    断言必须站在**该环节自己的产出**上，不能跨阶段看下游。
+    """
+    target = _expected_nav_date()
+    got = _csv_last_nav_date(_NAV_CSV)
+    if not got:
+        return False, f"{_NAV_CSV.name} 读不到或为空"
+    want = target.strftime("%Y%m%d")
+    if got >= want:
+        return True, ""
+    return False, f"净值只到 {got}，应为 {want}（源端可能还没全公布/网络失败）"
 
-    不追平就判失败 → 10 分钟后自动重试（_MAX_ATTEMPTS=3），三次都不到就等次日的
+
+def _postcheck_nav_import() -> tuple[bool, str]:
+    """nav_import 环节的断言：**库**里有没有追平 —— 数据真正可用的时刻。
+
+    为什么这条必须存在（2026-11-16）：nav 原来排 19:40，那时净值还没公布，
+    脚本抓回前一天的数，**exit code 全是 0**，调度器记 ok，页面绿了两个月。
+    「进程成功」不等于「数据到齐」，和 runner 里 sync_duckdb / compute_factors
+    那两条后置断言同一个道理。
+
+    不追平就判失败 → 10 分钟后重试（_MAX_ATTEMPTS=3），三次都不到等次日
     LOOKBACK=3 天回看补。宁可红一次，也不要绿着骗自己。
     """
     target = _expected_nav_date()
@@ -900,11 +949,11 @@ def _postcheck_nav() -> tuple[bool, str]:
     want = target.strftime("%Y%m%d")
     if got >= want:
         return True, ""
-    return False, f"净值只到 {got}，应为 {want}（源端可能还没全公布）"
+    return False, f"净值只到 {got}，应为 {want}（源端还没出齐）"
 
 
 # 环节跑完的后置断言表（进程 exit=0 之外还要看数据事实）
-_POSTCHECK = {"nav": _postcheck_nav}
+_POSTCHECK = {"nav": _postcheck_nav, "nav_import": _postcheck_nav_import}
 
 
 def _derived_due(st: dict, states: dict[str, dict]) -> bool:

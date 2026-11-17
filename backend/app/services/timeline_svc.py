@@ -299,6 +299,18 @@ def _first_hm(text_: str | None) -> tuple[int, int] | None:
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
+def _in_session(now: datetime) -> bool:
+    """A 股连续竞价时段（9:30~15:05）。盘中采样类的告警只在这个窗口内成立。"""
+    hm = now.hour * 60 + now.minute
+    return 9 * 60 + 30 <= hm <= 15 * 60 + 5
+
+
+def _before_plan(plan: str | None, now: datetime) -> bool:
+    """今天的计划时点还没到？用来给「早上打开页面」留宽限。"""
+    ph = _first_hm(plan)
+    return bool(ph) and (now.hour, now.minute) < ph
+
+
 def _late_minutes(landed: str | None, plan: str | None, now: datetime) -> int | None:
     """实际落库比计划晚多少分钟（同日才有意义；跨天返回 None，别拿昨天的算今天的账）。
 
@@ -640,9 +652,21 @@ def compute_timeline(db, days: int = 1, use_cache: bool = True) -> dict:
                 elif row["kind"] == _DAILY:
                     lag = (exp_today - latest_d).days
                     row["lag_days"] = lag
-                    row["status"] = "OK" if lag <= 0 else ("WARN" if lag <= 2 else "FAIL")
+                    # 未到今天的计划时点（凌晨/早上看页面）就允许差 1 天：
+                    # 属性/热度/情绪都是 19:00 ETL 才更新，07:00 打开页面时
+                    # 显示 9 个 WARN 纯属噪音。
+                    grace = 1 if _before_plan(dom["plan"], now) else 0
+                    row["status"] = ("OK" if lag <= grace
+                                     else ("WARN" if lag <= grace + 2 else "FAIL"))
                 else:   # _LIVE：看今天有没有东西进来
-                    row["status"] = "OK" if latest_d == exp_today else "WARN"
+                    if latest_d == exp_today:
+                        row["status"] = "OK"
+                    elif _before_plan(dom["plan"], now) or not _in_session(now):
+                        # 盘中采样类（每 5 分钟一次）在开盘前当然只有昨天的，
+                        # 判 WARN 是噪音 —— 早上 8:50 打开页面不该见红。
+                        row["status"] = "n/a"
+                    else:
+                        row["status"] = "WARN"
         elif row["kind"] == _PERIOD:
             row["status"] = "n/a"
             row["note"] = row["note"] or "披露期/月级，不按日判落后"
@@ -671,7 +695,8 @@ def compute_timeline(db, days: int = 1, use_cache: bool = True) -> dict:
                         str(fs["last_ok_at"])[:10])).days
                 except ValueError:
                     ago = 0
-                if ago >= 1:
+                # 差 1 天且今天的计划时点还没到 = 正常（22:10 的环节早上当然没跑）
+                if ago >= 2 or (ago == 1 and not _before_plan(dom["plan"], now)):
                     row["note"] = f"调度已 {ago} 天未成功"
                     row["status"] = "FAIL" if ago >= 2 else "WARN"
 
@@ -686,6 +711,13 @@ def compute_timeline(db, days: int = 1, use_cache: bool = True) -> dict:
                     row["status"] = "OK"
             elif not row["note"]:
                 row["note"] = "无落盘记录"
+
+        # 未到今天的计划时点，整体降一级（FAIL→WARN、WARN→OK）。
+        # 早上 8 点打开页面，19:00 才更新的东西本来就该是旧的 —— 不该红。
+        if not hard_fail and row["status"] in ("WARN", "FAIL") \
+                and _before_plan(dom["plan"], now):
+            row["status"] = "WARN" if row["status"] == "FAIL" else "OK"
+            row["note"] = row["note"] or f"未到计划时点（{dom['plan']}）"
 
         if hard_fail:
             row["status"] = "FAIL"

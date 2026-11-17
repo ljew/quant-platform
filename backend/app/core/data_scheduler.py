@@ -307,7 +307,10 @@ def _run_text_update() -> None:
 
     db = SessionLocal()
     try:
-        n = sync_report(db, days=2)      # 2 天窗口，覆盖周末空档
+        # 窗口 7 天，不是 2 天：2026-11-16 实测 publish_date 停在 11-12 —— 11-13
+        # 那天关机没跑，而 2 天窗口只回看 11-14~11-16，那一批**永远补不上**。
+        # 研报量很小（7 天约 1700 篇，去重后新增几十条），窗口开大没成本。
+        n = sync_report(db, days=7)
         logger.info("研报同步 %d 篇", n)
     except Exception as e:  # noqa: BLE001
         logger.warning("研报同步失败：%s", str(e)[:120])
