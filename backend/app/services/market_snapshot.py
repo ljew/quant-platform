@@ -273,7 +273,25 @@ def _etf(db, day: str, prev: str, top: int = 4) -> dict:
         return {}
     items.sort(key=lambda x: x["net_yi"], reverse=True)
     total = round(sum(x["net_yi"] for x in items), 1)
-    return {"n": len(items), "net_yi": total, "dropped": dropped,
+
+    # 近 5 个交易日趋势：单日 +152 亿说明不了什么，得看它是不是扭转了上周的净赎回。
+    # 2026-11 实测：11-03 +796 / 11-04 +442 → 11-12 −315 / 11-13 −234 → 11-16 +152，
+    # 这个转折比单日数字有信息量得多。
+    trend = []
+    try:
+        rows2 = db.execute(text(
+            "select a.trade_date, round(sum((a.fd_share - b.fd_share) * 1e4 * a.close / 1e8), 1)"
+            " from etf_share_market a join etf_share_market b"
+            "   on b.ts_code = a.ts_code and b.trade_date = ("
+            "     select max(trade_date) from etf_share_market where trade_date < a.trade_date)"
+            " where a.close is not null and b.fd_share > 0"
+            " group by a.trade_date order by a.trade_date desc limit 6"
+        )).fetchall()
+        trend = [{"date": str(d), "net_yi": float(v)} for d, v in rows2][::-1]
+    except Exception as e:  # noqa: BLE001
+        logger.info("ETF 申赎趋势读取失败：%s", str(e)[:80])
+
+    return {"n": len(items), "net_yi": total, "dropped": dropped, "trend": trend,
             "top_in": items[:top], "top_out": list(reversed(items[-top:]))}
 
 
@@ -368,8 +386,12 @@ def to_prompt_block(s: dict) -> str:
 
     e = s.get("etf") or {}
     if e.get("n"):
-        lines.append(f"ETF 净申赎（全市场 {e['n']} 只）：合计 {e['net_yi']:+.1f} 亿元"
+        lines.append(f"ETF 净申赎（全市场 {e['n']} 只）：当日 {e['net_yi']:+.1f} 亿元"
                      + (f"（{e['dropped']} 只因份额折算剔出）" if e.get("dropped") else ""))
+        tr = e.get("trend") or []
+        if len(tr) >= 2:
+            lines.append("  近 %d 个交易日：" % len(tr)
+                         + " → ".join(f"{x['date'][5:]} {x['net_yi']:+.0f}亿" for x in tr))
         if e.get("top_in"):
             lines.append("  净申购靠前：" + "、".join(
                 f"{x['name']} {x['net_yi']:+.1f} 亿" for x in e["top_in"]))

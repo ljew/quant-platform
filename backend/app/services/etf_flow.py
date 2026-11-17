@@ -366,13 +366,15 @@ def update_share_market(db: Session, days: int = 5, force: bool = False) -> int:
 
     份额单位是**万份**，规模 = 万份 × 1e4 × 收盘价 / 1e8 = 亿元。
     """
-    from sqlalchemy import func
-
-    row = db.scalar(select(func.max(EtfShareMarket.trade_date)))
-    latest = row.strftime("%Y%m%d") if row else None
+    # 「库里已有哪些天」而不是「最新是哪天」：老逻辑只补比 max 更晚的，
+    # 于是历史回补（days=20）一天都补不进去 —— 中间的缺口也永远补不上。
     tds = _recent_trade_dates(max(days, 3))
-    if latest and not force:
-        tds = [d for d in tds if d > latest]
+    if not force:
+        have = {d.strftime("%Y%m%d") for (d,) in db.execute(
+            select(EtfShareMarket.trade_date).distinct())}
+        tds = [d for d in tds if d not in have]
+    if not tds:
+        return 0
 
     basic = _call("fund_basic", market="E")
     names = {}
