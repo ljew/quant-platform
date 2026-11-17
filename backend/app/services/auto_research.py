@@ -25,7 +25,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.config import DATA_DIR
+from app.config import DATA_DIR, DUCKDB_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -307,7 +307,7 @@ def _review_body(db: Session, run_id: int, cfg: dict) -> tuple[dict, str]:
     from app.models import FactorMineResult, FactorRegistry, PortfolioState
     from app.services.xq import stats as xq_stats
 
-    duckdb_path = str(DATA_DIR / "quant.duckdb")
+    duckdb_path = str(DUCKDB_PATH)
     stats = xq_stats.compute_stats(db, duckdb_path)
 
     # 1) 信号策略归因：走弱 = T+10 超额 < 0 且样本 ≥ 20

@@ -162,6 +162,13 @@ def _refresh_share() -> None:
         codes = etf_flow.ensure_universe(db)
         n = etf_flow.update_daily(db, codes)
         etf_flow.rebuild_flow(db)
+        # 全市场 ETF 份额（日报/简报的「ETF 申赎」用，不复用 20 只看板样本）。
+        # 按日拉全市场，一次调用拿全部 —— 与上面逐只补的 update_daily 是两套口径。
+        try:
+            m = etf_flow.update_share_market(db, days=5)
+            logger.info("全市场 ETF 份额：本次写入 %d 行", m)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("全市场 ETF 份额失败（不影响看板）：%s", str(e)[:120])
         with _lock:
             _status["last_update"] = datetime.now().isoformat(timespec="seconds")
             _status["last_error"] = None

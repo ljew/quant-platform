@@ -17,8 +17,13 @@ logger = logging.getLogger("quant.duckdb_sync")
 
 # 与 duckdb_store 同路径基准
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-SQLITE_DB = os.path.join(_PROJECT_ROOT, "data", "quant_dev.db")
-DUCKDB_DB = os.path.join(_PROJECT_ROOT, "data", "quant.duckdb")
+# ⚠️ 不能按项目根拼 data/ 了：库已经搬到 named volume(/dbdata)，按根拼还是旧路径，
+# 表现是 sync 时报「SQLite 库不存在」或者更糟 —— 静默写到旧位置。
+# 两个库必须永远同目录（xq/data.py 也是这么假设的），所以由 DUCKDB_PATH 推导。
+from app.config import DUCKDB_PATH as _DUCKDB_PATH
+
+SQLITE_DB = str(_DUCKDB_PATH.parent / "quant_dev.db")
+DUCKDB_DB = str(_DUCKDB_PATH)   # 同上：跟着 DUCKDB_PATH 走，不再按项目根拼
 
 # 无扩展路径的分块大小：20 万行 × 约 10 列 ≈ 100~200MB 峰值，容器 5.5G 够用
 CHUNK_ROWS = 200_000

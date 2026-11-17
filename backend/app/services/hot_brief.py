@@ -56,7 +56,7 @@ USER_TEMPLATE = """下面是多个来源的资讯（顺序：快讯 → 境外�
 
 【一】一手快讯（财联社电报，过去 {minutes} 分钟，共 {n_flash} 条）
 {flash_corpus}
-{foreign_block}{search_block}{recent_block}
+{foreign_block}{search_block}{recent_block}{intraday_block}
 请筛出**对 A 股有实质影响**的，按下述结构输出。
 
 筛选标准（严格执行）：
@@ -81,6 +81,8 @@ USER_TEMPLATE = """下面是多个来源的资讯（顺序：快讯 → 境外�
 另外给两个整体判断：
 
 - mainline：一句话主线，**60 字以内**，说清「现在市场在交易什么」。
+  **必须和【五】里的指数涨跌对得上**：指数在跌就别写「风险偏好回升」，
+  涨跌分化就点明分化在哪。没有【五】时才可以只凭资讯判断。
 
 ⚠️ 不再生成 summary（今日综述）。原因：它和「当日全景」（brief_digest）
 是同一件事的两份稿子 —— 这份每轮重写 937 字，全景每天 21:45 写 1680 字，
@@ -109,6 +111,11 @@ FOREIGN_BLOCK = """
 FOREIGN_BLOCK_EMPTY = """
 【二】境外日爬（平台自持 RSS/X，过去 {hours} 小时，共 0 条）
 （境外源本轮无新增或未配置 —— 禁止编造外盘新闻）
+"""
+
+INTRADAY_BLOCK = """
+【五】当前行情（实时抓取，{ts}；这是**事实**，判断主线时先看它，别凭资讯猜涨跌）
+{lines}
 """
 
 RECENT_BLOCK = """
@@ -785,7 +792,70 @@ def _build_prompt(flash: list[dict], search: list[dict], minutes: int,
                                 flash_corpus=flash_corpus,
                                 foreign_block=foreign_block,
                                 search_block=search_block + media_block,
-                                recent_block=recent_block)
+                                recent_block=recent_block,
+                                intraday_block=_intraday_block())
+
+
+def _intraday_block() -> str:
+    """当前行情块：主要指数实时涨跌 + 上一交易日两市成交额。
+
+    为什么给简报也要喂行情：简报每轮要写一句「现在市场在交易什么」，
+    以前只有资讯文本，模型不知道指数在涨还是跌，就只能凭新闻语气猜 ——
+    2026-11-17 老刘指出「全景里看不到成交额和涨跌家数」，同一个毛病这里也有，
+    只是简报更隐蔽（它不写「看不到」，直接给结论）。
+
+    盘中涨跌家数/涨停跌停拿不到（要全市场逐只报价，太重），明说，别让它编。
+    """
+    from datetime import datetime as _dt
+
+    lines: list[str] = []
+    try:
+        from app.services.data_source import _tx_spot_quotes
+
+        qs = _tx_spot_quotes(["sh000001", "sz399001", "sz399006",
+                              "sh000688", "sh000906"])
+        if qs:
+            lines.append("指数：" + "、".join(
+                f"{q['name']} {q['price']:.2f}（{q['change_pct']:+.2f}%）" for q in qs))
+    except Exception as e:  # noqa: BLE001
+        logger.info("简报实时行情获取失败：%s", str(e)[:80])
+
+    # 上一交易日成交额（库内，作对比基准）。这里自己开短连接，不依赖调用方
+    # 传 db —— _build_user_prompt 那条链路上拿不到 Session。
+    try:
+        from sqlalchemy import text as _text
+
+        from app.database import SessionLocal as _SL
+
+        with _SL() as _db:
+            row = _db.execute(_text(
+            "select trade_date, round(sum(amount)/1e5, 1) from kline_daily"
+                " where trade_date = (select max(trade_date) from kline_daily)"
+                " group by trade_date")).fetchone()
+        if row:
+            lines.append(f"上一交易日（{row[0]}）两市成交额：{row[1]} 亿元")
+    except Exception as e:  # noqa: BLE001
+        logger.info("简报成交额获取失败：%s", str(e)[:80])
+
+    if not lines:
+        return ""      # 一个都没拿到就别占篇幅，也别让模型以为「行情是空的」
+    # 涨跌家数：库里要等 19:00 ETL 才有当天数，盘中只能靠东财。
+    try:
+        from app.services.data_source import intraday_breadth
+
+        br = intraday_breadth()
+        if br:
+            tot = br["up"] + br["down"] + br["flat"]
+            lines.append(
+                f"涨跌家数（盘中，沪+深）：涨 {br['up']} / 跌 {br['down']} / 平 {br['flat']}"
+                + (f"，涨家占比 {br['up'] / tot * 100:.0f}%" if tot else ""))
+        else:
+            lines.append("（涨跌家数：盘前或接口未就绪，本轮不给，不要臆造）")
+    except Exception as e:  # noqa: BLE001
+        logger.info("简报涨跌家数获取失败：%s", str(e)[:80])
+        lines.append("（涨跌家数：本轮未取到，不要臆造）")
+    lines.append("（涨停/跌停家数盘中需要全市场逐只报价，本轮未取，不要臆造）")
+    return INTRADAY_BLOCK.format(ts=_dt.now().strftime("%H:%M"), lines="\n".join(lines))
 
 
 def run_brief(db: Session, minutes: int = 60,

@@ -42,7 +42,23 @@ services:
     mem_limit: 5500m
     memswap_limit: 5500m
     environment:
-      - QUANT_DATABASE_URL=sqlite:////data/quant_dev.db
+      # ⚠️ 三个库都放在 named volume 里，不放 ./data（bind mount）。
+      # 2026-11-16 一天坏了两次：macOS 宿主目录经 virtiofs 进容器，而 SQLite 的 WAL
+      # 依赖 fcntl 锁 + mmap 共享内存，跨 VM 边界语义不严格 → WAL 会周期性失效
+      # （表现为先是 disk I/O error、几小时后变成 file is not a database）。
+      # 近 60 次 ETL 的 23 次失败里，7 次就是这个（占 30%）。
+      # named volume 在 VM 内是 ext4，锁语义正常。
+      - QUANT_DATABASE_URL=sqlite:////dbdata/quant_dev.db
+      # ⚠️ 同一个库在代码里有**三个不同的变量名**（历史遗留），必须全部指到新位置，
+      # 否则「库搬走了但某些功能还在读旧文件」—— 而且不报错，只是读到旧数据：
+      #   QUANT_FUND_DB      fund_scheduler / timeline_svc
+      #   QUANT_RESEARCH_DB  routers/fund.py / assets_svc.py
+      #   QUANT_DB_PATH / QUANT_DB  scripts/backup_db.py / patch_stat_cache.py
+      - QUANT_FUND_DB=/dbdata/fund_research.db
+      - QUANT_RESEARCH_DB=/dbdata/fund_research.db
+      - QUANT_DB_PATH=/dbdata/quant_dev.db
+      - QUANT_DB=/dbdata/quant_dev.db
+      - QUANT_DUCKDB_PATH=/dbdata/quant.duckdb
       - QUANT_FRONTEND_DIR=/frontend
       - QUANT_TUSHARE_TOKEN=${QUANT_TUSHARE_TOKEN:-}
       - QUANT_DATA_SCHEDULE=1
@@ -60,7 +76,11 @@ services:
       # 时区：所有定时任务（17:30 编排 / 19:00 ETL / 20:47 挖矿）按北京时间触发
       - TZ=Asia/Shanghai
     volumes:
-      - ./data:/data                # 复用现有 SQLite/DuckDB
+      # 库文件单独一个 volume（VM 内 ext4），详见上面 QUANT_DATABASE_URL 的注释。
+      - quant-db:/dbdata
+      # ./data 继续 bind：parquet/csv/reports/backups/wechat 这些要能直接在
+      # 宿主机看和清理，而且它们不是 SQLite，不受 WAL 那个问题影响。
+      - ./data:/data
       - ./config:/app/config        # 数据源配置（改 sources.yaml 无需重建镜像）
       # 代码热挂载（2026-11-02 加入）：集成新策略时避免每次 docker compose build。
       # 代价是改代码即时生效、没有 review 环节 —— 语法错误会让容器起不来，
@@ -93,3 +113,7 @@ services:
       options:
         max-size: "20m"
         max-file: "5"
+
+volumes:
+  # SQLite / DuckDB 的主目录。备份仍走 ./data/backups（bind），方便直接删旧的。
+  quant-db:
