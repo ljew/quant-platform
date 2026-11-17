@@ -248,9 +248,9 @@ def _check_data() -> dict[str, Any]:
     try:
         import duckdb
 
-        from app.config import DATA_DIR
+        from app.config import DUCKDB_PATH
 
-        duck = Path(DATA_DIR) / "quant.duckdb"
+        duck = Path(DUCKDB_PATH)
         con = duckdb.connect(str(duck), read_only=True)
         last = con.execute("SELECT max(trade_date) FROM kline_daily").fetchone()[0]
         n = con.execute("SELECT count(*) FROM kline_daily").fetchone()[0]
@@ -263,9 +263,10 @@ def _check_data() -> dict[str, Any]:
         items.append(_item("日线数据", FAIL, f"{type(e).__name__}: {str(e)[:40]}"))
 
     try:
-        from app.config import DATA_DIR
+        from app.config import DUCKDB_PATH
 
-        total = sum(f.stat().st_size for f in Path(DATA_DIR).glob("*.db*"))
+        # 库已搬到 /dbdata（named volume），按 /data 统计会永远显示 0。
+        total = sum(f.stat().st_size for f in Path(DUCKDB_PATH).parent.glob("*.db*"))
         gb = total / 1024 ** 3
         items.append(_item("库体积", OK if gb < 20 else WARN, f"{gb:.1f} GB"))
     except Exception:
@@ -307,9 +308,11 @@ def _check_runtime(db) -> dict[str, Any]:
     items = []
     # 1) 磁盘水位
     try:
-        from app.config import DATA_DIR
+        from app.config import DUCKDB_PATH
 
-        st = os.statvfs(str(DATA_DIR))
+        # 看库所在的盘（/dbdata），bind 的 /data 和它在同一个物理盘上，
+        # 但 volume 满和 bind 满是两回事，以库存放位置为准。
+        st = os.statvfs(str(Path(DUCKDB_PATH).parent))
         free_pct = st.f_bavail / max(st.f_blocks, 1) * 100
         free_gb = st.f_bavail * st.f_frsize / 1024 ** 3
         s = OK if free_pct >= 15 else (WARN if free_pct >= 8 else FAIL)
@@ -318,11 +321,12 @@ def _check_runtime(db) -> dict[str, Any]:
         items.append(_item("磁盘剩余", WARN, f"读取失败 {type(e).__name__}"))
 
     # 2) 两个库能不能打开
-    for label, name in (("SQLite 主库", "quant_dev.db"), ("公众号库", "wechat/knowledge.db")):
-        try:
-            from app.config import DATA_DIR
+    from app.config import DATA_DIR, DUCKDB_PATH
 
-            p = Path(DATA_DIR) / name
+    # 主库跟 duckdb 同目录（都已搬到 /dbdata）；公众号库仍在 /data/wechat（bind）。
+    for label, p in (("SQLite 主库", Path(DUCKDB_PATH).parent / "quant_dev.db"),
+                     ("公众号库", Path(DATA_DIR) / "wechat" / "knowledge.db")):
+        try:
             if not p.exists():
                 items.append(_item(label, WARN, "文件不存在"))
                 continue
