@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import EChart from "../components/EChart";
-import { api, CostProfile, PaperDeviation, PaperDetail, PaperTask, PortfolioSnapshot, signalApi, StrategyInfo } from "../api/client";
+import { api, CostProfile, PaperDeviation, PaperDetail, PaperObserveError, PaperTask, PaperWorksetObserveResult, PortfolioSnapshot, signalApi, StrategyInfo, WorksetAcceptCollection } from "../api/client";
 import { useTheme } from "../theme";
 import { PageHeader } from "../components/ui";
 import EvalBadges from "../components/EvalBadges";
@@ -20,6 +20,21 @@ const DEFAULT_COST_PROFILE: CostProfile = {
 /** 产品定稿口径句（勿改字） */
 const COST_DISCLAIMER = "与回测默认成本同契约，非券商实盘";
 
+const OBSERVE_SLOGAN =
+  "工作集模拟盘观察：把最近一次未过期验收里「通过」的成员，按与验收相同的交易规则和默认成本（万 2.5+万 1），各建一本模拟盘，从建盘日起向前观察。这不是把验收区间再回放一遍，也不是把多名成员合成一个组合。";
+
+function parseObserveInner(inner?: string): { observe: boolean; runId?: number } {
+  if (!inner) return { observe: false };
+  if (inner === "workset-observe") return { observe: true };
+  const m = /^workset-observe-(\d+)$/.exec(inner);
+  if (m) return { observe: true, runId: Number(m[1]) };
+  return { observe: false };
+}
+
+function cannotObserveText(reason: string): string {
+  return `无法按同口径观察：不能按与验收相同的交易规则和默认成本，对已通过的工作集成员建模拟盘。（原因：${reason}）未改用其他策略顶替。请先回到验收块处理，或等待可安全接入的实现。`;
+}
+
 /** 指数代码 → 行情代码：库里存的是 000300 / 399317，行情接口要 sh/sz 前缀。 */
 function toIndexSymbol(code: string): string {
   const c = (code || "").trim();
@@ -34,7 +49,7 @@ const DEFAULT_BENCH = "sz399317";
 
 
 /** 模拟盘（任务列表 + 创建 + 详情：净值曲线/成交）。 */
-export default function PaperPage() {
+export default function PaperPage({ inner }: { inner?: string } = {}) {
   const [tasks, setTasks] = useState<PaperTask[]>([]);
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
   const [detail, setDetail] = useState<PaperDetail | null>(null);
@@ -44,6 +59,17 @@ export default function PaperPage() {
     pead_pit?: import("../api/client").PeadPit | null;
   } | null>(null);
   const [error, setError] = useState("");
+  const [observeBusy, setObserveBusy] = useState(false);
+  const [observeError, setObserveError] = useState("");
+  const [observeInfo, setObserveInfo] = useState<{
+    runId?: number;
+    startDate?: string;
+    collection?: WorksetAcceptCollection | null;
+    stale?: boolean;
+    staleReason?: string | null;
+    taskIds?: number[];
+  } | null>(null);
+  const observeKeyRef = useRef<string>("");
   // 设计文档 10 节：模拟盘与镜像组合合成一张表，用「类型」区分。
   // 镜像 / 实验是只读快照（每日信号驱动，无配置），策略任务是可操作的任务。
   const [snaps, setSnaps] = useState<{ key: string; label: string;
@@ -93,6 +119,71 @@ export default function PaperPage() {
       if (single.length) setSkey(single[0].key);
     });
   }, [refresh]);
+
+  useEffect(() => {
+    const parsed = parseObserveInner(inner);
+    if (!parsed.observe) return;
+    const key = parsed.runId != null ? `workset-observe-${parsed.runId}` : "workset-observe";
+    if (observeKeyRef.current === key) return;
+    observeKeyRef.current = key;
+    let cancelled = false;
+    setObserveError("");
+    setObserveBusy(true);
+    (async () => {
+      try {
+        const body = parsed.runId != null ? { run_id: parsed.runId } : {};
+        const result: PaperWorksetObserveResult = await api.paperWorksetObserve(body);
+        if (cancelled) return;
+        setObserveInfo({
+          runId: result.run_id,
+          startDate: result.start_date,
+          collection: result.collection,
+          stale: result.stale,
+          taskIds: (result.tasks || []).map((x) => x.task_id).filter((id): id is number => id != null),
+        });
+        const failed = (result.tasks || []).filter((x) => x.expr_complete === false);
+        if (failed.length) {
+          setObserveError(cannotObserveText(
+            failed.map((f) => `${f.name}: ${f.error || "表达式未能完整保存"}`).join("；"),
+          ));
+        }
+        refresh();
+        const first = (result.tasks || []).find((x) => x.task_id != null)?.task_id;
+        if (first != null) openDetail(first);
+        if (result.run_started) {
+          setProgressHint("工作集观察任务已建盘，正在后台首次运行…");
+          setTimeout(() => { refresh(); setProgressHint("工作集观察已刷新"); }, 4000);
+        }
+      } catch (e) {
+        if (cancelled) return;
+        const err = e as PaperObserveError;
+        const reason = err.message || "未知原因";
+        if (err.error_code === "snapshot_stale") {
+          setObserveError("结论已过期，请先重跑");
+        } else if (err.error_code === "no_passed_members") {
+          setObserveError("没有已通过的成员，无法建盘");
+        } else {
+          setObserveError(cannotObserveText(reason));
+        }
+        // 仍尝试拉只读横幅（集合状态）
+        try {
+          const got = await api.paperWorksetObserveGet(parsed.runId);
+          if (!cancelled) {
+            setObserveInfo({
+              runId: got.run_id,
+              collection: got.collection,
+              stale: got.stale,
+              staleReason: got.stale_reason,
+              taskIds: (got.tasks || []).map((x) => x.task_id),
+            });
+          }
+        } catch { /* 横幅可缺 */ }
+      } finally {
+        if (!cancelled) setObserveBusy(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [inner, refresh]);
 
   const openDetail = async (id: number) => {
     try {
@@ -235,7 +326,51 @@ export default function PaperPage() {
         title="组合"
         desc="一张表看全部钱：策略任务（手建、可启停）+ 镜像 / 实验（跟每日信号自动走、只读）。「vs 基准」是同期对比 —— 赚 28% 而基准涨 40% 其实是跑输"
       />
-      {/* 创建表单 */}
+      {(observeBusy || observeInfo || observeError) && (
+        <div style={{
+          margin: "0 0 16px", padding: "12px 14px",
+          background: colors.card, borderRadius: 10,
+          border: `1px solid ${colors.border}`,
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>工作集模拟盘观察</div>
+          <div style={{ fontSize: 12.5, color: colors.text, lineHeight: 1.85, marginBottom: 8 }}>
+            {OBSERVE_SLOGAN}
+          </div>
+          {observeInfo?.startDate && (
+            <div style={{ fontSize: 12, color: colors.muted, lineHeight: 1.8, marginBottom: 8 }}>
+              起始日 = 建盘日 {observeInfo.startDate}（该指数最近交易日），不是验收窗 2023-01-01～2025-06-30。
+            </div>
+          )}
+          {observeInfo?.collection && (
+            <div style={{ fontSize: 12.5, marginBottom: 8 }}>
+              集合状态：<b>{observeInfo.stale ? `已过期·${observeInfo.collection.verdict}` : observeInfo.collection.verdict}</b>
+              {" "}（n={observeInfo.collection.n} · 通过 {observeInfo.collection.n_pass} · 拒绝 {observeInfo.collection.n_reject}
+              {" "}· 样本不足 {observeInfo.collection.n_insufficient} · 无法验收 {observeInfo.collection.n_unevaluable}）
+            </div>
+          )}
+          <div style={{ fontSize: 12.5 }}>
+            <a href="#btopt/0/workset-accept" style={{ color: colors.accent }}>返回工作集短名单验收</a>
+          </div>
+          {observeBusy && (
+            <div style={{ fontSize: 12, color: colors.muted, marginTop: 8 }}>正在按同口径建盘…</div>
+          )}
+          {observeError && (
+            <div style={{ fontSize: 12.5, color: colors.up || "#d92c2c", marginTop: 8, lineHeight: 1.7 }}>
+              {observeError}
+            </div>
+          )}
+        </div>
+      )}
+      {/* 手动创建（仅已注册策略），与工作集观察入口视觉分开 */}
+      <div style={{
+        margin: "0 0 16px", padding: "12px 14px",
+        background: colors.card, borderRadius: 10,
+        border: `1px solid ${colors.border}`,
+      }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>手动创建（已注册策略）</div>
+      <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10, lineHeight: 1.7 }}>
+        下方下拉只含已注册策略，不是刚验收的工作集成员。工作集观察请从验收卡「去模拟盘观察」进入。
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 12 }}>
         <label>任务名<input value={name} onChange={(e) => setName(e.target.value)} placeholder="自动命名" style={inputStyle(colors)} /></label>
         <label>
@@ -276,6 +411,7 @@ export default function PaperPage() {
           />
         </div>
       )}
+      </div>
       {error && <div style={{ color: colors.up, margin: "8px 0" }}>{error}</div>}
       {progressHint && !error && <div style={{ color: colors.muted, margin: "8px 0", fontSize: 13 }}>{progressHint}</div>}
 
@@ -361,7 +497,10 @@ export default function PaperPage() {
                 <td style={{ padding: "8px 10px", fontWeight: 600 }}>
                   {t.name}
                   <div style={{ fontWeight: 400, fontSize: 11, color: colors.muted, marginTop: 2 }}>
-                    {t.strategy_key} · {t.kind === "portfolio" ? `指数 ${t.index_code}` : t.symbols}
+                    {t.strategy_label || t.strategy_key} · {t.kind === "portfolio" ? `指数 ${t.index_code}` : t.symbols}
+                    {t.workset_observe_stale && (
+                      <span style={{ marginLeft: 6, color: "#868e96" }}>快照已过期</span>
+                    )}
                   </div>
                   {t.error_msg && (
                     <div style={{ fontWeight: 400, fontSize: 11, color: colors.up, marginTop: 2 }}>

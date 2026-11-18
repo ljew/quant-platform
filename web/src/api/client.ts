@@ -741,6 +741,13 @@ export const api = {
     worksetAcceptGetJson<WorksetAcceptGet>(
       `/strategy/backtest/workset-accept/tasks/${jobId}`,
     ),
+  /** W48-3 工作集短名单模拟盘观察：同步建盘，首次运行走后台 */
+  paperWorksetObserve: (body: { run_id?: number } = {}) =>
+    paperObservePost<PaperWorksetObserveResult>("/paper/tasks/workset-observe", body),
+  paperWorksetObserveGet: (runId?: number) =>
+    paperObserveGet<PaperWorksetObserveGet>(
+      `/paper/tasks/workset-observe${runId != null ? `?run_id=${runId}` : ""}`,
+    ),
 };
 
 /** 当日全景综述（brief_digest 表）。与 HotBrief 是不同层次：
@@ -992,6 +999,86 @@ export interface WorksetAcceptGet {
   workset_available?: boolean;
   workset?: FactorWorksetPayload | null;
   run?: WorksetAcceptRun | null;
+}
+
+export class PaperObserveError extends Error {
+  error_code?: string;
+  status?: number;
+  message: string;
+  constructor(message: string) {
+    super(message);
+    this.name = "PaperObserveError";
+    this.message = message;
+  }
+}
+
+export interface PaperWorksetObserveTask {
+  registry_id: number;
+  name: string;
+  task_id: number | null;
+  created: boolean;
+  existing: boolean;
+  expr_complete: boolean;
+  error?: string;
+}
+
+export interface PaperWorksetObserveResult {
+  ok: boolean;
+  run_id: number;
+  stale: boolean;
+  collection?: WorksetAcceptCollection | null;
+  start_date?: string;
+  rules_version?: string;
+  tasks: PaperWorksetObserveTask[];
+  run_started?: boolean;
+}
+
+export interface PaperWorksetObserveGet {
+  ok: boolean;
+  run_id: number;
+  stale: boolean;
+  stale_reason?: string | null;
+  collection?: WorksetAcceptCollection | null;
+  rules_version?: string;
+  status?: string;
+  tasks: {
+    registry_id?: number | null;
+    task_id: number;
+    name: string;
+    start_date?: string | null;
+    workset_observe_stale?: boolean;
+    workset_observe_stale_reason?: string | null;
+    strategy_label?: string;
+  }[];
+}
+
+function _observeError(status: number, body: { detail?: unknown }): PaperObserveError {
+  const d = body?.detail as { error_code?: string; message?: string } | string | undefined;
+  const msg = typeof d === "string"
+    ? d
+    : (d?.message || d?.error_code || "无法按同口径观察");
+  const err = new PaperObserveError(msg);
+  err.status = status;
+  if (d && typeof d === "object") err.error_code = d.error_code;
+  return err;
+}
+
+async function paperObserveGet<T>(path: string): Promise<T> {
+  const r = await fetch(`${BASE}${path}`, { headers: { "Content-Type": "application/json" } });
+  const body = await r.json().catch(() => ({ detail: r.statusText }));
+  if (!r.ok) throw _observeError(r.status, body);
+  return body as T;
+}
+
+async function paperObservePost<T>(path: string, payload: unknown): Promise<T> {
+  const r = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload ?? {}),
+  });
+  const body = await r.json().catch(() => ({ detail: r.statusText }));
+  if (!r.ok) throw _observeError(r.status, body);
+  return body as T;
 }
 
 
@@ -1548,6 +1635,12 @@ export interface PaperTask {
   account_start?: string | null;
   start_date?: string | null;
   error_msg?: string | null;
+  workset_observe?: boolean;
+  workset_observe_run_id?: number | null;
+  workset_observe_registry_id?: number | null;
+  workset_observe_stale?: boolean;
+  workset_observe_stale_reason?: string | null;
+  strategy_label?: string | null;
 }
 
 export interface PaperTrade {
@@ -1577,6 +1670,12 @@ export interface PaperDetail {
   cost_profile?: CostProfile | null;
   /** 仅佣金累计（不含印花税分项） */
   fees_paid_commission?: number;
+  workset_observe?: boolean;
+  workset_observe_run_id?: number | null;
+  workset_observe_registry_id?: number | null;
+  workset_observe_stale?: boolean;
+  workset_observe_stale_reason?: string | null;
+  strategy_label?: string | null;
 }
 
 export interface DataflowReport {

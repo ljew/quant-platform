@@ -346,6 +346,11 @@ class PaperTask(Base):
     account_start: Mapped[str | None] = mapped_column(String(10), nullable=True)
     # 模拟盘起始日（建仓日，可早于首次运行日）；净值曲线与首次成交从此日起算（可选）
     start_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    # W48-3 工作集观察绑定（加法可空）。完整 expr 只放 TEXT 列，不进 params_json。
+    workset_observe_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    workset_observe_registry_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    workset_observe_expr: Mapped[str | None] = mapped_column(Text, nullable=True)
+    workset_observe_rules_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # 当前账户状态 JSON：{cash, positions:{sym:{shares,cost}}, equity}
     state_json: Mapped[str] = mapped_column(Text, default="{}")
     # 最近一次运行的完整每日净值曲线（date>=建仓日），用于前端展示

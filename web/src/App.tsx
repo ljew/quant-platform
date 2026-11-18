@@ -143,7 +143,7 @@ function HubContent({ sub, id, inner }: { sub: string; id?: number; inner?: stri
     case "fund-research": return <FundResearchPage initialTab={inner} />;
     case "btopt": return <BacktestOptimizePage inner={inner} />;
     case "factorlab": return <FactorMinePage />;
-    case "paper": return <PaperPage />;
+    case "paper": return <PaperPage inner={inner} />;
     case "signal": return <SignalPage />;
     case "attribution": return <AttributionPage />;
     case "datahealth": return <DataHealthPage />;

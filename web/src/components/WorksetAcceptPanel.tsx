@@ -20,6 +20,11 @@ function goFactorLabWorkset() {
     ?.scrollIntoView({ behavior: "smooth", block: "start" }), 160);
 }
 
+function goPaperObserve(runId?: number) {
+  const inner = runId ? `workset-observe-${runId}` : "workset-observe";
+  window.dispatchEvent(new CustomEvent("quant-nav", { detail: { tab: "paper", inner } }));
+}
+
 function verdictColor(v: string | null | undefined, stale: boolean, colors: ThemeColors): string {
   if (stale) return "#868e96";
   if (v === "通过") return "#2f9e44";
@@ -151,6 +156,22 @@ export default function WorksetAcceptPanel({
   const collection = run?.collection;
   const runMembers: WorksetAcceptMember[] = run?.members ?? [];
   const empty = n === 0;
+  const nPass = collection?.n_pass ?? runMembers.filter((m) => m.verdict === "通过").length;
+  const acceptDone = run?.status === "done";
+  const showObserve = Boolean(available && !empty && run && (acceptDone || nPass > 0));
+  let observeDisabled = true;
+  let observeHint = "";
+  if (showObserve) {
+    if (!acceptDone) {
+      observeHint = run?.status === "error" ? "验收未完成或失败，无法建盘" : "验收尚未完成，无法建盘";
+    } else if (stale) {
+      observeHint = "结论已过期，请先重跑";
+    } else if (nPass <= 0) {
+      observeHint = "没有已通过的成员，无法建盘";
+    } else {
+      observeDisabled = false;
+    }
+  }
   const busy = running || run?.status === "running" || run?.status === "pending";
   const progressMsg = run?.message || (busy
     ? `验收中（${run?.members_done ?? 0}/${run?.members_total ?? n}）… 中证800 组合回测可能需要数分钟`
@@ -238,8 +259,19 @@ export default function WorksetAcceptPanel({
         <Btn onClick={onStart} disabled={busy || empty || !available}>
           {busy ? "验收中…" : "按默认成本验收"}
         </Btn>
+        {showObserve && (
+          <Btn
+            onClick={() => { if (!observeDisabled) goPaperObserve(run?.run_id); }}
+            disabled={observeDisabled}
+          >
+            去模拟盘观察
+          </Btn>
+        )}
         {busy && (
           <span style={{ fontSize: 12, color: colors.muted }}>{progressMsg}</span>
+        )}
+        {showObserve && observeDisabled && observeHint && (
+          <span style={{ fontSize: 12, color: stale ? "#c8860d" : colors.muted }}>{observeHint}</span>
         )}
       </div>
       {err && (

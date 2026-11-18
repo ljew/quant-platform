@@ -40,6 +40,28 @@ def _merge_params(meta: dict, params_json: str) -> dict:
     return p
 
 
+
+def _resolve_paper_meta(task: PaperTask) -> tuple[dict, Any]:
+    """观察任务用快照 TEXT 列重建内部 meta，不再 get_strategy，也不合并 params_json。
+
+    必须接到 _load_single、_load_portfolio、run_paper_task 全部三处：
+    只改加载函数会让调度/子进程在 run_paper_task 约 L314 的 get_strategy
+    处写成 error_msg，看起来「跑过但空账本」。
+    绑定任务若缺少完整 expr，不得截断续跑或回退到注册表策略。
+    """
+    run_id = getattr(task, "workset_observe_run_id", None)
+    registry_id = getattr(task, "workset_observe_registry_id", None)
+    if run_id is not None and registry_id is not None:
+        expr = getattr(task, "workset_observe_expr", None)
+        if expr is None or expr == "":
+            raise ValueError("工作集观察任务缺少完整表达式，无法按同口径继续运行")
+        from app.services.workset_backtest_accept import build_member_meta
+        return build_member_meta(expr)
+    meta = get_strategy(task.strategy_key)
+    params = _merge_params(meta, task.params_json)
+    return meta, params
+
+
 _UNSET = object()
 
 
@@ -54,8 +76,7 @@ def _load_single(db, task: PaperTask, since_date=_UNSET) -> dict:
     if not symbols:
         raise ValueError("单标的任务需要 symbols")
     sym = symbols[0]  # MVP：单标的任务只跑列表中的第一个标的
-    meta = get_strategy(task.strategy_key)
-    params = _merge_params(meta, task.params_json)
+    meta, params = _resolve_paper_meta(task)
     end = date.today()
     bars = _load_bars(db, sym, "2015-01-01", end.isoformat(), task.adj)
     if len(bars) < 30:
@@ -114,7 +135,7 @@ def _load_portfolio(db, task: PaperTask, since_date=_UNSET) -> dict:
 
     since_date 语义同 _load_single：显式 None = 全量补录，_UNSET = 用 last_bar_date。
     """
-    meta = get_strategy(task.strategy_key)
+    meta, params = _resolve_paper_meta(task)
     index_code = task.index_code or meta.get("index_code") or "000906"
     # 399 开头是深证（国证A指 sz399317 是平台统一基准）。原来一刀切 "sh"+code，
     # 对 399317 会拼成 sh399317 → 基准取空 → 任务直接挂。与 routers/paper.py
@@ -123,7 +144,6 @@ def _load_portfolio(db, task: PaperTask, since_date=_UNSET) -> dict:
         index_code if index_code[:2] in ("sh", "sz", "bj")
         else ("sz" if str(index_code).startswith("399") else "sh") + str(index_code)
     )
-    params = _merge_params(meta, task.params_json)
     end = date.today()
     # 回测起点 = 账户建账日，不是「5 年前」。
     # 原来固定 5 年前：chan_buy 的 signal_union 池有 4787 只（几乎全A），
@@ -311,7 +331,7 @@ def _incremental_trades(trades, last_bar_date, last_date, start_date):
 def run_paper_task(db, task: PaperTask) -> dict:
     """执行一次模拟盘任务，写入成交/快照并更新任务状态。返回摘要dict。"""
     try:
-        meta = get_strategy(task.strategy_key)
+        _meta, _params = _resolve_paper_meta(task)
         # 成交补录水位：以「账本里已有的最新成交日」为准，不是 task.last_bar_date。
         # last_bar_date 每跑一次就前进，只要有几天没跑（容器重启 / 数据库故障 /
         # 任务被停用），那几天的成交就永久漏掉。2026-11-11 发现 paper_trades
@@ -476,7 +496,7 @@ def get_paper_task_detail(db, task: PaperTask) -> dict:
     fees_paid_commission = float(sum(float(getattr(t, "commission", 0.0) or 0.0) for t in trades))
     # 数值等于 defaults → source=default；否则 user（详情无请求体，按落库费率推断）
     cost_src = "default" if (commission == _COST_C and slippage == _COST_S) else "user"
-    return {
+    out = {
         "id": task.id, "name": task.name, "strategy_key": task.strategy_key,
         "kind": task.kind, "symbols": task.symbols, "index_code": task.index_code,
         "enabled": task.enabled, "last_run_at": task.last_run_at.isoformat() if task.last_run_at else None,
@@ -499,3 +519,13 @@ def get_paper_task_detail(db, task: PaperTask) -> dict:
         "cost_profile": build_cost_profile(commission, slippage, source=cost_src),
         "fees_paid_commission": fees_paid_commission,
     }
+    try:
+        from app.services.workset_paper_observe import observe_public_fields
+        out.update(observe_public_fields(db, task))
+        if out.get("workset_observe"):
+            # 友好名供列表/详情回显；内部 key 仍保留在 strategy_key
+            out.setdefault("strategy_label", "工作集观察")
+    except Exception:
+        # 观察字段加法失败不得拖垮既有详情
+        pass
+    return out
