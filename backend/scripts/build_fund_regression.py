@@ -36,9 +36,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import os
 
 ROOT = Path(__file__).resolve().parents[2]
-DB = ROOT / "data" / "fund_research.db"
+DB = Path(os.getenv("QUANT_RESEARCH_DB") or os.getenv("QUANT_FUND_DB") or (ROOT / "data" / "fund_research.db"))
 NAV_CSV = ROOT / "data" / "research" / "nav_raw.csv"
 
 WINDOW = 60          # 报告期前交易日窗口

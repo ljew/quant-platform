@@ -18,8 +18,8 @@ OUT = DATA / "research"
 OUT.mkdir(parents=True, exist_ok=True)
 
 
-FR = DATA / "fund_research.db"
-QD = DATA / "quant_dev.db"
+FR = Path(os.getenv("QUANT_RESEARCH_DB") or os.getenv("QUANT_FUND_DB") or (ROOT / "data" / "fund_research.db"))
+QD = Path(os.getenv("QUANT_DB_PATH") or os.getenv("QUANT_DB") or (ROOT / "data" / "quant_dev.db"))
 COST = 0.65  # %/次
 
 

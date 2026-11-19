@@ -49,7 +49,7 @@ DATA = ROOT / "data" / "research"
 OUT = DATA / "csrc_industry_raw.csv"
 PROGRESS = DATA / "progress_csrc.json"
 LOG = DATA / "fetch_csrc.log"
-RESEARCH_DB = ROOT / "data" / "fund_research.db"
+RESEARCH_DB = Path(os.getenv("QUANT_RESEARCH_DB") or os.getenv("QUANT_FUND_DB") or (ROOT / "data" / "fund_research.db"))
 
 URL = "https://api.fund.eastmoney.com/f10/HYPZ/"
 HEADERS = {

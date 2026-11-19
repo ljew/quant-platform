@@ -36,9 +36,10 @@ import sqlite3
 import statistics as st
 from datetime import datetime
 from pathlib import Path
+import os
 
 ROOT = Path(__file__).resolve().parents[2]
-DB = ROOT / "data" / "fund_research.db"
+DB = Path(os.getenv("QUANT_RESEARCH_DB") or os.getenv("QUANT_FUND_DB") or (ROOT / "data" / "fund_research.db"))
 
 DDL = """
 CREATE TABLE IF NOT EXISTS fund_fof_layer_check (

@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from pathlib import Path
+import os
 
 from _fund_stats import tstat
 
@@ -22,7 +23,7 @@ OUT = DATA / "research"
 OUT.mkdir(parents=True, exist_ok=True)
 
 
-DEV = DATA / "quant_dev.db"
+DEV = Path(os.getenv("QUANT_DB_PATH") or os.getenv("QUANT_DB") or (DATA / "quant_dev.db"))
 BINS = [("top5", 0.95, 1.01), ("p5_10", 0.90, 0.95), ("p10_30", 0.70, 0.90),
         ("p30_50", 0.50, 0.70), ("p50_70", 0.30, 0.50), ("bot30", -0.01, 0.30)]
 LABEL = {"top5": "前5%", "p5_10": "5-10%", "p10_30": "10-30%",

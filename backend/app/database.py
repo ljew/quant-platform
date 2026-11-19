@@ -180,6 +180,8 @@ def _migrate_sqlite() -> None:
             migrate_factor_workset(conn)
             from app.services.workset_backtest_accept import migrate_factor_workset_accept
             migrate_factor_workset_accept(conn)
+            from app.services.workset_paper_observe import migrate_paper_workset_observe
+            migrate_paper_workset_observe(conn)
             conn.commit()
     except Exception as exc:
         # 实盘账本结构不明时宁可拒绝启动，不能带着半套迁移继续记账。

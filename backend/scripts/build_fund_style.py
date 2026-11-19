@@ -53,11 +53,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import os
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "data"
-RES_DB = DATA / "fund_research.db"
-DEV_DB = DATA / "quant_dev.db"
+RES_DB = Path(os.getenv("QUANT_RESEARCH_DB") or os.getenv("QUANT_FUND_DB") or (ROOT / "data" / "fund_research.db"))
+DEV_DB = Path(os.getenv("QUANT_DB_PATH") or os.getenv("QUANT_DB") or (ROOT / "data" / "quant_dev.db"))
 BY_FUND = DATA / "holdings" / "by_fund"
 PROGRESS = DATA / "research" / "fund_style_progress.json"
 

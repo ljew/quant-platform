@@ -20,10 +20,11 @@ import statistics as st
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+import os
 
 ROOT = Path(__file__).resolve().parents[2]
-MAIN_DB = ROOT / "data" / "quant_dev.db"
-RES_DB = ROOT / "data" / "fund_research.db"
+MAIN_DB = Path(os.getenv("QUANT_DB_PATH") or os.getenv("QUANT_DB") or (ROOT / "data" / "quant_dev.db"))
+RES_DB = Path(os.getenv("QUANT_RESEARCH_DB") or os.getenv("QUANT_FUND_DB") or (ROOT / "data" / "fund_research.db"))
 OUT_JSON = ROOT / "data" / "research" / "fof_diagnosis.json"
 
 

@@ -53,9 +53,10 @@ import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+import os
 
 ROOT = Path(__file__).resolve().parents[2]
-DB = ROOT / "data" / "fund_research.db"
+DB = Path(os.getenv("QUANT_RESEARCH_DB") or os.getenv("QUANT_FUND_DB") or (ROOT / "data" / "fund_research.db"))
 
 # 法定披露可得日（月日, 跨年偏移）。保守取值，宁可少用一期也不前视。
 _AVAIL = {"0331": ("0422", 0), "0630": ("0831", 0), "0930": ("1022", 0), "1231": ("0331", 1)}

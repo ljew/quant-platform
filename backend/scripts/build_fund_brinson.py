@@ -28,14 +28,15 @@ import pandas as pd
 from pathlib import Path
 
 from _fund_stats import tstat
+import os
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "data"
 OUT = DATA / "research"
 OUT.mkdir(parents=True, exist_ok=True)
 
-RES = DATA / "fund_research.db"
-DEV = DATA / "quant_dev.db"
+RES = Path(os.getenv("QUANT_RESEARCH_DB") or os.getenv("QUANT_FUND_DB") or (ROOT / "data" / "fund_research.db"))
+DEV = Path(os.getenv("QUANT_DB_PATH") or os.getenv("QUANT_DB") or (ROOT / "data" / "quant_dev.db"))
 
 LAG = {"0331": 15, "0630": 45, "0930": 15, "1231": 60}
 

@@ -28,10 +28,11 @@ import sqlite3
 from pathlib import Path
 
 import pandas as pd
+import os
 
 ROOT = Path(__file__).resolve().parents[2]
-RES = ROOT / "data" / "fund_research.db"
-DEV = ROOT / "data" / "quant_dev.db"
+RES = Path(os.getenv("QUANT_RESEARCH_DB") or os.getenv("QUANT_FUND_DB") or (ROOT / "data" / "fund_research.db"))
+DEV = Path(os.getenv("QUANT_DB_PATH") or os.getenv("QUANT_DB") or (ROOT / "data" / "quant_dev.db"))
 
 SQL_ME = """
 select ts_code, nav_date, adj_nav from (

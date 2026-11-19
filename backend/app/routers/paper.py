@@ -18,6 +18,13 @@ from app.core.strategies.registry import get_strategy, STRATEGY_REGISTRY
 from app.core.engine.paper_engine import get_paper_task_detail
 from app.core.cost_defaults import COMMISSION, SLIPPAGE
 from app.core.eval_profile import build_eval_profile_for_paper
+from app.services.workset_paper_observe import (
+    ObserveError,
+    WorksetObserveRequest,
+    create_workset_observe,
+    get_workset_observe,
+    http_error,
+)
 
 router = APIRouter(prefix="/paper", tags=["paper"])
 
@@ -128,6 +135,45 @@ def create_task(req: PaperTaskCreate, db=Depends(get_db)):
     }
 
 
+@router.post("/tasks/workset-observe")
+def create_workset_observe_tasks(req: WorksetObserveRequest | None = None, db=Depends(get_db)):
+    """W48-3：为未过期验收快照中「通过」成员同口径逐本建盘（或打开已有）。
+
+    Body 只收 run_id（可省略=最新一次已完成）。同步写库；首次运行投递已有组合子进程。
+    """
+    payload = req or WorksetObserveRequest()
+    try:
+        result = create_workset_observe(db, payload=payload)
+    except ObserveError as err:
+        raise http_error(err) from err
+    created_ids = list(result.pop("created_task_ids", []) or [])
+    if created_ids:
+        def _bg_all(ids=created_ids):
+            from app.services.paper_runner import run_in_subprocess
+            for tid in ids:
+                s = SessionLocal()
+                try:
+                    t = s.get(PaperTask, tid)
+                    kind = (t.kind if t else "portfolio") or "portfolio"
+                finally:
+                    s.close()
+                ok, info = run_in_subprocess(tid, kind)
+                logger.info("工作集观察首次运行 #%s: ok=%s %s", tid, ok,
+                            info.get("error") or f"{info.get('secs')}s")
+        threading.Thread(target=_bg_all, daemon=True).start()
+        result["run_started"] = True
+    return result
+
+
+@router.get("/tasks/workset-observe")
+def get_workset_observe_tasks(run_id: int | None = None, db=Depends(get_db)):
+    """W48-3 只读：集合状态 + 本轮观察任务 id，供 #paper 横幅。"""
+    try:
+        return get_workset_observe(db, run_id=run_id)
+    except ObserveError as err:
+        raise http_error(err) from err
+
+
 @router.post("/auto-ensure")
 def auto_ensure_paper(dry_run: bool = False, mode: str = "create",
                       db=Depends(get_db)):
@@ -151,7 +197,7 @@ def list_tasks(db=Depends(get_db)):
     out = []
     for t in rows:
         detail = get_paper_task_detail(db, t)
-        out.append({
+        item = {
             "id": t.id, "name": t.name, "strategy_key": t.strategy_key,
             "kind": t.kind, "symbols": t.symbols, "index_code": t.index_code,
             "enabled": t.enabled, "initial_cash": t.initial_cash,
@@ -162,7 +208,15 @@ def list_tasks(db=Depends(get_db)):
             "last_bar_date": t.last_bar_date,
             "account_start": t.account_start, "start_date": t.start_date,
             "last_run_at": detail["last_run_at"], "error_msg": t.error_msg,
-        })
+            "workset_observe_run_id": detail.get("workset_observe_run_id"),
+            "workset_observe_registry_id": detail.get("workset_observe_registry_id"),
+            "workset_observe_stale": detail.get("workset_observe_stale", False),
+            "workset_observe_stale_reason": detail.get("workset_observe_stale_reason"),
+        }
+        if detail.get("workset_observe"):
+            item["workset_observe"] = True
+            item["strategy_label"] = detail.get("strategy_label") or "工作集观察"
+        out.append(item)
     return out
 
 

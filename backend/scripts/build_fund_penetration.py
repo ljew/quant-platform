@@ -75,9 +75,9 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "data" / "holdings"
-DB = ROOT / "data" / "fund_research.db"      # 独立研究库：本脚本独占写
+DB = Path(os.getenv("QUANT_RESEARCH_DB") or os.getenv("QUANT_FUND_DB") or (ROOT / "data" / "fund_research.db"))  # 独立研究库：本脚本独占写
 SRC_DB = DB                                  # 只读来源（监管锚等），--db 演练时仍读这里
-MAIN_DB = ROOT / "data" / "quant_dev.db"     # 主库只读，仅取基金池规模
+MAIN_DB = Path(os.getenv("QUANT_DB_PATH") or os.getenv("QUANT_DB") or (ROOT / "data" / "quant_dev.db"))  # 主库只读，仅取基金池规模
 RAW = DATA / "holdings_raw.csv"
 BY_FUND = DATA / "by_fund"
 # --db 演练时置 False：by_fund/*.csv 是主结果的钻取缓存，演练不该覆盖它

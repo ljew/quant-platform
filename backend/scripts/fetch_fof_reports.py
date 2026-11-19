@@ -57,8 +57,8 @@ for _k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY"
     os.environ.pop(_k, None)
 
 ROOT = Path(__file__).resolve().parents[2]
-DB = ROOT / "data" / "fund_research.db"
-MAIN_DB = ROOT / "data" / "quant_dev.db"
+DB = Path(os.getenv("QUANT_RESEARCH_DB") or os.getenv("QUANT_FUND_DB") or (ROOT / "data" / "fund_research.db"))
+MAIN_DB = Path(os.getenv("QUANT_DB_PATH") or os.getenv("QUANT_DB") or (ROOT / "data" / "quant_dev.db"))
 DATA = ROOT / "data" / "research"
 PDFDIR = ROOT / "data" / "fof_pdf"
 LOG = DATA / "fetch_fof.log"
