@@ -28,10 +28,11 @@ from __future__ import annotations
 import csv
 import sqlite3
 from pathlib import Path
+import os
 
 ROOT = Path(__file__).resolve().parents[2]
-MAIN = ROOT / "data" / "quant_dev.db"
-RESEARCH = ROOT / "data" / "fund_research.db"
+MAIN = Path(os.getenv("QUANT_DB_PATH") or os.getenv("QUANT_DB") or (ROOT / "data" / "quant_dev.db"))
+RESEARCH = Path(os.getenv("QUANT_RESEARCH_DB") or os.getenv("QUANT_FUND_DB") or (ROOT / "data" / "fund_research.db"))
 SW_CSV = ROOT / "data" / "research" / "sw_industry_daily.csv"
 
 DDL = [

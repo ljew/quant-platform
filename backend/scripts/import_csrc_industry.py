@@ -13,9 +13,10 @@ import csv
 import sqlite3
 from collections import defaultdict
 from pathlib import Path
+import os
 
 ROOT = Path(__file__).resolve().parents[2]
-DB = ROOT / "data" / "fund_research.db"
+DB = Path(os.getenv("QUANT_RESEARCH_DB") or os.getenv("QUANT_FUND_DB") or (ROOT / "data" / "fund_research.db"))
 CSV = ROOT / "data" / "research" / "csrc_industry_raw.csv"
 
 

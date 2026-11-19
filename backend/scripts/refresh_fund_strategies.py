@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from pathlib import Path
+import os
 
 from _fund_stats import tstat
 
@@ -23,7 +24,7 @@ DATA = ROOT / "data"
 OUT = DATA / "research"
 OUT.mkdir(parents=True, exist_ok=True)
 
-DEV = DATA / "quant_dev.db"
+DEV = Path(os.getenv("QUANT_DB_PATH") or os.getenv("QUANT_DB") or (DATA / "quant_dev.db"))
 
 YRS = list(range(2015, 2026))
 TEN = list(range(2016, 2026))

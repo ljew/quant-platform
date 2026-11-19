@@ -32,13 +32,14 @@ import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+import os
 
 import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 FM = Path("/Users/happyljew/WorkBuddy/2026-11-07-11-27-13/fm_analysis")
-MAIN_DB = ROOT / "data" / "quant_dev.db"
+MAIN_DB = Path(os.getenv("QUANT_DB_PATH") or os.getenv("QUANT_DB") or (ROOT / "data" / "quant_dev.db"))
 HOLD_CSV = ROOT / "data" / "holdings" / "holdings_raw.csv"
 PANEL = FM / "panel_equity.csv"
 OUT = ROOT / "data" / "research" / "holdings_recheck.json"

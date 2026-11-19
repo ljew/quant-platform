@@ -74,13 +74,16 @@ CREATE INDEX IF NOT EXISTS ix_mr_hash  ON market_reports(content_hash);
 
 
 def resolve_db() -> Path:
-    """宿主机跑用 ROOT/data；容器里跑用 /data（但静态目录只读，会跳过同步）。"""
-    env = os.environ.get("QUANT_REPORT_DB")
-    if env and Path(env).exists():
-        return Path(env)
-    for p in (Path("/data/quant_dev.db"), ROOT / "data" / "quant_dev.db"):
-        if p.exists():
-            return p
+    """主库在 named volume /dbdata（compose：QUANT_DB_PATH）。
+
+    不要再优先选用 /data/quant_dev.db：那是 virtiofs bind mount，
+    2026-11-16 把 SQLite 搬走之后，/data 上只剩误写入的副本，API 读的是 /dbdata。
+    QUANT_REPORT_DB 可单独覆盖；否则与主库同一位置。
+    """
+    for key in ("QUANT_REPORT_DB", "QUANT_DB_PATH", "QUANT_DB"):
+        env = os.environ.get(key)
+        if env:
+            return Path(env)
     return ROOT / "data" / "quant_dev.db"
 
 

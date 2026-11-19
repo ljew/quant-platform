@@ -45,8 +45,8 @@ from _tushare_token import require_token  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "data" / "research"
-DB = ROOT / "data" / "quant_dev.db"
-RESEARCH_DB = ROOT / "data" / "fund_research.db"
+DB = Path(os.getenv("QUANT_DB_PATH") or os.getenv("QUANT_DB") or (ROOT / "data" / "quant_dev.db"))
+RESEARCH_DB = Path(os.getenv("QUANT_RESEARCH_DB") or os.getenv("QUANT_FUND_DB") or (ROOT / "data" / "fund_research.db"))
 RAW = DATA / "nav_raw.csv"
 PROGRESS = DATA / "progress_nav.json"
 PROGRESS_INC = DATA / "progress_nav_inc.json"
