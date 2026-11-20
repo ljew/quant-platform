@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>市场资讯报告 · 早间版 · 2026-11-21（休市版）</title>
+<style>  :root{
+    --ink:#101828; --ink2:#344054; --ink3:#667085; --faint:#98a2b3;
+    --rule:#101828; --rule2:#eaecf0; --panel:#f9fafb;
+    --up:#c0271f; --down:#136c3a;
+    --accent:#1f3a5f; --accent-soft:#eef2f7; --thead:#f3f5f8;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:22px 26px 30px; background:#fff; color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    font-size:12.5px; line-height:1.56;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  }
+  .wrap{max-width:1140px;margin:0 auto}
+
+  /* ── 报头：细双线，正式文书感 ── */
+  header{background:none;border:0;border-bottom:1.5px solid var(--rule);
+    border-radius:0;padding:0 0 10px;margin:0 0 18px}
+  h1{margin:0;font-size:19px;font-weight:700;letter-spacing:1.1px;color:var(--ink)}
+  .sub{margin-top:5px;color:var(--ink3);font-size:11px;letter-spacing:.3px}
+  .meta{margin-top:8px;display:block;font-size:10.5px;color:var(--ink3);line-height:1.8}
+  .chip{display:inline-block;background:none;border:0;border-radius:0;padding:0;
+    margin:0 26px 0 0;font-size:11px;color:var(--ink3);letter-spacing:.2px}
+  .chip b{color:var(--ink2);font-weight:600}
+  .badge-rest{background:none;border:0;color:var(--ink3)}
+  .badge-rest b{color:var(--up);font-weight:700}
+
+  /* ── 章节：连续版面，不用卡片 ── */
+  section{background:none;border:0;border-radius:0;padding:0;margin:0 0 19px}
+  h2{margin:0 0 10px;padding:3px 0 4px 9px;font-size:13px;font-weight:700;color:var(--ink);
+    letter-spacing:.6px;border-left:3px solid var(--accent);border-bottom:0;
+    background:linear-gradient(90deg,var(--accent-soft),rgba(238,242,247,0) 62%)}
+  h3{margin:14px 0 6px;font-size:11.5px;font-weight:600;color:var(--ink2);letter-spacing:.3px}
+  h3 span{color:var(--ink3);font-weight:500;margin-right:6px;font-variant-numeric:tabular-nums}
+
+  /* ── 表格：三线表 ── */
+  table{width:100%;border-collapse:collapse;font-size:11px;margin:0 0 5px;
+    border-top:1px solid #6b7785;
+    font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+  th{padding:4.5px 8px;text-align:right;font-weight:600;font-size:10px;color:var(--ink2);
+    border-bottom:1px solid var(--rule);background:var(--thead);white-space:nowrap;letter-spacing:.4px}
+  td{padding:3.5px 8px;text-align:right;border-bottom:1px solid #f4f6f9;
+    white-space:nowrap;color:var(--ink2)}
+  th:first-child,td:first-child{text-align:left}
+  td.l,th.l{text-align:left}
+  tbody tr:last-child td{border-bottom:1px solid #6b7785}
+  tbody tr:hover{background:var(--panel)}
+  table.num td:first-child{color:var(--ink)}
+
+  /* ── 折行控制（沿用 v1.6 规则） ── */
+  table.t-wrap td{white-space:normal}
+  table.t-wrap td:first-child{white-space:nowrap}
+  table.news td:nth-child(2),
+  table.news td:nth-child(4),
+  table.news td:nth-child(5),
+  table.news td:nth-child(6){white-space:nowrap}
+  table.t-wrap td.l{line-height:1.55}
+  table.num td:not(:first-child),
+  table.num th:not(:first-child){width:1%;padding-left:16px;padding-right:16px}
+
+  /* 状态判定表：读数按内容收缩，避免中间裂开大空白 */
+  table.state td:nth-child(2),table.state th:nth-child(2){width:1%;white-space:nowrap;padding-right:28px}
+  table.state td:nth-child(3),table.state th:nth-child(3){text-align:left;padding-left:0}
+
+  /* 横排两栏要点 */
+  ul.cols2{display:grid;grid-template-columns:1fr 1fr;gap:2px 34px;margin:6px 0;padding-left:17px}
+  @media (max-width:820px){ul.cols2{grid-template-columns:1fr}}
+
+  /* ── 涨跌：暗红暗绿，不用高饱和 ── */
+  .up{color:var(--up)} .down{color:var(--down)} .flat{color:var(--ink3)}
+
+  /* ── 注释与说明 ── */
+  .src{margin:4px 0 0;padding:0;color:var(--ink3);font-size:10px;line-height:1.65}
+  .note{margin:6px 0;padding:5px 0 5px 9px;background:none;border:0;
+    border-left:2px solid var(--rule2);border-radius:0;font-size:10.5px;color:var(--ink3);line-height:1.65}
+  ul{margin:3px 0;padding-left:15px}
+  li{margin:2.5px 0;line-height:1.58}
+
+  /* ── 小结：左侧墨线，无底色 ── */
+  .sum{margin:8px 0 0;padding:5px 0 5px 11px;background:none;border:0;
+    border-left:2px solid var(--accent);border-radius:0;font-size:11.5px;color:var(--ink2);line-height:1.6}
+  .sum b{color:var(--accent);font-weight:700;margin-right:8px;letter-spacing:.6px}
+
+  /* ── 溯源标签：灰色方括号小字，像引注 ── */
+  .tags{white-space:nowrap;display:inline-block;margin-left:3px}
+  .tag{display:inline;background:none;border:0;border-radius:0;padding:0;margin:0;
+    font-size:9.5px;color:var(--faint);letter-spacing:0;vertical-align:0;font-weight:400}
+  .tag::before{content:"["} .tag::after{content:"]"}
+  .tag.warn-tag{color:#b54708}
+  .tag.ok{color:var(--down)}
+  .tag.op{color:#8a5a20;font-style:italic}
+  .tag.op::before{content:"["} .tag.op::after{content:"]"}
+
+  /* ── 两栏栅格：同一层级的 4 列表两两并排，消灭横向空白 ── */
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 32px;align-items:stretch}
+  .grid2 > .col{min-width:0;display:flex;flex-direction:column}
+  .grid2 > .col > .sum{margin-top:auto}
+  .grid2 table.num td:not(:first-child),
+  .grid2 table.num th:not(:first-child){padding-left:9px;padding-right:9px}
+  .grid2 table{font-size:10.5px}
+  .grid2 th{font-size:9.5px}
+  @media (max-width:820px){.grid2{grid-template-columns:1fr;gap:0}}
+
+  .grid64{display:grid;grid-template-columns:1.35fr 1fr;gap:0 30px;align-items:stretch}
+  .grid64 > .col{min-width:0;display:flex;flex-direction:column}
+  .grid64 > .col > .sum{margin-top:auto}
+  .grid64 table.num td:not(:first-child),
+  .grid64 table.num th:not(:first-child){padding-left:12px;padding-right:12px}
+  @media (max-width:820px){.grid64{grid-template-columns:1fr;gap:0}}
+
+  table.map td:nth-child(1),table.map th:nth-child(1){width:1%;white-space:nowrap;padding-right:24px}
+
+  /* ── 页脚 ── */
+  footer{margin-top:20px;padding-top:9px;border-top:1px solid var(--rule);
+    color:var(--faint);font-size:10px;line-height:1.9;text-align:left;letter-spacing:.2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>市场资讯报告 · 早间版</h1>
+  <div class="sub">2026-11-21（周六） · 覆盖 11-20 15:00（A 股上一交易日收盘）→ 11-21 06:45 · 休市版</div>
+  <div class="meta">
+    <span class="chip">生成 <b>11-21 06:45</b></span>
+    <span class="chip">A 股数据 <b>11-20 收盘</b></span>
+    <span class="chip">海外数据 <b>美东 11-20 收盘（北京 11-21 凌晨）</b></span>
+    <span class="chip badge-rest"><b>休市</b> · 下一交易日 11-23 周一</span>
+    <span class="chip">模板 <b>v1.7</b></span>
+  </div>
+</header>
+
+<section>
+  <h2>1. 一分钟速览（含 A 股状态判定）</h2>
+  <p class="note"><b>休市与时序提示</b>：11-21 周六 A 股休市，<b>本时段无新增 A 股行情</b>，1.2 与第 2 节境内数据全部为 11-20 周五收盘。A 股 11-20 白天定价的外围是<b>美东 11-19 收盘 / 北京 11-20 凌晨</b>（道指 -2.19%、标普 -2.02%、纳指 -2.25%、费半 -2.41%、VIX 28.44）。<b>美东 11-20 收盘 / 北京 11-21 凌晨</b>（道指 -1.93%、标普 -3.70%、纳指 -5.28%、费半 -10.73%、VIX 35.90）、欧股 11-20 收盘、商品 11-20 结算与周末消息面，均发生在 A 股 11-20 收盘之后，<b>尚未被 A 股定价</b>。两段为连续但不同的交易日，不得混比。本报告不含方向预测与买卖建议，不设裁决区。</p>
+  <h3>1.1 关键事实</h3>
+  <ul>
+    <li><b>休市</b>：11-21 周六无交易，下一交易日 11-23 周一；本时段无新增 A 股行情，第 2 节境内逐项引用 11-20 收盘</li>
+    <li><b>A 股 11-20 放量普跌</b>：上证 3,533.79（<span class="down">-1.22%</span>）、科创综指 1,349.18（<span class="down">-5.23%</span>）、北证50 759.90（<span class="down">-4.85%</span>），上涨占比 5.62%（涨 313 / 跌 5,236）；两市 14,222 亿元、放量 1,171 亿元；<b>上证50 2,785.92（<span class="up">+0.45%</span>）为七指数中唯一收涨</b> <span class="tags"><span class="tag">tushare✓</span><span class="tag">公开媒体✓ 上海证券报·11-21</span></span></li>
+    <li><b>A 股 11-20 定价的外围</b>：美东 11-19 收盘三大指数均跌逾 2%（道指 49,097.06 / -2.19%、标普 7,175.83 / -2.02%、纳指 23,879.20 / -2.25%），费半 -2.41%、VIX 28.44（+15.8%）；Anthropic 上市首日收涨 17.07% <span class="tag">公开媒体✓ 财联社·11-20</span></li>
+    <li><b>隔夜最重大（未被定价）</b>：美东 11-20 收盘纳指 22,617.73（<span class="down">-5.28%</span>）、标普 6,910.39（<span class="down">-3.70%</span>）、道指 48,147.33（<span class="down">-1.93%</span>）、费半 8,408.59（<span class="down">-10.73%</span>），<b>VIX 35.90（<span class="up">+26.28%</span>）盘中触及 40.03</b>；英伟达 -14.01%，标普与道指双双步入回调区间 <span class="tags"><span class="tag">新浪✓</span><span class="tag">公开媒体✓ 新浪财经·11-21</span></span></li>
+    <li><b>跨资产最异常</b>：COMEX 黄金连续 3,535.39 美元/盎司、白银 41.500 美元/盎司（11-21 凌晨）；MSCI 新兴市场股票指数跌入熊市；VIX 升至 2025 年 4 月以来最高 <span class="tags"><span class="tag">新浪✓</span><span class="tag">公开媒体✓ 新浪财经·11-21</span></span></li>
+    <li><b>资金与日程</b>：上证50ETF 华夏 11-20 成交 243.4 亿元（历史第二大单日）、27 家 A 股盘后回购公告；11-20 LPR 1Y 3.00% / 5Y+ 3.50% 连续 18 个月不变；下周 10,000 亿 MLF 与 3,795 亿逆回购到期、11-25 MLF 操作窗口 <span class="tag">公开媒体✓ 上证报·11-21</span></li>
+  </ul>
+  <h3>1.2 A 股状态判定（事实层，11-20 收盘）</h3>
+  <table class="t-wrap state">
+    <thead><tr><th>维度</th><th>读数</th><th>判据 / 参照</th></tr></thead>
+    <tbody>
+      <tr><td>宽度（上涨占比）</td><td><b>5.62%</b></td><td class="l">极弱（&lt;20% 为普跌）；涨 313 / 跌 5,236 / 平 23（全市场 5,572 只），涨停 30 / 跌停 61（含 ST）<span class="tags"><span class="tag">tushare✓</span><span class="tag warn-tag">源冲突⚠</span></span></td></tr>
+      <tr><td>量能</td><td><b>14,222 亿</b></td><td class="l">较 11-19 的 13,051.5 亿放量 1,171 亿；高于 5 日均 14,078.5 亿、低于 20 日均 16,260.2 亿；三市 14,311 亿（含北交所 91.2 亿），两市与三市口径分列<span class="tags"><span class="tag">tushare✓</span><span class="tag">公开媒体✓ 上证报·11-21</span></span></td></tr>
+      <tr><td>风格</td><td><b>权重独强</b></td><td class="l">上证50 +0.45% vs 科创综指 -5.23% / 北证50 -4.85% / 创业板 -3.54%；银行、保险、石油石化收涨，半导体板块均跌 -6.86%<span class="tags"><span class="tag">tushare✓</span><span class="tag">公开媒体✓ 上证报·11-21</span></span></td></tr>
+      <tr><td>资金</td><td><b>银行 +43.12 亿</b></td><td class="l">主力净流入前三 银行 +43.12 / 保险 +12.52 / 元件 +10.34 亿；净流出前三 半导体 -80.15 / 汽车零部件 -18.71 / IT服务 -18.44 亿 <span class="tag warn-tag">源冲突⚠</span>；两融 21,855.14 亿（11-19，-154.89 亿）、南向净流入 118.12 亿港元 <span class="tag">公开媒体✓ 财经早餐·11-21</span></td></tr>
+      <tr><td>相对海外</td><td><b>上证 -1.22%</b></td><td class="l">定价的是美东 11-19（道指 -2.19%）；同为 11-20 收盘的日经 -5.06%、KOSPI -5.21%、恒指 -1.89%，A 股跌幅小于日韩、大于港股主板<span class="tags"><span class="tag">新浪✓</span><span class="tag">tushare✓</span></span></td></tr>
+    </tbody>
+  </table>
+  <div class="sum"><b>小结</b>A 股 11-20 放量普跌、上涨占比 5.62%，上证50 独红；美东 11-20 暴跌尚未被定价。</div>
+</section>
+
+<section>
+  <h2>2. 品种全景</h2>
+  <div class="grid2">
+    <div class="col">
+      <h3>2.1 股票 · 境内（11-20 收盘）<span class="tag">tushare✓</span></h3>
+      <table class="num">
+        <thead><tr><th>指数</th><th>收盘</th><th>涨跌幅</th><th>20 日</th></tr></thead>
+        <tbody>
+          <tr><td>上证指数</td><td>3,533.79</td><td class="down">-1.22%</td><td class="down">-4.25%</td></tr>
+          <tr><td>深证成指</td><td>10,256.39</td><td class="down">-3.09%</td><td class="down">-12.14%</td></tr>
+          <tr><td>创业板指</td><td>2,212.13</td><td class="down">-3.54%</td><td class="down">-17.58%</td></tr>
+          <tr><td>沪深300</td><td>3,954.57</td><td class="down">-0.76%</td><td class="down">-3.67%</td></tr>
+          <tr><td>科创50</td><td>1,231.09</td><td class="down">-3.12%</td><td class="down">-8.50%</td></tr>
+          <tr><td>科创综指</td><td>1,349.18</td><td class="down">-5.23%</td><td class="down">-16.02%</td></tr>
+          <tr><td>北证50</td><td>759.90</td><td class="down">-4.85%</td><td class="down">-22.84%</td></tr>
+          <tr><td>上证50</td><td>2,785.92</td><td class="up">+0.45%</td><td class="up">+1.02%</td></tr>
+        </tbody>
+      </table>
+      <p class="src">YTD（历史日线自算，基准 2025-12-31）：上证 -10.96%、深成 -24.17%、创业板 -30.94%、沪深300 -14.59%、科创50 -8.41%、科创综指 -17.57%、北证50 -47.25%、上证50 -8.09%；20 日基准 2026-10-23。科创综指 000680.SH、北证50 899050.BJ 由 <code>index_daily</code> 直取 <span class="tag">tushare✓</span><br>
+      成交额（指数成分股口径，各行不可相加）：上证 7,025.7 亿、深成 3,576.0 亿、创业板 1,372.5 亿、沪深300 4,411.1 亿、科创50 919.4 亿、科创综指 2,182.5 亿、北证50 91.2 亿。<b>两市 14,222 亿</b>（沪 7,024.4 + 深 7,195.5）、<b>三市 14,311 亿</b>，较 11-19 放量 1,171 亿 <span class="tag">tushare✓</span><br>
+      涨跌家数：涨 313 / 跌 5,236 / 平 23，上涨占比 5.62%；涨停 30 / 跌停 61 <span class="tag warn-tag">源冲突⚠</span> <span class="tag">tushare✓</span><br>
+      领涨：银行 +0.22%、保险、核力发电、国有大型银行、猪肉（中国石油 +4.67%、工商银行 +3.30% 创历史新高）；领跌：半导体 -6.86%、集成电路封测、光刻机、半导体材料 <span class="tag">公开媒体✓ 上证报·11-21</span><br>
+      主力资金（Wind 口径）：净流入前三 银行 +43.12 / 保险 +12.52 / 元件 +10.34 亿；净流出前三 半导体 -80.15 / 汽车零部件 -18.71 / IT服务 -18.44 亿 <span class="tag warn-tag">源冲突⚠</span><br>
+      ETF 与两融：华夏上证50ETF 收涨 0.59%、成交 243.4 亿（前一日 25.6 亿，历史第二大）；创业板ETF易方达、沪深300ETF华泰柏瑞成交均破 140 亿；两市融资余额 21,855.14 亿元（11-19，-154.89 亿） <span class="tag">公开媒体✓ 财经早餐·11-21</span></p>
+      <div class="sum"><b>小结</b>七指数六跌一涨，放量 1,171 亿仍低于 20 日均，银行吸金、半导体流出居前。</div>
+    </div>
+    <div class="col">
+      <h3>2.2 股票 · 海外<span class="tag">新浪✓</span></h3>
+      <table class="num">
+        <thead><tr><th>市场</th><th>收盘</th><th>涨跌幅</th><th>时点</th></tr></thead>
+        <tbody>
+          <tr><td>道琼斯</td><td>48,147.33</td><td class="down">-1.93%</td><td>美东 11-20</td></tr>
+          <tr><td>标普500</td><td>6,910.39</td><td class="down">-3.70%</td><td>美东 11-20</td></tr>
+          <tr><td>纳斯达克</td><td>22,617.73</td><td class="down">-5.28%</td><td>美东 11-20</td></tr>
+          <tr><td>费城半导体</td><td>8,408.59</td><td class="down">-10.73%</td><td>美东 11-20</td></tr>
+          <tr><td>VIX</td><td>35.90</td><td class="up">+26.28%</td><td>美东 11-20</td></tr>
+          <tr><td>恒生指数</td><td>22,410.80</td><td class="down">-1.89%</td><td>11-20 收市</td></tr>
+          <tr><td>恒生科技</td><td>3,511.14</td><td class="down">-3.78%</td><td>11-20 收市</td></tr>
+          <tr><td>日经225</td><td>56,436.65</td><td class="down">-5.06%</td><td>11-20 收盘</td></tr>
+          <tr><td>韩国KOSPI</td><td>4,869.96</td><td class="down">-5.21%</td><td>11-20 收盘</td></tr>
+          <tr><td>德国DAX</td><td>24,839.06</td><td class="down">-2.45%</td><td>11-20 收盘</td></tr>
+          <tr><td>英国富时100</td><td>10,346.34</td><td class="down">-1.02%</td><td>11-20 收盘</td></tr>
+        </tbody>
+      </table>
+      <p class="src">表内美股为<b>美东 11-20 收盘 / 北京 11-21 凌晨</b>，亚太与欧洲为 11-20 当地收盘。<br>
+      <b>A 股 11-20 定价的外围是美东 11-19 收盘 / 北京 11-20 凌晨</b>（连续但不同的交易日，不可与上表混比）：道指 49,097.06（-2.19%，6 月以来首次跌破 5 万点）、标普 7,175.83（-2.02%，六连跌）、纳指 23,879.20（-2.25%）、费半 -2.41%、VIX 28.44（+15.8%）；欧洲 11-19 DAX 25,463.81（-1.06%）、富时 10,452.68（-0.93%）、CAC40 8,080.74（-0.81%） <span class="tag">公开媒体✓ 财联社·11-20</span><br>
+      VIX 11-20 昨收 28.43、盘中最高 40.03（2025 年 4 月以来最高）；历史分位 <span class="tag warn-tag">待补⚠</span>。周度累计（相对 11-13 自算）：道指 -8.02%、标普 -8.61%、纳指 -10.02%、日经 -7.70%、KOSPI -7.95%、恒指 -5.19%、DAX -7.14%、富时 -5.10%；MSCI 亚太（除日本）本周 -8.5%。连跌周数 <span class="tag warn-tag">待补⚠</span>；恒指与日经 11-20 收盘点位存在源间差异 <span class="tag warn-tag">源冲突⚠</span> <span class="tag">tushare✓</span><br>
+      结构：英伟达 -14.01%、闪迪 -16.05%、美光 -13.89%、AMD -13.25%、SK海力士 -13.11%、台积电 -9.48%；英伟达本周市值蒸发近 9,000 亿美元 <span class="tag">公开媒体✓ 新浪财经·11-21</span></p>
+      <div class="sum"><b>小结</b>美股连续两日重挫、周线跌幅 8%–10%；亚太 11-20 同步下跌，欧股全线收跌。</div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="col">
+      <h3>2.3 债券与利率（口径分列）<span class="tags"><span class="tag">中债✓</span><span class="tag">tushare✓</span></span></h3>
+      <table class="num">
+        <thead><tr><th>品种</th><th>值</th><th>变动</th><th>口径</th></tr></thead>
+        <tbody>
+          <tr><td>中债国债 3M（曲线）</td><td>1.17%</td><td class="up">+1BP</td><td>中债估值 11-20</td></tr>
+          <tr><td>中债国债 2Y（曲线）</td><td>1.23%</td><td class="up">+1BP</td><td>中债估值 11-20</td></tr>
+          <tr><td>中债国债 10Y（曲线）</td><td>1.58%</td><td class="flat">持平</td><td>中债估值 11-20</td></tr>
+          <tr><td>10Y 活跃券 260016</td><td>1.5777%</td><td class="up">+0.35BP</td><td>银行间 11-20</td></tr>
+          <tr><td>30Y 活跃券</td><td>2.047%</td><td class="down">-0.5BP</td><td>银行间 11-20</td></tr>
+          <tr><td>国债期货 T2703</td><td>109.975</td><td class="down">-0.14%</td><td>11-20 日盘收</td></tr>
+          <tr><td>国债期货 TL2703</td><td>117.890</td><td class="down">-0.03%</td><td>11-20 日盘收</td></tr>
+          <tr><td>美债 2/10/30Y</td><td>4.764/5.046/5.405%</td><td>-4.25/-2.22/-0.64BP</td><td>美东 11-19</td></tr>
+          <tr><td>中债综合指数（财富）</td><td>264.7258</td><td class="up">+0.0093%</td><td>中债 11-20</td></tr>
+        </tbody>
+      </table>
+      <table class="num">
+        <thead><tr><th>政策与资金面</th><th>值</th><th>日期</th><th>源</th></tr></thead>
+        <tbody>
+          <tr><td>公开市场操作</td><td>隔夜 3,795 亿 @1.25%，净回笼 6,880 亿</td><td>11-20</td><td>公开媒体✓</td></tr>
+          <tr><td>DR001 / DR007</td><td>1.2629% / 1.3639%</td><td>11-20 17:00</td><td>中国货币网</td></tr>
+          <tr><td>Shibor 隔夜 / 7D</td><td>1.2612% / 1.3620%</td><td>11-20</td><td>tushare✓</td></tr>
+          <tr><td>LPR 1Y / 5Y+</td><td>3.00% / 3.50%（连 18 个月不变）</td><td>更新 11-20</td><td>财联社</td></tr>
+          <tr><td>MLF</td><td>11 月未开展；下窗口 11-25</td><td>11-20</td><td>新华财经</td></tr>
+        </tbody>
+      </table>
+      <p class="src">口径分列（四项不可混比）：中债估值曲线（BP）／银行间活跃券收盘（BP）／国债期货价格（相对前结算价 %）／美债收益率曲线（美东 11-19 收盘）。美债 11-20 收盘因避险买盘上涨，具体收益率 <span class="tag warn-tag">待补⚠</span>；<code>us_tycr</code> 最新仅到 11-18（4.80/5.07/5.41%）。国债期货另有主力合约口径 <span class="tag warn-tag">源冲突⚠</span>。中美 10Y 利差约 <b>-347BP</b>（中债曲线 1.58% / 北京 11-20 vs 美债 5.046% / 美东 11-19，时点不同步）。60 日均成交额 <span class="tag warn-tag">待补⚠</span>（样本仅 32 个交易日）。</p>
+      <div class="sum"><b>小结</b>中债 10Y 曲线持平 1.58%、美债 11-19 回落，两地时点不同，内外方向未一致。</div>
+    </div>
+    <div class="col">
+      <h3>2.4 黄金 · 大宗 · 汇率<span class="tag">新浪✓</span></h3>
+      <table class="num">
+        <thead><tr><th>品种</th><th>收盘/现价</th><th>涨跌幅</th><th>时点</th></tr></thead>
+        <tbody>
+          <tr><td>COMEX 黄金（连续）</td><td>3,535.39</td><td class="down">-4.07%</td><td>11-21 05:59</td></tr>
+          <tr><td>COMEX 白银（连续）</td><td>41.500</td><td class="down">-7.53%</td><td>11-21 05:59</td></tr>
+          <tr><td>沪金主连 AU2612</td><td>766.48</td><td class="down">-4.90%</td><td>11-20 日盘</td></tr>
+          <tr><td>沪银主连 AG2612</td><td>10,015</td><td class="down">-7.11%</td><td>11-20 日盘</td></tr>
+          <tr><td>WTI 原油（连续）</td><td>83.660</td><td class="up">+1.48%</td><td>11-21 05:59</td></tr>
+          <tr><td>布伦特原油</td><td>92.548</td><td class="up">+0.62%</td><td>11-21 06:42</td></tr>
+          <tr><td>美元指数 DXY</td><td>103.8404</td><td class="flat">—</td><td>11-21 05:59</td></tr>
+          <tr><td>USD/CNY 离岸</td><td>6.6737</td><td class="down">-0.29%</td><td>11-21 05:59</td></tr>
+          <tr><td>USD/CNY 中间价</td><td>6.7131</td><td class="up">贬值 3 点</td><td>11-20 09:15</td></tr>
+          <tr><td>USD/JPY</td><td>158.530</td><td class="down">-0.71%</td><td>11-21 05:59</td></tr>
+        </tbody>
+      </table>
+      <p class="src"><b>11-19 结算（A 股 11-20 收盘时已定价）</b>：COMEX 黄金 3,627.90（-3.05%）、白银 42.84（-4.94%）、WTI 主力 83.16（+1.03%）、布伦特主力 92.69（+0.80%）、美元指数 103.94（+0.14%） <span class="tag warn-tag">源冲突⚠</span> <span class="tag">公开媒体✓ 新华财经·11-20</span>；与上表为不同交易日/不同合约，不可混比。上表外盘涨跌幅为相对新浪 <code>hf_</code> 昨结字段（连续合约），沪金/沪银为相对 <code>fut_daily</code> 前结算价，DXY 日内涨跌数据源未给出故留「—」。<br>
+      沪金夜盘（11-21 02:30 收）758.28 元/克、沪银夜盘 9,687 元/千克；USD/CNY 在岸 11-20 16:30 收盘价 <span class="tag warn-tag">待补⚠</span>，在岸夜盘 6.6714（11-21 03:00）。<br>
+      跨市场换算校验：3,535.39 ÷ 31.1035 × 6.6714 ≈ 758.30 元/克，对比沪金夜盘 758.28 元/克，偏差小于 0.01%，通过；沪金 11-20 日盘 766.48 与外盘折算存在时点差异，不作同口径比较。油价连续第三周下跌、美元追随美债收益率走低 <span class="tag">公开媒体✓ 新浪财经·11-21</span></p>
+      <div class="sum"><b>小结</b>金银续跌、原油连跌三周、美元小幅回落；外盘金折算与沪金夜盘基本一致。</div>
+    </div>
+  </div>
+
+  <h3>2.5 情绪与跨资产一致性</h3>
+  <ul class="cols2">
+    <li>风险偏好读数：<b>risk-off 与背离并存</b>。① 美东 11-20 三指全跌、费半 -10.73%、VIX 盘中 40.03 收 35.90；② 亚太 11-20 日韩跌逾 5%、MSCI 新兴市场指数跌入熊市；③ A 股 11-20 上证50 +0.45% 与 5,236 家下跌同现；④ 美债因避险买盘上涨、美元指数小幅回落 <span class="tags"><span class="tag">新浪✓</span><span class="tag">tushare✓</span></span></li>
+    <li><b>背离提示</b>（只描述同现，不解释成因果）：① 指数层面权重独红与宽度 5.62% 并存；② 美股暴跌与美债上涨、美元走低同现；③ 黄金与白银连续下跌、原油连跌三周中小幅收涨；④ 11-20 白天 A 股定价的是美东 11-19 跌幅，与表内美东 11-20 暴跌属不同交易日</li>
+  </ul>
+  <div class="sum"><b>小结</b>风险资产与避险资产同步走弱，VIX 与美债、美元与黄金方向分化，跨资产不一致。</div>
+</section>
+
+<section>
+  <h2>3. 上一交易日收盘 → 当前：发生了什么（休市版回顾）</h2>
+  <table class="t-wrap">
+    <thead><tr><th class="l">时点（北京时间）</th><th class="l">事件 / 数据</th><th class="l">源</th></tr></thead>
+    <tbody>
+      <tr><td class="l">11-20 09:00–15:00</td><td class="l">11 月 LPR 1Y 3.00% / 5Y+ 3.50% 连续 18 个月不变；A 股低开低走，14:30 后上证50ETF 爆量、权重翻红，收盘上证 3,533.79（-1.22%）、5,236 家下跌、两市 14,222 亿</td><td class="l" style="white-space:nowrap"><span class="tag">tushare✓</span></td></tr>
+      <tr><td class="l">11-20 16:09</td><td class="l">亚太收盘：恒指 -1.89%、恒生科技 -3.78%、日经 -5.06%、KOSPI -5.21%（与 A 股同日，已定价同一段外围）</td><td class="l" style="white-space:nowrap"><span class="tag">新浪✓</span></td></tr>
+      <tr><td class="l">11-20 16:30–17:30</td><td class="l">中债日评：10Y 曲线 1.58% 持平、综合指数（财富）+0.0093%；央行 11-20 净回笼 6,880 亿元；财政部 1-10 月印花税 2,511 亿元（+54.1%）</td><td class="l" style="white-space:nowrap"><span class="tag">中债✓</span></td></tr>
+      <tr><td class="l">11-20 18:31–20:47</td><td class="l">恒指公司季检（恒生科技纳入 20 只）；27 家 A 股盘后回购公告；两部门公布 4 起编造传播资本市场虚假信息典型案例</td><td class="l" style="white-space:nowrap"><span class="tag">公开媒体✓</span></td></tr>
+      <tr><td class="l">11-20 22:30 后</td><td class="l">美东 11-20 现货开盘走低，SEC 对英伟达会计操作的调查报道发酵</td><td class="l" style="white-space:nowrap"><span class="tag">公开媒体✓</span></td></tr>
+      <tr><td class="l">11-21 00:30</td><td class="l">欧股 11-20 收盘：DAX -2.45%、富时 -1.02%、欧洲斯托克50 -2.81%</td><td class="l" style="white-space:nowrap"><span class="tag">新浪✓</span></td></tr>
+      <tr><td class="l">11-21 04:00–06:30</td><td class="l">美东 11-20 收盘：纳指 -5.28%、标普 -3.70%、道指 -1.93%、费半 -10.73%、VIX 35.90（+26.28%）；美债因避险买盘上涨</td><td class="l" style="white-space:nowrap"><span class="tag">新浪✓</span></td></tr>
+      <tr><td class="l">11-21 06:15–06:44</td><td class="l">外盘头条：MSCI 新兴市场指数跌入熊市、VIX 触及 40、英伟达本周市值蒸发近 9,000 亿美元；伊朗外长称海峡「两日方案」仍有效</td><td class="l" style="white-space:nowrap"><span class="tag">公开媒体✓</span></td></tr>
+    </tbody>
+  </table>
+  <p class="src"><b>已确认的驱动（仅时序，不作因果定论）</b>：A 股 11-20 白天与亚太同日下跌，对应美东 11-19 收盘（三大指数均跌逾 2%）；11-20 尾盘上证50 翻红对应上证50ETF 243.4 亿历史级成交。<br>
+  <b>不能确认的因果</b>：① 11-20 盘后 27 家回购公告与当日行情无时序因果（公告在收盘后）；② 美东 11-20 暴跌、商品 11-20 结算、周末政策消息与 A 股 11-20 收盘仅为时序同现，<b>A 股 11-20 收盘在前，未定价上述变化</b>；③「AI 交易瓦解」为媒体归因，未见可核实的单一监管文件。<br>
+  <b>本时段无新增 A 股行情</b>：11-21 周六休市，1.2 与第 2 节境内数据均为 11-20 收盘，未虚构当日盘中快照或成交额。</p>
+  <div class="sum"><b>小结</b>11-20 白天权重护盘、个股普跌；隔夜美东暴跌与商品续跌均在收盘后、未被定价。</div>
+</section>
+
+<section>
+  <h2>4. 下一交易日（11-23 周一）观察点与情景触发</h2>
+  <table class="t-wrap">
+    <thead><tr><th>#</th><th class="l">观察点</th><th class="l">触发条件（可观测）</th><th class="l">若触发需核对什么</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td class="l" style="white-space:nowrap">隔夜美东跌幅传导</td><td class="l">若 11-23 半导体/算力指数开盘低开 &gt;3%，或跌停家数较 11-20 的 61 家扩张</td><td class="l">核对费半 -10.73% 与 A 股半导体 -6.86% 的相对幅度、尾盘宽基 ETF 承接量</td></tr>
+      <tr><td>2</td><td class="l" style="white-space:nowrap">权重护盘与宽度背离</td><td class="l">若上证50 继续收红而全市场上涨占比仍 &lt;20%</td><td class="l">核对上证50ETF 成交是否延续 243.4 亿量级、银行板块主力净额</td></tr>
+      <tr><td>3</td><td class="l" style="white-space:nowrap">量能相对均线位置</td><td class="l">若两市成交 ≥16,260 亿（20 日均）或 &lt;13,000 亿</td><td class="l">核对 11-20 的 14,222 亿基线与 5 日均 14,078.5 亿</td></tr>
+      <tr><td>4</td><td class="l" style="white-space:nowrap">内外盘贵金属价差</td><td class="l">若沪金主力 11-23 开盘较 11-20 夜盘 758.28 元/克缺口 &gt;2%</td><td class="l">核对 COMEX 3,535.39 折算值与在岸人民币时点</td></tr>
+      <tr><td>5</td><td class="l" style="white-space:nowrap">债市与到期量</td><td class="l">若 10Y 活跃券偏离 1.55%–1.65%，或 DR007 偏离 1.36% 逾 10BP</td><td class="l">核对下周 10,000 亿 MLF 与 3,795 亿逆回购到期、11-25 操作窗口</td></tr>
+      <tr><td>6</td><td class="l" style="white-space:nowrap">VIX 与美元</td><td class="l">若 VIX 脱离 35.90 基线逾 5 点，或美元指数偏离 103.84 逾 1%</td><td class="l">核对 12 月加息定价（OIS）与美债 10Y 尾盘</td></tr>
+    </tbody>
+  </table>
+  <p class="src"><b>已知日程</b>：① 11-23 Anthropic 期权开始交易（芝加哥期权交易所）；② 下周中国 10 月工企利润公布、91 天/5 年/10 年国债发行；③ 下周 10,000 亿 MLF、3,795 亿逆回购、800 亿国库定存到期，11-25 MLF 操作窗口；④ 11-24 欢瑞世纪简称变更为 ST欢瑞；⑤ 12-12 至 12-13 美联储下次议息会议 <span class="tag">公开媒体✓ 财经早餐·11-21 / 新华财经·11-20</span><br>
+  <b>待观察外部变量</b>：美东 11-20 之后的美债 2Y/10Y/30Y 收盘收益率 <span class="tag warn-tag">待补⚠</span>、VIX 是否维持 35 上方、伊朗霍尔木兹海峡「两日方案」后续通报、在岸人民币 11-20 16:30 收盘价 <span class="tag warn-tag">待补⚠</span>。每条均为 if-then 可验证条件，不含概率与方向判断。</p>
+</section>
+
+<section>
+  <h2>5. 资讯简述（32 条 · 配额 20–32 · 观点 5 条 · 按发布时间倒排）</h2>
+  <p class="src">覆盖窗口：2026-11-20 15:00 → 2026-11-21 06:45（<b>休市期间 + 上一交易日盘后</b>）。<br><b>排序</b>：按发布时间从新到旧，编号 1 = 最新；同一时段事实在前、观点在后。<b>合并</b>：SEC 调查与英伟达市值蒸发合为第 1 条；27 家回购公告与各公司方案合为第 14 条；不拆公告、不改写凑数。</p>
+  <table class="t-wrap news">
+    <thead><tr><th>#</th><th class="l">类别</th><th class="l">简述</th><th>属性</th><th class="l">时间</th><th class="l">来源</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td class="l">海外市场</td><td class="l">英伟达离职风波外再遭 SEC 会计调查，本周市值蒸发近 9,000 亿美元、跌出美股前三</td><td>事实</td><td class="l">11-21 06:44</td><td class="l">新浪财经</td></tr>
+      <tr><td>2</td><td class="l">海外市场</td><td class="l">MSCI 新兴市场股票指数跌入熊市，AI 相关抛售蔓延至全球</td><td>事实</td><td class="l">11-21 06:32</td><td class="l">新浪财经</td></tr>
+      <tr><td>3</td><td class="l">海外政治</td><td class="l">伊朗外长称重开霍尔木兹海峡的「两日方案」仍有效</td><td>事实</td><td class="l">11-21 06:29</td><td class="l">新浪财经</td></tr>
+      <tr><td>4</td><td class="l">海外市场</td><td class="l">VIX 盘中触及 40，美股波动率升至 2025 年 4 月以来最高</td><td>事实</td><td class="l">11-21 06:28</td><td class="l">新浪财经</td></tr>
+      <tr><td>5</td><td class="l">海外市场</td><td class="l">热门中概股普跌，台积电跌超 9%、阿里巴巴跌 2.68%</td><td>事实</td><td class="l">11-21 06:27</td><td class="l">新浪财经</td></tr>
+      <tr><td>6</td><td class="l">海外市场</td><td class="l">标普 500 跌入技术性回调区间，AI 交易瓦解担忧席卷华尔街</td><td>事实</td><td class="l">11-21 06:15</td><td class="l">新浪财经</td></tr>
+      <tr><td>7</td><td class="l">公司</td><td class="l">甲骨文称与 OpenAI 的基建合作资金已全部到位</td><td>事实</td><td class="l">11-21 06:08</td><td class="l">新浪财经</td></tr>
+      <tr><td>8</td><td class="l">海外政治</td><td class="l">外盘头条：美以考虑短期内对伊发动新一轮打击；特朗普否认对万斯不满</td><td>事实</td><td class="l">11-21 06:04</td><td class="l">新浪财经</td></tr>
+      <tr><td>9</td><td class="l">日程</td><td class="l">芝加哥期权交易所：Anthropic 期权将于 11-23 周一开始交易</td><td>事实</td><td class="l">11-21 06:00</td><td class="l">财经早餐</td></tr>
+      <tr><td>10</td><td class="l">日程</td><td class="l">下周中国 10 月工企利润公布、91 天/5 年/10 年国债发行；10,000 亿 MLF、3,795 亿逆回购、800 亿国库定存到期，11-25 MLF 操作窗口</td><td>事实</td><td class="l">11-21 06:00</td><td class="l">新华财经</td></tr>
+      <tr><td>11</td><td class="l">公司</td><td class="l">彭博：SpaceX 完成约 320 亿美元债券发行，为采购 AI 芯片融资，属超 400 亿美元融资计划一部分</td><td>事实</td><td class="l">11-21 06:00</td><td class="l">财经早餐</td></tr>
+      <tr><td>12</td><td class="l">宏观政策</td><td class="l">央行 11-20 开展 3,795 亿元隔夜逆回购（1.25%、全额满足），对冲 7,675 亿隔夜与 3,000 亿 7 天到期后净回笼 6,880 亿元</td><td>事实</td><td class="l">11-21 06:00</td><td class="l">新华财经</td></tr>
+      <tr><td>13</td><td class="l">公司</td><td class="l">木林森拟投资 22.5 亿元建设半导体芯片封测项目</td><td>事实</td><td class="l">11-21 06:00</td><td class="l">财经早餐</td></tr>
+      <tr><td>14</td><td class="l">公司</td><td class="l">11-20 盘后 27 家 A 股回购公告密集：通威股份拟回购 10–20 亿元、拓荆科技董事长提议回购 2–3 亿元、荣盛石化控股股东拟增持 10–20 亿元</td><td>事实</td><td class="l">11-21 06:00</td><td class="l">东方财富</td></tr>
+      <tr><td>15</td><td class="l">监管</td><td class="l">欢瑞世纪 2022 年年报存在虚假记载被实施其他风险警示，11-24 起简称变更为 ST欢瑞</td><td>事实</td><td class="l">11-21 06:00</td><td class="l">财经早餐</td></tr>
+      <tr><td>16</td><td class="l">资金</td><td class="l">紫金矿业首次回购 A 股 441.2 万股耗资 1 亿元；佰维存储首次回购 24.61 万股耗资 2,999.62 万元</td><td>事实</td><td class="l">11-21 06:00</td><td class="l">财经早餐</td></tr>
+      <tr><td>17</td><td class="l">资金</td><td class="l">截至 11-19 两市融资余额 21,855.14 亿元、单日减少 154.89 亿元；11-20 南向资金净流入 118.12 亿港元</td><td>事实</td><td class="l">11-21 06:00</td><td class="l">财经早餐</td></tr>
+      <tr><td>18</td><td class="l">产业</td><td class="l">工信部启动「5G+工业互联网」融合应用城市试点；商务部公布 1-10 月全国吸收外资 6,069.3 亿元人民币</td><td>事实</td><td class="l">11-21 06:00</td><td class="l">新浪财经</td></tr>
+      <tr><td>19</td><td class="l">机构观点</td><td class="l">陈果（东方财富证券研究所副所长、首席策略官）：「相信价值，恐慌并不比亢奋更理性」，中美周期环境不同、中国 AI 资本开支相对克制</td><td><span class="tag op">观点</span></td><td class="l">11-21 见报</td><td class="l">上海证券报</td></tr>
+      <tr><td>20</td><td class="l">机构观点</td><td class="l">汇丰环球投资研究：本轮调整并非产业趋势或市场流动性机制发生根本逆转，中国 AI 自主可控需求可能强化</td><td><span class="tag op">观点</span></td><td class="l">11-21 见报</td><td class="l">上海证券报</td></tr>
+      <tr><td>21</td><td class="l">公司</td><td class="l">CrowdStrike 据悉洽购 Zscaler，或缔造网络安全行业史上最大交易之一</td><td>事实</td><td class="l">11-21 05:44</td><td class="l">新浪财经</td></tr>
+      <tr><td>22</td><td class="l">机构观点</td><td class="l">高盛：恐慌指标冲高，警示美股下周或再现大额抛压</td><td><span class="tag op">观点</span></td><td class="l">11-21 05:32</td><td class="l">新浪财经</td></tr>
+      <tr><td>23</td><td class="l">海外市场</td><td class="l">美国债市：避险买盘推动美债大涨，投资者撤离科技股</td><td>事实</td><td class="l">11-21 05:10</td><td class="l">新浪财经</td></tr>
+      <tr><td>24</td><td class="l">商品</td><td class="l">原油：油价连续第三周下跌，供应充足抵消了战争风险</td><td>事实</td><td class="l">11-21 05:05</td><td class="l">新浪财经</td></tr>
+      <tr><td>25</td><td class="l">货币政策</td><td class="l">OIS 合约不再充分反映美联储 12 月加息 25 个基点</td><td>事实</td><td class="l">11-21 04:56</td><td class="l">新浪财经</td></tr>
+      <tr><td>26</td><td class="l">公司</td><td class="l">特朗普希望黄仁勋道歉后重掌英伟达</td><td>事实</td><td class="l">11-21 04:51</td><td class="l">新浪财经</td></tr>
+      <tr><td>27</td><td class="l">商品</td><td class="l">纽约汇市：美元追随美债收益率走低，避险交易推动日元和瑞郎上涨</td><td>事实</td><td class="l">11-21 04:50</td><td class="l">新浪财经</td></tr>
+      <tr><td>28</td><td class="l">海外市场</td><td class="l">比特币跌至两年多低点，风险资产抛售加剧下行压力</td><td>事实</td><td class="l">11-21 04:40</td><td class="l">新浪财经</td></tr>
+      <tr><td>29</td><td class="l">机构观点</td><td class="l">保尔森（费城联储行长）主张以「审慎」步伐加息，愿意考虑连续行动</td><td><span class="tag op">观点</span></td><td class="l">11-21 04:13</td><td class="l">新浪财经</td></tr>
+      <tr><td>30</td><td class="l">机构观点</td><td class="l">富国银行展望 2027 汇市：美元先强后弱，欧元一季度承压</td><td><span class="tag op">观点</span></td><td class="l">11-21 04:02</td><td class="l">新浪财经</td></tr>
+      <tr><td>31</td><td class="l">宏观数据</td><td class="l">财政部：1-10 月证券交易印花税 2,511 亿元，同比增长 54.1%</td><td>事实</td><td class="l">11-20 16:48</td><td class="l">东方财富</td></tr>
+      <tr><td>32</td><td class="l">监管</td><td class="l">两部门联合公布 4 起编造传播资本市场虚假信息典型案例</td><td>事实</td><td class="l">11-20 16:46</td><td class="l">东方财富</td></tr>
+    </tbody>
+  </table>
+  <div class="note"><b>配额校验</b>：32 条（事实 27 / 观点 5），落在 20–32 区间；32 条均为不同事件（100% ≥ 70%）。<b>类别核对</b>：宏观政策/央行/监管 5 条、海外市场/政治 9 条、产业与公司 7 条、资金面 2 条、商品与汇率 2 条、机构观点 5 条、日程预告 2 条，全部达下限。<b>已合并</b>：SEC 调查与英伟达市值蒸发 → 第 1 条；27 家回购公告 → 第 14 条；同日两项产业政策 → 第 18 条。检索覆盖财联社、上证报、证券时报、中国证券网、新华财经、东方财富、华尔街见闻、金十数据、新浪财经、第一财经、中国经济网及央行/证监会/交易所公告逐源过一遍；六组关键词各检索一次，Tavily 主力 + 秘塔辅助并发，AnySearch 仅作线索未入表。条目 19/20 见报时间精确到日、置于 11-21 06:00 时段末尾；条目 21–30 依新浪时间戳严格倒排。</div>
+
+  <h3>资讯与行情的对应（只列同现，不归因）</h3>
+  <table class="t-wrap map">
+    <thead><tr><th class="l">资讯</th><th class="l">同期可观察行情</th><th class="l">备注（时序 / 是否已被上一交易日定价）</th></tr></thead>
+    <tbody>
+      <tr><td class="l">#1 #4 #6 #22</td><td class="l">美东 11-20 纳指 -5.28%、费半 -10.73%、VIX 35.90</td><td class="l">均发生在 A 股 11-20 收盘后，<b>未被定价</b></td></tr>
+      <tr><td class="l">#12 #31</td><td class="l">11-20 中债 10Y 曲线 1.58% 持平、DR007 1.3639%</td><td class="l">同现于 11-20，因果未确认</td></tr>
+      <tr><td class="l">#9 #10</td><td class="l">11-20 上证50ETF 成交 243.4 亿、两市 14,222 亿</td><td class="l">日程指向 11-23 及下周，相关时段尚未发生</td></tr>
+      <tr><td class="l">#24 #27</td><td class="l">COMEX 金 3,535.39、WTI 83.660、DXY 103.8404</td><td class="l">均为 11-21 凌晨同一时段，只登记同现</td></tr>
+    </tbody>
+  </table>
+  <p class="src">本栏只登记「同时出现」的客观对应，<b>不构成因果判断</b>；无法确认时序的已在备注写明。</p>
+</section>
+
+<section>
+  <h2>6. 边界与免责</h2>
+  <ul>
+    <li>性质：信息收集整理与事实核对，<b>不构成投资建议</b>，不承诺时效性或完整性。</li>
+    <li>数据来自公开渠道，标注 <span class="tag warn-tag">待补⚠</span> 处为未取到或时点未到；<span class="tag warn-tag">源冲突⚠</span> 处已按「时点完整度 / 交叉印证 / 来源层级」完成源校验并采信，使用前请复核。跨市场换算校验（COMEX 黄金 ÷ 31.1035 × USD/CNY ≈ 沪金 元/克）已执行并通过。</li>
+    <li>本报告不产出方向预测与买卖建议，<b>不设裁决区、不设签字栏、不做方向裁决</b>；方向性判断归 A股研究团队（F 通道），验证类结论另走假设卡流程。</li>
+    <li><b>休市版</b>：11-21 周六无交易，1.2 与第 2 节境内行情全部为 11-20 周五收盘并逐项标日期，不得当作当日行情引用；美东 11-20 收盘 / 北京 11-21 凌晨、欧股 11-20 收盘、商品 11-20 结算与周末消息面均晚于 A 股 11-20 收盘，<b>尚未被 A 股定价</b>。</li>
+    <li>引用估值类数字（PE/PB/净利/ROE）时须额外遵守三要素：报告期 + 口径 + 数据源。</li>
+    <li><b>待补计数：5 项</b>（VIX 历史分位、主要指数连跌周数、美债 11-20 收盘 2Y/10Y/30Y 收益率、USD/CNY 在岸 11-20 16:30 收盘价、60 日均成交额样本不足）；<b>冲突字段数：6</b>（涨停跌停家数、半导体主力净流出额、国债期货主力合约口径、11-19 商品与美元收盘读数、恒指 11-20 收盘点位、日经 11-20 收盘点位）。</li>
+  </ul>
+</section>
+
+<footer>
+  市场资讯报告 · 早间版 · 2026-11-21（休市版）· 模板 v1.7 · 生成 11-21 06:45<br>
+  数据源：tushare · 新浪行情 · 东方财富 news_feed · 中国债券信息网 · 中国货币网 · 上海证券报 · 财联社 · 新华财经 · 央视网 · 证券时报 · 中国基金报 · 路透早报 · 财经早餐 · Tavily；通达信 MCP 本会话不可用，A 股数据由 tushare + 新浪 + 公开媒体交叉印证
+</footer>
+
+</div>
+</body>
+</html>
